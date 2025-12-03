@@ -510,6 +510,198 @@ const Charts = (function() {
     }
 
     /**
+     * Create a box plot (candle bar) chart showing distribution
+     * @param {HTMLElement} container - Container element
+     * @param {number[]} data - Array of values
+     * @param {Object} options - Chart options
+     */
+    function boxPlot(container, data, options = {}) {
+        const {
+            width = 300,
+            height = 60,
+            barColor = 'var(--accent-primary)',
+            whiskerColor = 'var(--text-tertiary)',
+            medianColor = 'var(--text-primary)',
+            avgColor = 'var(--text-secondary)',
+            barHeight = 24,
+            showLabels = true,
+            unit = 'Mbps'
+        } = options;
+
+        if (!data || data.length < 2) {
+            container.innerHTML = '<span class="no-data">Not enough data</span>';
+            return;
+        }
+
+        const sorted = [...data].sort((a, b) => a - b);
+        const min = sorted[0];
+        const max = sorted[sorted.length - 1];
+        const med = percentile(sorted, 50);
+        const p25 = percentile(sorted, 25);
+        const p75 = percentile(sorted, 75);
+        const avg = data.reduce((a, b) => a + b, 0) / data.length;
+
+        // If all values are the same, just show a point
+        if (min === max) {
+            container.innerHTML = `<span class="no-data">${formatNumber(min)} ${unit}</span>`;
+            return;
+        }
+
+        const svg = createSVG('svg', {
+            width,
+            height,
+            viewBox: `0 0 ${width} ${height}`,
+            class: 'box-plot'
+        });
+
+        const padding = showLabels ? 40 : 10;
+        const chartWidth = width - padding * 2;
+        const centerY = height / 2;
+
+        // Scale function
+        const scale = (val) => padding + ((val - min) / (max - min)) * chartWidth;
+
+        // Whisker line (min to max)
+        const whiskerLine = createSVG('line', {
+            x1: scale(min),
+            y1: centerY,
+            x2: scale(max),
+            y2: centerY,
+            stroke: whiskerColor,
+            'stroke-width': 2
+        });
+        svg.appendChild(whiskerLine);
+
+        // Min whisker cap
+        const minCap = createSVG('line', {
+            x1: scale(min),
+            y1: centerY - 8,
+            x2: scale(min),
+            y2: centerY + 8,
+            stroke: whiskerColor,
+            'stroke-width': 2
+        });
+        svg.appendChild(minCap);
+
+        // Max whisker cap
+        const maxCap = createSVG('line', {
+            x1: scale(max),
+            y1: centerY - 8,
+            x2: scale(max),
+            y2: centerY + 8,
+            stroke: whiskerColor,
+            'stroke-width': 2
+        });
+        svg.appendChild(maxCap);
+
+        // IQR box (25th to 75th percentile)
+        const box = createSVG('rect', {
+            x: scale(p25),
+            y: centerY - barHeight / 2,
+            width: scale(p75) - scale(p25),
+            height: barHeight,
+            fill: barColor,
+            opacity: 0.6,
+            rx: 4
+        });
+        svg.appendChild(box);
+
+        // Median line (solid)
+        const medianLine = createSVG('line', {
+            x1: scale(med),
+            y1: centerY - barHeight / 2 - 2,
+            x2: scale(med),
+            y2: centerY + barHeight / 2 + 2,
+            stroke: medianColor,
+            'stroke-width': 3,
+            'stroke-linecap': 'round'
+        });
+        svg.appendChild(medianLine);
+
+        // Average line (dashed)
+        const avgLine = createSVG('line', {
+            x1: scale(avg),
+            y1: centerY - barHeight / 2 - 2,
+            x2: scale(avg),
+            y2: centerY + barHeight / 2 + 2,
+            stroke: avgColor,
+            'stroke-width': 2,
+            'stroke-dasharray': '4,3',
+            'stroke-linecap': 'round'
+        });
+        svg.appendChild(avgLine);
+
+        // Labels
+        if (showLabels) {
+            // Min label
+            const minLabel = createSVG('text', {
+                x: scale(min),
+                y: height - 4,
+                'text-anchor': 'middle',
+                'font-size': '10',
+                fill: 'var(--text-tertiary)'
+            });
+            minLabel.textContent = formatNumber(min);
+            svg.appendChild(minLabel);
+
+            // Max label
+            const maxLabel = createSVG('text', {
+                x: scale(max),
+                y: height - 4,
+                'text-anchor': 'middle',
+                'font-size': '10',
+                fill: 'var(--text-tertiary)'
+            });
+            maxLabel.textContent = formatNumber(max);
+            svg.appendChild(maxLabel);
+
+            // Median label (top)
+            const medLabel = createSVG('text', {
+                x: scale(med),
+                y: 10,
+                'text-anchor': 'middle',
+                'font-size': '11',
+                'font-weight': '600',
+                fill: 'var(--text-primary)'
+            });
+            medLabel.textContent = formatNumber(med);
+            svg.appendChild(medLabel);
+        }
+
+        container.innerHTML = '';
+        container.appendChild(svg);
+
+        // Return stats for tooltip/details
+        return {
+            min,
+            max,
+            median: med,
+            average: avg,
+            p25,
+            p75,
+            svg
+        };
+    }
+
+    /**
+     * Helper: Calculate percentile
+     */
+    function percentile(sortedArr, p) {
+        if (sortedArr.length === 0) return 0;
+        if (sortedArr.length === 1) return sortedArr[0];
+
+        const index = (p / 100) * (sortedArr.length - 1);
+        const lower = Math.floor(index);
+        const upper = Math.ceil(index);
+        const weight = index - lower;
+
+        if (upper >= sortedArr.length) return sortedArr[sortedArr.length - 1];
+        if (lower === upper) return sortedArr[lower];
+
+        return sortedArr[lower] * (1 - weight) + sortedArr[upper] * weight;
+    }
+
+    /**
      * Helper: Describe SVG arc path
      */
     function describeArc(x, y, radius, startAngle, endAngle) {
@@ -573,8 +765,12 @@ const Charts = (function() {
             }
         }
 
-        .sparkline, .bar-chart, .latency-plot, .gauge {
+        .sparkline, .bar-chart, .latency-plot, .gauge, .box-plot {
             display: block;
+        }
+
+        .box-plot {
+            overflow: visible;
         }
 
         .latency-stats {
@@ -614,13 +810,15 @@ const Charts = (function() {
     return {
         sparkline,
         barChart,
+        boxPlot,
         progressBar,
         latencyPlot,
         packetLossBar,
         gauge,
         updateSparkline,
         formatNumber,
-        median
+        median,
+        percentile
     };
 })();
 

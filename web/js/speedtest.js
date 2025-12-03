@@ -6,26 +6,25 @@
 const SpeedTest = (function() {
     'use strict';
 
-    // Profile configurations
+    // Profile configurations: { name: { bytes, runs } }
     const DOWNLOAD_PROFILES = {
-        '100k': 100 * 1024,
-        '1M': 1 * 1024 * 1024,
-        '10M': 10 * 1024 * 1024,
-        '25M': 25 * 1024 * 1024,
-        '100M': 100 * 1024 * 1024
+        '100kB': { bytes: 100 * 1000, runs: 10 },      // 10 × 100kB tests
+        '1MB':   { bytes: 1 * 1000 * 1000, runs: 8 },  // 8 × 1MB tests
+        '10MB':  { bytes: 10 * 1000 * 1000, runs: 6 }, // 6 × 10MB tests
+        '25MB':  { bytes: 25 * 1000 * 1000, runs: 4 }, // 4 × 25MB tests
+        '100MB': { bytes: 100 * 1000 * 1000, runs: 3 } // 3 × 100MB tests
     };
 
     const UPLOAD_PROFILES = {
-        '100k': 100 * 1024,
-        '1M': 1 * 1024 * 1024,
-        '10M': 10 * 1024 * 1024,
-        '25M': 25 * 1024 * 1024,
-        '50M': 50 * 1024 * 1024
+        '100kB': { bytes: 100 * 1000, runs: 8 },       // 8 × 100kB tests
+        '1MB':   { bytes: 1 * 1000 * 1000, runs: 6 },  // 6 × 1MB tests
+        '10MB':  { bytes: 10 * 1000 * 1000, runs: 4 }, // 4 × 10MB tests
+        '25MB':  { bytes: 25 * 1000 * 1000, runs: 4 }, // 4 × 25MB tests
+        '50MB':  { bytes: 50 * 1000 * 1000, runs: 3 }  // 3 × 50MB tests
     };
 
     // Test configuration
     const CONFIG = {
-        runsPerProfile: 4,
         latencyProbes: 20,
         loadedLatencyProbes: 5,
         packetLossPackets: 1000,
@@ -46,7 +45,15 @@ const SpeedTest = (function() {
         latencySamples: [],
         packetLoss: null,
         startTime: null,
-        endTime: null
+        endTime: null,
+        // New enhanced fields
+        timingBreakdown: [],
+        lossPattern: null,
+        dataChannelStats: null,
+        bandwidthEstimate: null,
+        networkQualityScore: null,
+        testConfidence: null,
+        timingStats: { resourceTiming: 0, serverTiming: 0, fallback: 0 }
     };
 
     // Event callbacks
@@ -328,7 +335,7 @@ const SpeedTest = (function() {
             const downloadPromises = [];
             for (let i = 0; i < 6; i++) {
                 downloadPromises.push(
-                    runDownload(DOWNLOAD_PROFILES['100k'], 'warmup', i)
+                    runDownload(DOWNLOAD_PROFILES['100kB'].bytes, 'warmup', i)
                         .catch(() => {}) // Ignore individual failures
                 );
             }
@@ -338,7 +345,7 @@ const SpeedTest = (function() {
             const uploadPromises = [];
             for (let i = 0; i < 6; i++) {
                 uploadPromises.push(
-                    runUpload(UPLOAD_PROFILES['100k'], 'warmup', i)
+                    runUpload(UPLOAD_PROFILES['100kB'].bytes, 'warmup', i)
                         .catch(() => {})
                 );
             }
@@ -375,10 +382,10 @@ const SpeedTest = (function() {
     async function runDownloadTests() {
         const profiles = Object.entries(DOWNLOAD_PROFILES);
         let totalRuns = 0;
-        const totalExpected = profiles.length * CONFIG.runsPerProfile;
+        const totalExpected = profiles.reduce((sum, [, cfg]) => sum + cfg.runs, 0);
 
-        for (const [profile, bytes] of profiles) {
-            for (let run = 0; run < CONFIG.runsPerProfile; run++) {
+        for (const [profile, { bytes, runs }] of profiles) {
+            for (let run = 0; run < runs; run++) {
                 if (abortController?.signal.aborted) break;
                 while (isPaused) await sleep(100);
 
@@ -388,7 +395,7 @@ const SpeedTest = (function() {
                     totalRuns++;
 
                     if (callbacks.onDownloadProgress) {
-                        callbacks.onDownloadProgress(profile, run + 1, CONFIG.runsPerProfile, sample, totalRuns, totalExpected);
+                        callbacks.onDownloadProgress(profile, run + 1, runs, sample, totalRuns, totalExpected);
                     }
                 } catch (err) {
                     console.error(`Download ${profile} run ${run} failed:`, err);
@@ -406,10 +413,10 @@ const SpeedTest = (function() {
     async function runUploadTests() {
         const profiles = Object.entries(UPLOAD_PROFILES);
         let totalRuns = 0;
-        const totalExpected = profiles.length * CONFIG.runsPerProfile;
+        const totalExpected = profiles.reduce((sum, [, cfg]) => sum + cfg.runs, 0);
 
-        for (const [profile, bytes] of profiles) {
-            for (let run = 0; run < CONFIG.runsPerProfile; run++) {
+        for (const [profile, { bytes, runs }] of profiles) {
+            for (let run = 0; run < runs; run++) {
                 if (abortController?.signal.aborted) break;
                 while (isPaused) await sleep(100);
 
@@ -419,7 +426,7 @@ const SpeedTest = (function() {
                     totalRuns++;
 
                     if (callbacks.onUploadProgress) {
-                        callbacks.onUploadProgress(profile, run + 1, CONFIG.runsPerProfile, sample, totalRuns, totalExpected);
+                        callbacks.onUploadProgress(profile, run + 1, runs, sample, totalRuns, totalExpected);
                     }
                 } catch (err) {
                     console.error(`Upload ${profile} run ${run} failed:`, err);
@@ -436,7 +443,7 @@ const SpeedTest = (function() {
      */
     async function runLatencyDuringDownload() {
         // Start a medium download in background
-        const downloadPromise = runDownload(DOWNLOAD_PROFILES['10M'], '10M', 0, 'download');
+        const downloadPromise = runDownload(DOWNLOAD_PROFILES['10MB'].bytes, '10MB', 0, 'download');
 
         // Run latency probes concurrently
         const probePromises = [];
@@ -460,7 +467,7 @@ const SpeedTest = (function() {
      */
     async function runLatencyDuringUpload() {
         // Start a medium upload in background
-        const uploadPromise = runUpload(UPLOAD_PROFILES['10M'], '10M', 0, 'upload');
+        const uploadPromise = runUpload(UPLOAD_PROFILES['10MB'].bytes, '10MB', 0, 'upload');
 
         // Run latency probes concurrently
         const probePromises = [];
@@ -753,6 +760,12 @@ const SpeedTest = (function() {
                 jitterMs = rttSamples.reduce((sum, rtt) => sum + Math.abs(rtt - mean), 0) / rttSamples.length;
             }
 
+            // Collect data channel stats before closing
+            results.dataChannelStats = await collectDataChannelStats(pc);
+
+            // Analyze loss pattern
+            results.lossPattern = analyzeLossPattern(sent, acks);
+
             const result = {
                 sent,
                 received,
@@ -1007,6 +1020,400 @@ const SpeedTest = (function() {
     }
 
     /**
+     * Analyze loss pattern from packet loss test
+     */
+    function analyzeLossPattern(sent, acks) {
+        // Single pass: collect losses and compute distribution/early count
+        const bucketSize = sent / 10;
+        const midpoint = sent / 2;
+        const distribution = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+        const losses = [];
+        let earlyCount = 0;
+
+        for (let i = 0; i < sent; i++) {
+            if (!acks.has(i)) {
+                losses.push(i);
+                const bucket = Math.min(9, Math.floor(i / bucketSize));
+                distribution[bucket]++;
+                if (i < midpoint) earlyCount++;
+            }
+        }
+
+        if (losses.length === 0) {
+            return {
+                type: 'none',
+                burstCount: 0,
+                maxBurstLength: 0,
+                avgBurstLength: 0,
+                lossDistribution: distribution,
+                earlyLossPercent: 0,
+                lateLossPercent: 0
+            };
+        }
+
+        // Single pass for burst detection with inline max/sum
+        let burstCount = 0;
+        let maxBurstLength = 1;
+        let totalBurstLength = 0;
+        let currentBurst = 1;
+
+        for (let i = 1; i < losses.length; i++) {
+            if (losses[i] === losses[i - 1] + 1) {
+                currentBurst++;
+            } else {
+                burstCount++;
+                totalBurstLength += currentBurst;
+                if (currentBurst > maxBurstLength) maxBurstLength = currentBurst;
+                currentBurst = 1;
+            }
+        }
+        // Don't forget the last burst
+        burstCount++;
+        totalBurstLength += currentBurst;
+        if (currentBurst > maxBurstLength) maxBurstLength = currentBurst;
+
+        const avgBurstLength = totalBurstLength / burstCount;
+        const earlyLossPercent = (earlyCount / losses.length) * 100;
+        const lateLossPercent = 100 - earlyLossPercent;
+
+        // Classify pattern
+        let type;
+        if (maxBurstLength >= 10 || avgBurstLength > 3) {
+            type = 'burst';
+        } else if (lateLossPercent > 70) {
+            type = 'tail';
+        } else {
+            type = 'random';
+        }
+
+        return {
+            type,
+            burstCount,
+            maxBurstLength,
+            avgBurstLength,
+            lossDistribution: distribution,
+            earlyLossPercent,
+            lateLossPercent
+        };
+    }
+
+    /**
+     * Estimate bandwidth from samples
+     */
+    function estimateBandwidth(samples) {
+        // Single pass to separate download/upload samples
+        const dlSamples = [];
+        const ulSamples = [];
+        for (let i = 0; i < samples.length; i++) {
+            const s = samples[i];
+            if (s.direction === 'download') dlSamples.push(s.mbps);
+            else if (s.direction === 'upload') ulSamples.push(s.mbps);
+        }
+
+        function stats(arr) {
+            if (arr.length === 0) return { peak: 0, sustained: 0, variability: 0, trend: 'stable' };
+
+            // Single pass for peak, sum, and partial sums for trend
+            const n = arr.length;
+            const third = Math.floor(n / 3);
+            let peak = arr[0];
+            let sum = 0;
+            let firstThirdSum = 0;
+            let lastThirdSum = 0;
+
+            for (let i = 0; i < n; i++) {
+                const v = arr[i];
+                if (v > peak) peak = v;
+                sum += v;
+                if (i < third) firstThirdSum += v;
+                if (i >= n - third) lastThirdSum += v;
+            }
+
+            const mean = sum / n;
+
+            // Second pass for std (unavoidable - need mean first)
+            let sumSqDiff = 0;
+            for (let i = 0; i < n; i++) {
+                const diff = arr[i] - mean;
+                sumSqDiff += diff * diff;
+            }
+            const std = Math.sqrt(sumSqDiff / n);
+            const variability = mean > 0 ? std / mean : 0;
+
+            // Get p75 for sustained (requires sort)
+            const sorted = [...arr].sort((a, b) => a - b);
+            const sustained = sorted[Math.floor(n * 0.75)] || peak;
+
+            // Trend calculation
+            let trend = 'stable';
+            if (third > 0) {
+                const firstThirdAvg = firstThirdSum / third;
+                const lastThirdAvg = lastThirdSum / third;
+                const change = firstThirdAvg > 0 ? (lastThirdAvg - firstThirdAvg) / firstThirdAvg : 0;
+                if (change > 0.1) trend = 'improving';
+                else if (change < -0.1) trend = 'degrading';
+            }
+
+            return { peak, sustained, variability, trend };
+        }
+
+        const dlStats = stats(dlSamples);
+        const ulStats = stats(ulSamples);
+
+        return {
+            downloadPeakMbps: dlStats.peak,
+            downloadSustainedMbps: dlStats.sustained,
+            uploadPeakMbps: ulStats.peak,
+            uploadSustainedMbps: ulStats.sustained,
+            downloadVariability: dlStats.variability,
+            uploadVariability: ulStats.variability,
+            downloadTrend: dlStats.trend,
+            uploadTrend: ulStats.trend
+        };
+    }
+
+    /**
+     * Calculate network quality score (0-100)
+     */
+    function calculateNetworkQualityScore(summary, bandwidth) {
+        // Bandwidth score (0-100)
+        const bwScore = Math.min(100,
+            (Math.log10(Math.max(1, summary.downloadMbps)) / Math.log10(1000)) * 100
+        );
+
+        // Latency score (0-100)
+        const latScore = Math.max(0, 100 - (summary.latencyUnloadedMs * 1.5));
+
+        // Stability score (0-100)
+        const jitterPenalty = Math.min(50, summary.jitterMs * 3);
+        const variabilityPenalty = Math.min(30, bandwidth.downloadVariability * 100);
+        const stabScore = Math.max(0, 100 - jitterPenalty - variabilityPenalty);
+
+        // Reliability score (0-100)
+        const reliScore = Math.max(0, 100 - (summary.packetLossPercent * 15));
+
+        // Weighted composite
+        const overall = Math.round(
+            bwScore * 0.35 + latScore * 0.25 + stabScore * 0.20 + reliScore * 0.20
+        );
+
+        // Letter grade
+        let grade;
+        if (overall >= 95) grade = 'A+';
+        else if (overall >= 85) grade = 'A';
+        else if (overall >= 70) grade = 'B';
+        else if (overall >= 55) grade = 'C';
+        else if (overall >= 40) grade = 'D';
+        else grade = 'F';
+
+        const descriptions = {
+            'A+': 'Exceptional - Suitable for any application',
+            'A': 'Excellent - Great for gaming, streaming, and video calls',
+            'B': 'Good - Suitable for most online activities',
+            'C': 'Fair - May experience occasional issues with demanding applications',
+            'D': 'Poor - Expect frequent buffering and lag',
+            'F': 'Very Poor - Connection issues likely for most activities'
+        };
+
+        return {
+            overall,
+            components: {
+                bandwidth: Math.round(bwScore),
+                latency: Math.round(latScore),
+                stability: Math.round(stabScore),
+                reliability: Math.round(reliScore)
+            },
+            grade,
+            description: descriptions[grade]
+        };
+    }
+
+    /**
+     * Assess test confidence
+     */
+    function assessTestConfidence(samples, latency, packetLoss, timingStats) {
+        const warnings = [];
+
+        // Single pass to collect samples by direction
+        const dlMbps = [];
+        const ulMbps = [];
+        for (let i = 0; i < samples.length; i++) {
+            const s = samples[i];
+            if (s.direction === 'download') dlMbps.push(s.mbps);
+            else if (s.direction === 'upload') ulMbps.push(s.mbps);
+        }
+
+        // Single pass for latency
+        const latRtt = [];
+        for (let i = 0; i < latency.length; i++) {
+            if (latency[i].phase === 'unloaded') latRtt.push(latency[i].rttMs);
+        }
+
+        const dlCount = dlMbps.length;
+        const ulCount = ulMbps.length;
+        const latCount = latRtt.length;
+        const sampleAdequate = dlCount >= 20 && ulCount >= 15 && latCount >= 10;
+        if (!sampleAdequate) warnings.push('Insufficient samples for high confidence');
+
+        // Coefficient of variation with single pass
+        function cv(arr) {
+            const n = arr.length;
+            if (n < 2) return 0;
+            let sum = 0;
+            for (let i = 0; i < n; i++) sum += arr[i];
+            const mean = sum / n;
+            let sumSqDiff = 0;
+            for (let i = 0; i < n; i++) {
+                const diff = arr[i] - mean;
+                sumSqDiff += diff * diff;
+            }
+            const std = Math.sqrt(sumSqDiff / n);
+            return mean > 0 ? (std / mean) * 100 : 0;
+        }
+
+        const dlCV = cv(dlMbps);
+        const ulCV = cv(ulMbps);
+        const latCV = cv(latRtt);
+        const cvAcceptable = dlCV < 30 && ulCV < 30 && latCV < 50;
+        if (!cvAcceptable) warnings.push('High variability in measurements');
+
+        // Timing accuracy
+        const totalRequests = timingStats.resourceTiming + timingStats.serverTiming + timingStats.fallback;
+        const accurateTimingPercent = totalRequests > 0
+            ? ((timingStats.resourceTiming + timingStats.serverTiming) / totalRequests) * 100
+            : 0;
+        const timingAccurate = accurateTimingPercent > 80;
+        if (!timingAccurate && totalRequests > 0) warnings.push('Timing API fallbacks may reduce accuracy');
+
+        // Connection stability
+        const connectionStable = packetLoss !== null && !packetLoss.unavailable;
+        if (!connectionStable) warnings.push('Packet loss test incomplete');
+
+        // Overall score
+        let score = 100;
+        if (!sampleAdequate) score -= 20;
+        if (!cvAcceptable) score -= 25;
+        if (!timingAccurate) score -= 15;
+        if (!connectionStable) score -= 15;
+
+        let overall;
+        if (score >= 80) overall = 'high';
+        else if (score >= 50) overall = 'medium';
+        else overall = 'low';
+
+        return {
+            overall,
+            overallScore: Math.max(0, score),
+            metrics: {
+                sampleCount: { download: dlCount, upload: ulCount, latency: latCount, adequate: sampleAdequate },
+                coefficientOfVariation: { download: dlCV, upload: ulCV, latency: latCV, acceptable: cvAcceptable },
+                timingAccuracy: {
+                    resourceTimingUsed: timingStats.resourceTiming > 0,
+                    serverTimingUsed: timingStats.serverTiming > 0,
+                    fallbackCount: timingStats.fallback,
+                    accurate: timingAccurate
+                },
+                connectionStability: {
+                    packetTestCompleted: connectionStable,
+                    stable: connectionStable
+                }
+            },
+            warnings
+        };
+    }
+
+    /**
+     * Extract timing breakdown from a request
+     */
+    function extractTimingBreakdown(entry) {
+        if (!entry) return null;
+
+        return {
+            dnsMs: entry.domainLookupEnd - entry.domainLookupStart,
+            tcpMs: entry.connectEnd - entry.connectStart,
+            tlsMs: entry.secureConnectionStart > 0
+                ? entry.connectEnd - entry.secureConnectionStart
+                : 0,
+            ttfbMs: entry.responseStart - entry.requestStart,
+            transferMs: entry.responseEnd - entry.responseStart,
+            totalMs: entry.responseEnd - entry.fetchStart
+        };
+    }
+
+    /**
+     * Collect data channel stats from WebRTC peer connection
+     */
+    async function collectDataChannelStats(pc) {
+        try {
+            const stats = await pc.getStats();
+            let connectionType = 'unknown';
+            let localCandidateType = '';
+            let remoteCandidateType = '';
+            let protocol = 'udp';
+            let bytesSent = 0;
+            let bytesReceived = 0;
+            let messagesSent = 0;
+            let messagesReceived = 0;
+            let availableOutgoingBitrate;
+            let currentRoundTripTime;
+
+            stats.forEach(report => {
+                if (report.type === 'candidate-pair' && report.nominated) {
+                    if (report.currentRoundTripTime !== undefined) {
+                        currentRoundTripTime = report.currentRoundTripTime * 1000;
+                    }
+                    if (report.availableOutgoingBitrate !== undefined) {
+                        availableOutgoingBitrate = report.availableOutgoingBitrate;
+                    }
+                }
+
+                if (report.type === 'local-candidate') {
+                    localCandidateType = report.candidateType;
+                    if (report.protocol) protocol = report.protocol;
+                }
+
+                if (report.type === 'remote-candidate') {
+                    remoteCandidateType = report.candidateType;
+                }
+
+                if (report.type === 'data-channel') {
+                    bytesSent = report.bytesSent || 0;
+                    bytesReceived = report.bytesReceived || 0;
+                    messagesSent = report.messagesSent || 0;
+                    messagesReceived = report.messagesReceived || 0;
+                }
+            });
+
+            // Determine connection type
+            if (localCandidateType === 'relay' || remoteCandidateType === 'relay') {
+                connectionType = 'relay';
+            } else if (localCandidateType === 'srflx' || remoteCandidateType === 'srflx') {
+                connectionType = 'srflx';
+            } else if (localCandidateType === 'prflx' || remoteCandidateType === 'prflx') {
+                connectionType = 'prflx';
+            } else if (localCandidateType === 'host' || remoteCandidateType === 'host') {
+                connectionType = 'host';
+            }
+
+            return {
+                connectionType,
+                localCandidateType,
+                remoteCandidateType,
+                protocol,
+                bytesSent,
+                bytesReceived,
+                messagesSent,
+                messagesReceived,
+                availableOutgoingBitrate,
+                currentRoundTripTime
+            };
+        } catch (e) {
+            console.error('Failed to collect data channel stats:', e);
+            return null;
+        }
+    }
+
+    /**
      * Start the full test suite
      */
     async function start() {
@@ -1031,7 +1438,14 @@ const SpeedTest = (function() {
             latencySamples: [],
             packetLoss: null,
             startTime: Date.now(),
-            endTime: null
+            endTime: null,
+            timingBreakdown: [],
+            lossPattern: null,
+            dataChannelStats: null,
+            bandwidthEstimate: null,
+            networkQualityScore: null,
+            testConfidence: null,
+            timingStats: { resourceTiming: 0, serverTiming: 0, fallback: 0 }
         };
 
         try {
@@ -1080,6 +1494,27 @@ const SpeedTest = (function() {
             // Calculate final summary
             const summary = calculateSummary();
             const quality = calculateQuality(summary);
+
+            // Calculate enhanced metrics
+            results.bandwidthEstimate = estimateBandwidth(results.throughputSamples);
+            results.networkQualityScore = calculateNetworkQualityScore(summary, results.bandwidthEstimate);
+            results.testConfidence = assessTestConfidence(
+                results.throughputSamples,
+                results.latencySamples,
+                results.packetLoss,
+                results.timingStats
+            );
+
+            // Collect timing breakdown from Resource Timing API
+            try {
+                const entries = performance.getEntriesByType('resource')
+                    .filter(e => e.name.includes('/__down') || e.name.includes('/__up'));
+                results.timingBreakdown = entries
+                    .map(e => extractTimingBreakdown(e))
+                    .filter(t => t !== null);
+            } catch (e) {
+                console.log('Could not collect timing breakdown:', e);
+            }
 
             if (callbacks.onComplete) {
                 callbacks.onComplete(results, summary, quality);
