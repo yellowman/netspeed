@@ -261,7 +261,8 @@ const SpeedTest = (function() {
 
         // Log first few probes to debug timing source
         if (seq < 3) {
-            console.log(`Latency probe ${seq}: ${rttMs.toFixed(2)}ms (${timingSource})`, timing);
+            console.warn(`LATENCY PROBE ${seq}: ${rttMs.toFixed(2)}ms source=${timingSource}`,
+                timing ? { requestStart: timing.requestStart, responseStart: timing.responseStart } : 'no timing');
         }
 
         return {
