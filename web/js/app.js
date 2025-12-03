@@ -1175,12 +1175,12 @@
      */
     function formatProfileSize(profile) {
         const sizes = {
-            '100k': '100 KB',
-            '1M': '1 MB',
-            '10M': '10 MB',
-            '25M': '25 MB',
-            '50M': '50 MB',
-            '100M': '100 MB'
+            '100kB': '100 kB',
+            '1MB': '1 MB',
+            '10MB': '10 MB',
+            '25MB': '25 MB',
+            '50MB': '50 MB',
+            '100MB': '100 MB'
         };
         return sizes[profile] || profile;
     }

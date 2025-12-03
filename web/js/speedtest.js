@@ -6,26 +6,25 @@
 const SpeedTest = (function() {
     'use strict';
 
-    // Profile configurations
+    // Profile configurations: { name: { bytes, runs } }
     const DOWNLOAD_PROFILES = {
-        '100k': 100 * 1024,
-        '1M': 1 * 1024 * 1024,
-        '10M': 10 * 1024 * 1024,
-        '25M': 25 * 1024 * 1024,
-        '100M': 100 * 1024 * 1024
+        '100kB': { bytes: 100 * 1000, runs: 10 },      // 10 × 100kB tests
+        '1MB':   { bytes: 1 * 1000 * 1000, runs: 8 },  // 8 × 1MB tests
+        '10MB':  { bytes: 10 * 1000 * 1000, runs: 6 }, // 6 × 10MB tests
+        '25MB':  { bytes: 25 * 1000 * 1000, runs: 4 }, // 4 × 25MB tests
+        '100MB': { bytes: 100 * 1000 * 1000, runs: 3 } // 3 × 100MB tests
     };
 
     const UPLOAD_PROFILES = {
-        '100k': 100 * 1024,
-        '1M': 1 * 1024 * 1024,
-        '10M': 10 * 1024 * 1024,
-        '25M': 25 * 1024 * 1024,
-        '50M': 50 * 1024 * 1024
+        '100kB': { bytes: 100 * 1000, runs: 8 },       // 8 × 100kB tests
+        '1MB':   { bytes: 1 * 1000 * 1000, runs: 6 },  // 6 × 1MB tests
+        '10MB':  { bytes: 10 * 1000 * 1000, runs: 4 }, // 4 × 10MB tests
+        '25MB':  { bytes: 25 * 1000 * 1000, runs: 4 }, // 4 × 25MB tests
+        '50MB':  { bytes: 50 * 1000 * 1000, runs: 3 }  // 3 × 50MB tests
     };
 
     // Test configuration
     const CONFIG = {
-        runsPerProfile: 4,
         latencyProbes: 20,
         loadedLatencyProbes: 5,
         packetLossPackets: 1000,
@@ -375,10 +374,10 @@ const SpeedTest = (function() {
     async function runDownloadTests() {
         const profiles = Object.entries(DOWNLOAD_PROFILES);
         let totalRuns = 0;
-        const totalExpected = profiles.length * CONFIG.runsPerProfile;
+        const totalExpected = profiles.reduce((sum, [, cfg]) => sum + cfg.runs, 0);
 
-        for (const [profile, bytes] of profiles) {
-            for (let run = 0; run < CONFIG.runsPerProfile; run++) {
+        for (const [profile, { bytes, runs }] of profiles) {
+            for (let run = 0; run < runs; run++) {
                 if (abortController?.signal.aborted) break;
                 while (isPaused) await sleep(100);
 
@@ -388,7 +387,7 @@ const SpeedTest = (function() {
                     totalRuns++;
 
                     if (callbacks.onDownloadProgress) {
-                        callbacks.onDownloadProgress(profile, run + 1, CONFIG.runsPerProfile, sample, totalRuns, totalExpected);
+                        callbacks.onDownloadProgress(profile, run + 1, runs, sample, totalRuns, totalExpected);
                     }
                 } catch (err) {
                     console.error(`Download ${profile} run ${run} failed:`, err);
@@ -406,10 +405,10 @@ const SpeedTest = (function() {
     async function runUploadTests() {
         const profiles = Object.entries(UPLOAD_PROFILES);
         let totalRuns = 0;
-        const totalExpected = profiles.length * CONFIG.runsPerProfile;
+        const totalExpected = profiles.reduce((sum, [, cfg]) => sum + cfg.runs, 0);
 
-        for (const [profile, bytes] of profiles) {
-            for (let run = 0; run < CONFIG.runsPerProfile; run++) {
+        for (const [profile, { bytes, runs }] of profiles) {
+            for (let run = 0; run < runs; run++) {
                 if (abortController?.signal.aborted) break;
                 while (isPaused) await sleep(100);
 
@@ -419,7 +418,7 @@ const SpeedTest = (function() {
                     totalRuns++;
 
                     if (callbacks.onUploadProgress) {
-                        callbacks.onUploadProgress(profile, run + 1, CONFIG.runsPerProfile, sample, totalRuns, totalExpected);
+                        callbacks.onUploadProgress(profile, run + 1, runs, sample, totalRuns, totalExpected);
                     }
                 } catch (err) {
                     console.error(`Upload ${profile} run ${run} failed:`, err);
