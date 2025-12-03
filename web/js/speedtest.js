@@ -186,15 +186,25 @@ const SpeedTest = (function() {
         const manualEnd = performance.now();
 
         // Use Resource Timing API for precise timing
-        // For uploads: requestStart to responseStart = time to send body + server processing
         const timing = await getResourceTiming(url);
         let durationMs;
 
-        if (timing && timing.requestStart > 0 && timing.responseStart > 0) {
-            // Precise: request send time (excludes connection setup, includes minimal server processing)
+        // For uploads, prefer Server-Timing header if available (most accurate)
+        // Server-Timing measures server-side: time from request start to body fully received
+        if (timing && timing.serverTiming && timing.serverTiming.length > 0) {
+            const serverDur = timing.serverTiming.find(st => st.name === 'app');
+            if (serverDur && serverDur.duration > 0) {
+                durationMs = serverDur.duration;
+            }
+        }
+
+        // Fallback to Resource Timing requestStart -> responseStart
+        if (!durationMs && timing && timing.requestStart > 0 && timing.responseStart > 0) {
             durationMs = timing.responseStart - timing.requestStart;
-        } else {
-            // Fallback: use manual timing (includes connection overhead)
+        }
+
+        // Last fallback: manual timing
+        if (!durationMs) {
             durationMs = manualEnd - manualStart;
         }
 
