@@ -263,7 +263,7 @@ button {
 }
 
 .section {
-    margin-bottom: var(--spacing-2xl);
+    margin-bottom: var(--spacing-xl);
 }
 
 .section-header {
@@ -284,14 +284,14 @@ button {
    ======================================== */
 
 .hero-section {
-    margin-bottom: var(--spacing-2xl);
+    margin-bottom: var(--spacing-xl);
 }
 
 .hero-metrics {
     display: grid;
     grid-template-columns: repeat(3, 1fr);
-    gap: var(--spacing-lg);
-    margin-bottom: var(--spacing-xl);
+    gap: var(--spacing-md);
+    margin-bottom: var(--spacing-lg);
 }
 
 @media (max-width: 900px) {
@@ -303,15 +303,14 @@ button {
 .metric-card {
     background: var(--color-bg-card);
     border: 1px solid var(--color-border);
-    border-radius: var(--radius-xl);
-    padding: var(--spacing-xl);
-    box-shadow: var(--shadow-md);
+    border-radius: var(--radius-lg);
+    padding: var(--spacing-md) var(--spacing-lg);
+    box-shadow: var(--shadow-sm);
     transition: all var(--transition-base);
 }
 
 .metric-card:hover {
-    box-shadow: var(--shadow-lg);
-    transform: translateY(-2px);
+    box-shadow: var(--shadow-md);
 }
 
 .metric-header {
@@ -369,7 +368,7 @@ button {
 }
 
 .metric-value {
-    font-size: 3.5rem;
+    font-size: 2.5rem;
     font-weight: 700;
     line-height: 1;
     font-variant-numeric: tabular-nums;
@@ -380,14 +379,14 @@ button {
 .metric-latency .metric-value { color: var(--color-latency); }
 
 .metric-unit {
-    font-size: 1.25rem;
+    font-size: 1rem;
     font-weight: 500;
     color: var(--color-text-tertiary);
 }
 
 .metric-chart {
-    height: 60px;
-    margin-top: var(--spacing-md);
+    height: 40px;
+    margin-top: var(--spacing-sm);
 }
 
 .metric-secondary {
@@ -571,20 +570,20 @@ button {
 .quality-card {
     background: var(--color-bg-card);
     border: 1px solid var(--color-border);
-    border-radius: var(--radius-lg);
-    padding: var(--spacing-xl);
+    border-radius: var(--radius-md);
+    padding: var(--spacing-md);
     text-align: center;
     transition: all var(--transition-base);
 }
 
 .quality-card:hover {
-    box-shadow: var(--shadow-md);
+    box-shadow: var(--shadow-sm);
 }
 
 .quality-icon {
-    width: 48px;
-    height: 48px;
-    margin: 0 auto var(--spacing-md);
+    width: 32px;
+    height: 32px;
+    margin: 0 auto var(--spacing-sm);
     color: var(--color-text-tertiary);
 }
 
@@ -655,18 +654,18 @@ button {
     display: flex;
     align-items: center;
     justify-content: space-between;
-    padding: var(--spacing-lg) var(--spacing-xl);
+    padding: var(--spacing-sm) var(--spacing-md);
     border-bottom: 1px solid var(--color-border-subtle);
 }
 
 .card-title {
-    font-size: 1rem;
+    font-size: 0.875rem;
     font-weight: 600;
     color: var(--color-text-primary);
 }
 
 .card-body {
-    padding: var(--spacing-xl);
+    padding: var(--spacing-md);
 }
 
 /* ========================================
@@ -690,7 +689,7 @@ button {
 }
 
 .map-container {
-    height: 200px;
+    height: 120px;
     background: var(--color-bg-tertiary);
     display: flex;
     align-items: center;
@@ -711,7 +710,7 @@ button {
 }
 
 .server-info {
-    padding: var(--spacing-xl);
+    padding: var(--spacing-md);
 }
 
 .info-row {

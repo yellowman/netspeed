@@ -45,9 +45,9 @@
 
         // Hero metrics
         elements.downloadValue = document.getElementById('downloadSpeed');
-        elements.downloadChart = document.getElementById('downloadChart');
+        elements.downloadSparkline = document.getElementById('downloadSparkline');
         elements.uploadValue = document.getElementById('uploadSpeed');
-        elements.uploadChart = document.getElementById('uploadChart');
+        elements.uploadSparkline = document.getElementById('uploadSparkline');
         elements.latencyValue = document.getElementById('latencyValue');
         elements.jitterValue = document.getElementById('jitterValue');
         elements.packetLossValue = document.getElementById('packetLossValue');
@@ -606,10 +606,15 @@
         if (!elements.downloadSparkline || state.downloadSamples.length < 2) return;
 
         const speeds = state.downloadSamples.map(s => s.mbps);
+        const width = elements.downloadSparkline.clientWidth || 150;
         Charts.sparkline(elements.downloadSparkline, speeds, {
-            width: 100,
-            height: 30,
-            strokeColor: 'var(--accent-primary)'
+            width: width,
+            height: 40,
+            strokeColor: 'var(--color-download)',
+            fillColor: 'var(--color-download)',
+            fillOpacity: 0.15,
+            strokeWidth: 2,
+            dotRadius: 3
         });
     }
 
@@ -620,10 +625,15 @@
         if (!elements.uploadSparkline || state.uploadSamples.length < 2) return;
 
         const speeds = state.uploadSamples.map(s => s.mbps);
+        const width = elements.uploadSparkline.clientWidth || 150;
         Charts.sparkline(elements.uploadSparkline, speeds, {
-            width: 100,
-            height: 30,
-            strokeColor: 'var(--accent-secondary)'
+            width: width,
+            height: 40,
+            strokeColor: 'var(--color-upload)',
+            fillColor: 'var(--color-upload)',
+            fillOpacity: 0.15,
+            strokeWidth: 2,
+            dotRadius: 3
         });
     }
 
