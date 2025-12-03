@@ -7,6 +7,7 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"net"
 	"os"
 	"os/signal"
 	"strings"
@@ -15,6 +16,7 @@ import (
 
 	"github.com/yellowman/netspeed/internal/config"
 	"github.com/yellowman/netspeed/internal/server"
+	turnserver "github.com/yellowman/netspeed/internal/turn"
 )
 
 var (
@@ -40,6 +42,9 @@ func main() {
 		turnSecret     = flag.String("turn-secret", "", "TURN server shared secret")
 		turnServers    = flag.String("turn-servers", "", "TURN servers (comma-separated)")
 		turnRealm      = flag.String("turn-realm", "", "TURN realm")
+		embeddedTurn   = flag.Bool("embedded-turn", true, "Enable embedded TURN server")
+		embeddedTurnAddr = flag.String("embedded-turn-addr", "", "Embedded TURN server address (default 0.0.0.0:3478)")
+		embeddedTurnIP = flag.String("embedded-turn-ip", "", "Public IP for embedded TURN server")
 		webDir         = flag.String("web-dir", "", "Directory containing static web files")
 		showVersion    = flag.Bool("version", false, "Show version information")
 	)
@@ -64,6 +69,9 @@ func main() {
 		fmt.Fprintf(os.Stderr, "  NETSPEEDD_TURN_SECRET     TURN shared secret\n")
 		fmt.Fprintf(os.Stderr, "  NETSPEEDD_TURN_SERVERS    TURN servers\n")
 		fmt.Fprintf(os.Stderr, "  NETSPEEDD_TURN_REALM      TURN realm\n")
+		fmt.Fprintf(os.Stderr, "  NETSPEEDD_EMBEDDED_TURN   Enable embedded TURN (true/false)\n")
+		fmt.Fprintf(os.Stderr, "  NETSPEEDD_EMBEDDED_TURN_ADDR Embedded TURN address\n")
+		fmt.Fprintf(os.Stderr, "  NETSPEEDD_EMBEDDED_TURN_PUBLIC_IP Public IP for TURN\n")
 		fmt.Fprintf(os.Stderr, "  NETSPEEDD_WEB_DIR         Static web files directory\n")
 	}
 
@@ -117,6 +125,55 @@ func main() {
 	if *webDir != "" {
 		cfg.WebDir = *webDir
 	}
+	// Handle embedded TURN flag - can disable via -embedded-turn=false
+	cfg.EmbeddedTurn = *embeddedTurn
+	if *embeddedTurnAddr != "" {
+		cfg.EmbeddedTurnAddr = *embeddedTurnAddr
+	}
+	if *embeddedTurnIP != "" {
+		cfg.EmbeddedTurnPublicIP = *embeddedTurnIP
+	}
+
+	// Start embedded TURN server if enabled and no external TURN configured
+	var turnSrv *turnserver.Server
+	if cfg.EmbeddedTurn && cfg.TurnSecret == "" && len(cfg.TurnServers) == 0 {
+		// Determine public IP for TURN server
+		publicIP := cfg.EmbeddedTurnPublicIP
+		if publicIP == "" {
+			// Try to get local IP
+			publicIP = getLocalIP()
+		}
+
+		turnCfg := turnserver.Config{
+			ListenAddr: cfg.EmbeddedTurnAddr,
+			Realm:      cfg.TurnRealm,
+			PublicIP:   publicIP,
+		}
+
+		var err error
+		turnSrv, err = turnserver.New(turnCfg)
+		if err != nil {
+			log.Printf("Warning: Failed to start embedded TURN server: %v", err)
+		} else {
+			turnSrv.Start()
+			// Configure the HTTP server to use the embedded TURN server
+			cfg.TurnSecret = turnSrv.Secret()
+			cfg.TurnRealm = turnSrv.Realm()
+			// Build TURN server URL
+			turnAddr := turnSrv.ListenAddr()
+			if publicIP != "" {
+				// Extract port from listen address
+				_, port, _ := net.SplitHostPort(turnAddr)
+				if port == "" {
+					port = "3478"
+				}
+				cfg.TurnServers = []string{fmt.Sprintf("turn:%s:%s", publicIP, port)}
+			} else {
+				cfg.TurnServers = []string{fmt.Sprintf("turn:%s", turnAddr)}
+			}
+			log.Printf("Embedded TURN configured: servers=%v", cfg.TurnServers)
+		}
+	}
 
 	// Create server
 	srv, err := server.New(cfg)
@@ -143,6 +200,12 @@ func main() {
 		if err := srv.Shutdown(ctx); err != nil {
 			log.Printf("Error during shutdown: %v", err)
 		}
+		// Shutdown embedded TURN server if running
+		if turnSrv != nil {
+			if err := turnSrv.Close(); err != nil {
+				log.Printf("Error shutting down TURN server: %v", err)
+			}
+		}
 	case err := <-errChan:
 		if err != nil {
 			log.Fatalf("Server error: %v", err)
@@ -150,4 +213,21 @@ func main() {
 	}
 
 	log.Println("Server stopped")
+}
+
+// getLocalIP returns the local IP address of the machine.
+func getLocalIP() string {
+	addrs, err := net.InterfaceAddrs()
+	if err != nil {
+		return ""
+	}
+
+	for _, addr := range addrs {
+		if ipNet, ok := addr.(*net.IPNet); ok && !ipNet.IP.IsLoopback() {
+			if ipNet.IP.To4() != nil {
+				return ipNet.IP.String()
+			}
+		}
+	}
+	return ""
 }
