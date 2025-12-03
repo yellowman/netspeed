@@ -1458,25 +1458,77 @@ button {
 }
 
 /* ========================================
-   Packet Loss Grid
+   Packet Loss Grid - 2 Column Layout
    ======================================== */
 
-.packet-loss-grid {
+.packet-loss-grid-2col {
     display: grid;
-    grid-template-columns: repeat(3, 1fr);
+    grid-template-columns: 2fr 1fr;
     gap: var(--spacing-lg);
 }
 
-@media (max-width: 1100px) {
-    .packet-loss-grid {
-        grid-template-columns: 1fr 1fr;
+@media (max-width: 900px) {
+    .packet-loss-grid-2col {
+        grid-template-columns: 1fr;
     }
 }
 
-@media (max-width: 700px) {
-    .packet-loss-grid {
+.packet-loss-main-card {
+    min-height: 200px;
+}
+
+.packet-loss-badges {
+    display: flex;
+    gap: var(--spacing-sm);
+    align-items: center;
+}
+
+.packet-loss-content {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: var(--spacing-xl);
+}
+
+@media (max-width: 600px) {
+    .packet-loss-content {
         grid-template-columns: 1fr;
     }
+}
+
+.packet-loss-left,
+.packet-loss-right {
+    display: flex;
+    flex-direction: column;
+    gap: var(--spacing-md);
+}
+
+.loss-pattern-header {
+    font-size: 0.875rem;
+    font-weight: 600;
+    color: var(--color-text-secondary);
+    margin-bottom: var(--spacing-xs);
+}
+
+.webrtc-card .card-body {
+    padding: var(--spacing-md);
+}
+
+.webrtc-details {
+    display: flex;
+    flex-direction: column;
+    gap: var(--spacing-sm);
+}
+
+.webrtc-details .detail-row {
+    padding: var(--spacing-xs) 0;
+}
+
+.webrtc-details .detail-label {
+    font-size: 0.8rem;
+}
+
+.webrtc-details .detail-value {
+    font-size: 0.8rem;
 }
 
 /* ========================================
@@ -1484,7 +1536,7 @@ button {
    ======================================== */
 
 .loss-type-badge {
-    font-size: 0.75rem;
+    font-size: 0.7rem;
     font-weight: 600;
     padding: var(--spacing-xs) var(--spacing-sm);
     border-radius: var(--radius-sm);
@@ -1512,12 +1564,12 @@ button {
 }
 
 .loss-timeline {
-    margin-bottom: var(--spacing-lg);
+    margin-bottom: var(--spacing-sm);
 }
 
 .timeline-bar {
     display: flex;
-    height: 24px;
+    height: 20px;
     border-radius: var(--radius-md);
     overflow: hidden;
     background: var(--color-bg-tertiary);
@@ -1550,13 +1602,27 @@ button {
     display: flex;
     justify-content: space-between;
     margin-top: var(--spacing-xs);
-    font-size: 0.75rem;
+    font-size: 0.7rem;
     color: var(--color-text-tertiary);
 }
 
 .loss-pattern-stats {
     display: flex;
-    gap: var(--spacing-lg);
+    gap: var(--spacing-md);
+    flex-wrap: wrap;
+}
+
+.loss-pattern-stats .stat-item {
+    flex: 1;
+    min-width: 70px;
+}
+
+.loss-pattern-stats .stat-label {
+    font-size: 0.7rem;
+}
+
+.loss-pattern-stats .stat-value {
+    font-size: 0.85rem;
 }
 
 /* ========================================
@@ -1564,7 +1630,7 @@ button {
    ======================================== */
 
 .connection-type-badge {
-    font-size: 0.75rem;
+    font-size: 0.7rem;
     font-weight: 600;
     padding: var(--spacing-xs) var(--spacing-sm);
     border-radius: var(--radius-sm);
@@ -1687,62 +1753,6 @@ button {
     font-size: 0.875rem;
     font-weight: 600;
     color: var(--color-text-primary);
-    font-variant-numeric: tabular-nums;
-}
-
-/* ========================================
-   Timing Breakdown
-   ======================================== */
-
-.timing-breakdown {
-    display: flex;
-    flex-direction: column;
-    gap: var(--spacing-md);
-}
-
-.timing-row {
-    display: grid;
-    grid-template-columns: 120px 1fr 80px;
-    gap: var(--spacing-md);
-    align-items: center;
-}
-
-@media (max-width: 500px) {
-    .timing-row {
-        grid-template-columns: 100px 1fr 60px;
-    }
-}
-
-.timing-label {
-    font-size: 0.875rem;
-    color: var(--color-text-secondary);
-}
-
-.timing-bar-container {
-    height: 20px;
-    background: var(--color-bg-tertiary);
-    border-radius: var(--radius-sm);
-    overflow: hidden;
-}
-
-.timing-bar {
-    height: 100%;
-    border-radius: var(--radius-sm);
-    transition: width var(--transition-base);
-    min-width: 2px;
-}
-
-.timing-bar.dns { background: #06b6d4; }
-.timing-bar.tcp { background: #8b5cf6; }
-.timing-bar.tls { background: #f59e0b; }
-.timing-bar.ttfb { background: #3b82f6; }
-.timing-bar.transfer { background: #10b981; }
-
-.timing-value {
-    font-size: 0.875rem;
-    font-weight: 500;
-    color: var(--color-text-primary);
-    text-align: right;
     font-variant-numeric: tabular-nums;
 }
 

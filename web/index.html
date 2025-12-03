@@ -364,104 +364,102 @@
 
         <!-- Packet Loss Section -->
         <section class="section packet-loss-section">
-            <div class="packet-loss-grid">
-                <!-- Packet Loss Results Card -->
-                <div class="card">
+            <div class="packet-loss-grid-2col">
+                <!-- Packet Loss Results Card (Large - includes loss pattern) -->
+                <div class="card packet-loss-main-card">
                     <div class="card-header">
                         <h3 class="card-title">Packet Loss Test</h3>
-                        <span class="packet-loss-badge" id="packetLossBadge"><span class="placeholder"></span>/<span class="placeholder"></span></span>
+                        <div class="packet-loss-badges">
+                            <span class="packet-loss-badge" id="packetLossBadge"><span class="placeholder"></span>/<span class="placeholder"></span></span>
+                            <span class="loss-type-badge" id="lossTypeBadge"><span class="placeholder"></span></span>
+                        </div>
                     </div>
                     <div class="card-body">
-                        <div class="packet-loss-bar">
-                            <div class="packet-loss-fill" id="packetLossFill"></div>
-                        </div>
-                        <div class="packet-loss-details">
-                            <div class="detail-row">
-                                <span class="detail-label">Packet Loss</span>
-                                <span class="detail-value" id="packetLossDetail"><span class="placeholder"></span>%</span>
+                        <div class="packet-loss-content">
+                            <!-- Left: Loss stats -->
+                            <div class="packet-loss-left">
+                                <div class="packet-loss-bar">
+                                    <div class="packet-loss-fill" id="packetLossFill"></div>
+                                </div>
+                                <div class="packet-loss-details">
+                                    <div class="detail-row">
+                                        <span class="detail-label">Packet Loss</span>
+                                        <span class="detail-value" id="packetLossDetail"><span class="placeholder"></span>%</span>
+                                    </div>
+                                    <div class="detail-row">
+                                        <span class="detail-label">Received</span>
+                                        <span class="detail-value" id="packetsReceived"><span class="placeholder"></span> / <span class="placeholder"></span></span>
+                                    </div>
+                                </div>
+                                <div class="packet-loss-stats" id="packetLossStats">
+                                    <div class="stat-item">
+                                        <span class="stat-label">RTT Min</span>
+                                        <span class="stat-value" id="rttMin"><span class="placeholder"></span></span>
+                                    </div>
+                                    <div class="stat-item">
+                                        <span class="stat-label">RTT Median</span>
+                                        <span class="stat-value" id="rttMedian"><span class="placeholder"></span></span>
+                                    </div>
+                                    <div class="stat-item">
+                                        <span class="stat-label">RTT P90</span>
+                                        <span class="stat-value" id="rttP90"><span class="placeholder"></span></span>
+                                    </div>
+                                    <div class="stat-item">
+                                        <span class="stat-label">Jitter</span>
+                                        <span class="stat-value" id="rttJitter"><span class="placeholder"></span></span>
+                                    </div>
+                                </div>
                             </div>
-                            <div class="detail-row">
-                                <span class="detail-label">Received</span>
-                                <span class="detail-value" id="packetsReceived"><span class="placeholder"></span> / <span class="placeholder"></span> packets</span>
-                            </div>
-                            <div class="detail-row">
-                                <span class="detail-label">Method</span>
-                                <span class="detail-value">WebRTC DataChannel</span>
-                            </div>
-                        </div>
-                        <div class="packet-loss-stats" id="packetLossStats">
-                            <div class="stat-item">
-                                <span class="stat-label">RTT Min</span>
-                                <span class="stat-value" id="rttMin"><span class="placeholder"></span></span>
-                            </div>
-                            <div class="stat-item">
-                                <span class="stat-label">RTT Median</span>
-                                <span class="stat-value" id="rttMedian"><span class="placeholder"></span></span>
-                            </div>
-                            <div class="stat-item">
-                                <span class="stat-label">RTT P90</span>
-                                <span class="stat-value" id="rttP90"><span class="placeholder"></span></span>
-                            </div>
-                            <div class="stat-item">
-                                <span class="stat-label">Jitter</span>
-                                <span class="stat-value" id="rttJitter"><span class="placeholder"></span></span>
+                            <!-- Right: Loss pattern timeline -->
+                            <div class="packet-loss-right">
+                                <div class="loss-pattern-header">Loss Distribution</div>
+                                <div class="loss-timeline" id="lossTimeline">
+                                    <div class="timeline-bar">
+                                        <div class="timeline-segment" data-segment="0"></div>
+                                        <div class="timeline-segment" data-segment="1"></div>
+                                        <div class="timeline-segment" data-segment="2"></div>
+                                        <div class="timeline-segment" data-segment="3"></div>
+                                        <div class="timeline-segment" data-segment="4"></div>
+                                        <div class="timeline-segment" data-segment="5"></div>
+                                        <div class="timeline-segment" data-segment="6"></div>
+                                        <div class="timeline-segment" data-segment="7"></div>
+                                        <div class="timeline-segment" data-segment="8"></div>
+                                        <div class="timeline-segment" data-segment="9"></div>
+                                    </div>
+                                    <div class="timeline-labels">
+                                        <span>Start</span>
+                                        <span>End</span>
+                                    </div>
+                                </div>
+                                <div class="loss-pattern-stats">
+                                    <div class="stat-item">
+                                        <span class="stat-label">Bursts</span>
+                                        <span class="stat-value" id="burstCount"><span class="placeholder"></span></span>
+                                    </div>
+                                    <div class="stat-item">
+                                        <span class="stat-label">Max Burst</span>
+                                        <span class="stat-value" id="maxBurst"><span class="placeholder"></span></span>
+                                    </div>
+                                    <div class="stat-item">
+                                        <span class="stat-label">Avg Burst</span>
+                                        <span class="stat-value" id="avgBurst"><span class="placeholder"></span></span>
+                                    </div>
+                                </div>
                             </div>
                         </div>
                     </div>
                 </div>
 
-                <!-- Loss Pattern Analysis Card -->
-                <div class="card">
+                <!-- WebRTC Connection Card (Smaller) -->
+                <div class="card webrtc-card">
                     <div class="card-header">
-                        <h3 class="card-title">Loss Pattern Analysis</h3>
-                        <span class="loss-type-badge" id="lossTypeBadge"><span class="placeholder"></span></span>
-                    </div>
-                    <div class="card-body">
-                        <div class="loss-timeline" id="lossTimeline">
-                            <div class="timeline-bar">
-                                <div class="timeline-segment" data-segment="0"></div>
-                                <div class="timeline-segment" data-segment="1"></div>
-                                <div class="timeline-segment" data-segment="2"></div>
-                                <div class="timeline-segment" data-segment="3"></div>
-                                <div class="timeline-segment" data-segment="4"></div>
-                                <div class="timeline-segment" data-segment="5"></div>
-                                <div class="timeline-segment" data-segment="6"></div>
-                                <div class="timeline-segment" data-segment="7"></div>
-                                <div class="timeline-segment" data-segment="8"></div>
-                                <div class="timeline-segment" data-segment="9"></div>
-                            </div>
-                            <div class="timeline-labels">
-                                <span>Start</span>
-                                <span>End</span>
-                            </div>
-                        </div>
-                        <div class="loss-pattern-stats">
-                            <div class="stat-item">
-                                <span class="stat-label">Burst Count</span>
-                                <span class="stat-value" id="burstCount"><span class="placeholder"></span></span>
-                            </div>
-                            <div class="stat-item">
-                                <span class="stat-label">Max Burst</span>
-                                <span class="stat-value" id="maxBurst"><span class="placeholder"></span></span>
-                            </div>
-                            <div class="stat-item">
-                                <span class="stat-label">Avg Burst</span>
-                                <span class="stat-value" id="avgBurst"><span class="placeholder"></span></span>
-                            </div>
-                        </div>
-                    </div>
-                </div>
-
-                <!-- Data Channel Stats Card -->
-                <div class="card">
-                    <div class="card-header">
-                        <h3 class="card-title">WebRTC Connection</h3>
+                        <h3 class="card-title">WebRTC</h3>
                         <span class="connection-type-badge" id="webrtcConnectionBadge"><span class="placeholder"></span></span>
                     </div>
                     <div class="card-body">
-                        <div class="datachannel-stats">
+                        <div class="webrtc-details">
                             <div class="detail-row">
-                                <span class="detail-label">Connection Path</span>
+                                <span class="detail-label">Path</span>
                                 <span class="detail-value" id="connectionPath"><span class="placeholder"></span></span>
                             </div>
                             <div class="detail-row">
@@ -469,26 +467,8 @@
                                 <span class="detail-value" id="webrtcProtocol"><span class="placeholder"></span></span>
                             </div>
                             <div class="detail-row">
-                                <span class="detail-label">Data Sent</span>
-                                <span class="detail-value" id="dataSent"><span class="placeholder"></span></span>
-                            </div>
-                            <div class="detail-row">
-                                <span class="detail-label">Data Received</span>
-                                <span class="detail-value" id="dataReceived"><span class="placeholder"></span></span>
-                            </div>
-                        </div>
-                        <div class="connection-timing-stats">
-                            <div class="stat-item">
-                                <span class="stat-label">ICE Gathering</span>
-                                <span class="stat-value" id="iceGatheringTime"><span class="placeholder"></span></span>
-                            </div>
-                            <div class="stat-item">
-                                <span class="stat-label">Connection Setup</span>
-                                <span class="stat-value" id="connectionSetupTime"><span class="placeholder"></span></span>
-                            </div>
-                            <div class="stat-item">
-                                <span class="stat-label">ICE RTT</span>
-                                <span class="stat-value" id="iceRtt"><span class="placeholder"></span></span>
+                                <span class="detail-label">ICE RTT</span>
+                                <span class="detail-value" id="iceRtt"><span class="placeholder"></span></span>
                             </div>
                         </div>
                     </div>
@@ -542,54 +522,6 @@
                         <div class="bandwidth-item">
                             <span class="bandwidth-label">Variability</span>
                             <span class="bandwidth-value" id="uploadVariability"><span class="placeholder"></span></span>
-                        </div>
-                    </div>
-                </div>
-            </div>
-        </section>
-
-        <!-- Timing Breakdown Section -->
-        <section class="section timing-section">
-            <div class="section-header">
-                <h2 class="section-title">Request Timing Breakdown</h2>
-            </div>
-            <div class="card">
-                <div class="card-body">
-                    <div class="timing-breakdown">
-                        <div class="timing-row">
-                            <span class="timing-label">DNS Lookup</span>
-                            <div class="timing-bar-container">
-                                <div class="timing-bar dns" id="timingDns"></div>
-                            </div>
-                            <span class="timing-value" id="timingDnsValue"><span class="placeholder"></span></span>
-                        </div>
-                        <div class="timing-row">
-                            <span class="timing-label">TCP Connect</span>
-                            <div class="timing-bar-container">
-                                <div class="timing-bar tcp" id="timingTcp"></div>
-                            </div>
-                            <span class="timing-value" id="timingTcpValue"><span class="placeholder"></span></span>
-                        </div>
-                        <div class="timing-row">
-                            <span class="timing-label">TLS Handshake</span>
-                            <div class="timing-bar-container">
-                                <div class="timing-bar tls" id="timingTls"></div>
-                            </div>
-                            <span class="timing-value" id="timingTlsValue"><span class="placeholder"></span></span>
-                        </div>
-                        <div class="timing-row">
-                            <span class="timing-label">TTFB</span>
-                            <div class="timing-bar-container">
-                                <div class="timing-bar ttfb" id="timingTtfb"></div>
-                            </div>
-                            <span class="timing-value" id="timingTtfbValue"><span class="placeholder"></span></span>
-                        </div>
-                        <div class="timing-row">
-                            <span class="timing-label">Transfer</span>
-                            <div class="timing-bar-container">
-                                <div class="timing-bar transfer" id="timingTransfer"></div>
-                            </div>
-                            <span class="timing-value" id="timingTransferValue"><span class="placeholder"></span></span>
                         </div>
                     </div>
                 </div>

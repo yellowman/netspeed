@@ -47,13 +47,11 @@ const SpeedTest = (function() {
         startTime: null,
         endTime: null,
         // New enhanced fields
-        timingBreakdown: [],
         lossPattern: null,
         dataChannelStats: null,
         bandwidthEstimate: null,
         networkQualityScore: null,
-        testConfidence: null,
-        timingStats: { resourceTiming: 0, serverTiming: 0, fallback: 0 }
+        testConfidence: null
     };
 
     // Event callbacks
@@ -1176,21 +1174,34 @@ const SpeedTest = (function() {
      * Calculate network quality score (0-100)
      */
     function calculateNetworkQualityScore(summary, bandwidth) {
+        // Defensive checks for inputs
+        if (!summary || !bandwidth) {
+            console.warn('calculateNetworkQualityScore: missing summary or bandwidth');
+            return null;
+        }
+
+        // Ensure we have valid numbers (default to safe values if NaN/undefined)
+        const downloadMbps = summary.downloadMbps || 0;
+        const latencyMs = isNaN(summary.latencyUnloadedMs) ? 50 : summary.latencyUnloadedMs;
+        const jitterMs = isNaN(summary.jitterMs) ? 10 : summary.jitterMs;
+        const packetLossPercent = isNaN(summary.packetLossPercent) ? 0 : summary.packetLossPercent;
+        const downloadVariability = isNaN(bandwidth.downloadVariability) ? 0.1 : bandwidth.downloadVariability;
+
         // Bandwidth score (0-100)
         const bwScore = Math.min(100,
-            (Math.log10(Math.max(1, summary.downloadMbps)) / Math.log10(1000)) * 100
+            (Math.log10(Math.max(1, downloadMbps)) / Math.log10(1000)) * 100
         );
 
         // Latency score (0-100)
-        const latScore = Math.max(0, 100 - (summary.latencyUnloadedMs * 1.5));
+        const latScore = Math.max(0, 100 - (latencyMs * 1.5));
 
         // Stability score (0-100)
-        const jitterPenalty = Math.min(50, summary.jitterMs * 3);
-        const variabilityPenalty = Math.min(30, bandwidth.downloadVariability * 100);
+        const jitterPenalty = Math.min(50, jitterMs * 3);
+        const variabilityPenalty = Math.min(30, downloadVariability * 100);
         const stabScore = Math.max(0, 100 - jitterPenalty - variabilityPenalty);
 
         // Reliability score (0-100)
-        const reliScore = Math.max(0, 100 - (summary.packetLossPercent * 15));
+        const reliScore = Math.max(0, 100 - (packetLossPercent * 15));
 
         // Weighted composite
         const overall = Math.round(
@@ -1215,6 +1226,8 @@ const SpeedTest = (function() {
             'F': 'Very Poor - Connection issues likely for most activities'
         };
 
+        console.log('Network quality score calculated:', { overall, grade, bwScore, latScore, stabScore, reliScore });
+
         return {
             overall,
             components: {
@@ -1231,7 +1244,7 @@ const SpeedTest = (function() {
     /**
      * Assess test confidence
      */
-    function assessTestConfidence(samples, latency, packetLoss, timingStats) {
+    function assessTestConfidence(samples, latency, packetLoss) {
         const warnings = [];
 
         // Single pass to collect samples by direction
@@ -1277,24 +1290,15 @@ const SpeedTest = (function() {
         const cvAcceptable = dlCV < 30 && ulCV < 30 && latCV < 50;
         if (!cvAcceptable) warnings.push('High variability in measurements');
 
-        // Timing accuracy
-        const totalRequests = timingStats.resourceTiming + timingStats.serverTiming + timingStats.fallback;
-        const accurateTimingPercent = totalRequests > 0
-            ? ((timingStats.resourceTiming + timingStats.serverTiming) / totalRequests) * 100
-            : 0;
-        const timingAccurate = accurateTimingPercent > 80;
-        if (!timingAccurate && totalRequests > 0) warnings.push('Timing API fallbacks may reduce accuracy');
-
         // Connection stability
         const connectionStable = packetLoss !== null && !packetLoss.unavailable;
         if (!connectionStable) warnings.push('Packet loss test incomplete');
 
-        // Overall score
+        // Overall score (3 factors: sample count, variability, connection stability)
         let score = 100;
-        if (!sampleAdequate) score -= 20;
-        if (!cvAcceptable) score -= 25;
-        if (!timingAccurate) score -= 15;
-        if (!connectionStable) score -= 15;
+        if (!sampleAdequate) score -= 25;
+        if (!cvAcceptable) score -= 35;
+        if (!connectionStable) score -= 20;
 
         let overall;
         if (score >= 80) overall = 'high';
@@ -1307,36 +1311,12 @@ const SpeedTest = (function() {
             metrics: {
                 sampleCount: { download: dlCount, upload: ulCount, latency: latCount, adequate: sampleAdequate },
                 coefficientOfVariation: { download: dlCV, upload: ulCV, latency: latCV, acceptable: cvAcceptable },
-                timingAccuracy: {
-                    resourceTimingUsed: timingStats.resourceTiming > 0,
-                    serverTimingUsed: timingStats.serverTiming > 0,
-                    fallbackCount: timingStats.fallback,
-                    accurate: timingAccurate
-                },
                 connectionStability: {
                     packetTestCompleted: connectionStable,
                     stable: connectionStable
                 }
             },
             warnings
-        };
-    }
-
-    /**
-     * Extract timing breakdown from a request
-     */
-    function extractTimingBreakdown(entry) {
-        if (!entry) return null;
-
-        return {
-            dnsMs: entry.domainLookupEnd - entry.domainLookupStart,
-            tcpMs: entry.connectEnd - entry.connectStart,
-            tlsMs: entry.secureConnectionStart > 0
-                ? entry.connectEnd - entry.secureConnectionStart
-                : 0,
-            ttfbMs: entry.responseStart - entry.requestStart,
-            transferMs: entry.responseEnd - entry.responseStart,
-            totalMs: entry.responseEnd - entry.fetchStart
         };
     }
 
@@ -1439,13 +1419,11 @@ const SpeedTest = (function() {
             packetLoss: null,
             startTime: Date.now(),
             endTime: null,
-            timingBreakdown: [],
             lossPattern: null,
             dataChannelStats: null,
             bandwidthEstimate: null,
             networkQualityScore: null,
-            testConfidence: null,
-            timingStats: { resourceTiming: 0, serverTiming: 0, fallback: 0 }
+            testConfidence: null
         };
 
         try {
@@ -1501,20 +1479,8 @@ const SpeedTest = (function() {
             results.testConfidence = assessTestConfidence(
                 results.throughputSamples,
                 results.latencySamples,
-                results.packetLoss,
-                results.timingStats
+                results.packetLoss
             );
-
-            // Collect timing breakdown from Resource Timing API
-            try {
-                const entries = performance.getEntriesByType('resource')
-                    .filter(e => e.name.includes('/__down') || e.name.includes('/__up'));
-                results.timingBreakdown = entries
-                    .map(e => extractTimingBreakdown(e))
-                    .filter(t => t !== null);
-            } catch (e) {
-                console.log('Could not collect timing breakdown:', e);
-            }
 
             if (callbacks.onComplete) {
                 callbacks.onComplete(results, summary, quality);

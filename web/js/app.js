@@ -110,14 +110,10 @@
         elements.maxBurst = document.getElementById('maxBurst');
         elements.avgBurst = document.getElementById('avgBurst');
 
-        // Data channel stats
+        // Data channel stats (simplified)
         elements.webrtcConnectionBadge = document.getElementById('webrtcConnectionBadge');
         elements.connectionPath = document.getElementById('connectionPath');
         elements.webrtcProtocol = document.getElementById('webrtcProtocol');
-        elements.dataSent = document.getElementById('dataSent');
-        elements.dataReceived = document.getElementById('dataReceived');
-        elements.iceGatheringTime = document.getElementById('iceGatheringTime');
-        elements.connectionSetupTime = document.getElementById('connectionSetupTime');
         elements.iceRtt = document.getElementById('iceRtt');
 
         // Bandwidth estimation
@@ -129,18 +125,6 @@
         elements.uploadPeak = document.getElementById('uploadPeak');
         elements.uploadSustained = document.getElementById('uploadSustained');
         elements.uploadVariability = document.getElementById('uploadVariability');
-
-        // Timing breakdown
-        elements.timingDns = document.getElementById('timingDns');
-        elements.timingDnsValue = document.getElementById('timingDnsValue');
-        elements.timingTcp = document.getElementById('timingTcp');
-        elements.timingTcpValue = document.getElementById('timingTcpValue');
-        elements.timingTls = document.getElementById('timingTls');
-        elements.timingTlsValue = document.getElementById('timingTlsValue');
-        elements.timingTtfb = document.getElementById('timingTtfb');
-        elements.timingTtfbValue = document.getElementById('timingTtfbValue');
-        elements.timingTransfer = document.getElementById('timingTransfer');
-        elements.timingTransferValue = document.getElementById('timingTransferValue');
 
         // Network quality score
         elements.gaugeFill = document.getElementById('gaugeFill');
@@ -732,10 +716,6 @@
             updateBandwidthEstimationDisplay(results.bandwidthEstimate);
         }
 
-        if (results.timingBreakdown) {
-            updateTimingBreakdownDisplay(results.timingBreakdown);
-        }
-
         if (results.networkQualityScore) {
             updateNetworkQualityScoreDisplay(results.networkQualityScore);
         }
@@ -827,7 +807,9 @@
         }
 
         // Calculate and display distance to server
-        if (elements.serverDistance && serverLocation && state.meta.latitude && state.meta.longitude) {
+        if (elements.serverDistance && serverLocation &&
+            serverLocation.lat != null && serverLocation.lon != null &&
+            state.meta.latitude && state.meta.longitude) {
             const distance = haversineDistance(
                 state.meta.latitude, state.meta.longitude,
                 serverLocation.lat, serverLocation.lon
@@ -1487,16 +1469,14 @@
      * Update data channel stats display
      */
     function updateDataChannelStatsDisplay(stats) {
+        console.log('Updating WebRTC stats:', stats);
+
         if (!stats) {
             // Set placeholders for unavailable stats
             const ph = '<span class="placeholder"></span>';
             if (elements.webrtcConnectionBadge) elements.webrtcConnectionBadge.innerHTML = ph;
             if (elements.connectionPath) elements.connectionPath.innerHTML = ph;
             if (elements.webrtcProtocol) elements.webrtcProtocol.innerHTML = ph;
-            if (elements.dataSent) elements.dataSent.innerHTML = ph;
-            if (elements.dataReceived) elements.dataReceived.innerHTML = ph;
-            if (elements.iceGatheringTime) elements.iceGatheringTime.innerHTML = ph;
-            if (elements.connectionSetupTime) elements.connectionSetupTime.innerHTML = ph;
             if (elements.iceRtt) elements.iceRtt.innerHTML = ph;
             return;
         }
@@ -1506,46 +1486,30 @@
             const typeLabels = {
                 'host': 'Direct',
                 'srflx': 'STUN',
-                'prflx': 'Peer Reflexive',
-                'relay': 'TURN Relay',
-                'unknown': 'Unknown'
+                'prflx': 'Peer',
+                'relay': 'Relay',
+                'unknown': '-'
             };
-            elements.webrtcConnectionBadge.textContent = typeLabels[stats.connectionType] || 'Unknown';
+            elements.webrtcConnectionBadge.textContent = typeLabels[stats.connectionType] || '-';
             elements.webrtcConnectionBadge.className = 'connection-type-badge';
             if (stats.connectionType === 'host') elements.webrtcConnectionBadge.classList.add('direct');
             else if (stats.connectionType === 'srflx' || stats.connectionType === 'prflx') elements.webrtcConnectionBadge.classList.add('stun');
             else if (stats.connectionType === 'relay') elements.webrtcConnectionBadge.classList.add('relay');
         }
 
-        // Connection path
+        // Connection path (shorter labels)
         if (elements.connectionPath) {
             const pathLabels = {
-                'host': 'Direct connection (no NAT traversal)',
-                'srflx': 'Via STUN (NAT traversal)',
-                'prflx': 'Peer reflexive (discovered path)',
-                'relay': 'Via TURN relay server'
+                'host': 'Direct',
+                'srflx': 'STUN NAT',
+                'prflx': 'Peer reflexive',
+                'relay': 'TURN relay'
             };
-            elements.connectionPath.textContent = pathLabels[stats.connectionType] || 'Unknown';
+            elements.connectionPath.textContent = pathLabels[stats.connectionType] || '-';
         }
 
         if (elements.webrtcProtocol) {
             elements.webrtcProtocol.textContent = stats.protocol?.toUpperCase() || 'UDP';
-        }
-
-        if (elements.dataSent) {
-            elements.dataSent.textContent = formatBytes(stats.bytesSent);
-        }
-
-        if (elements.dataReceived) {
-            elements.dataReceived.textContent = formatBytes(stats.bytesReceived);
-        }
-
-        if (elements.iceGatheringTime) {
-            elements.iceGatheringTime.textContent = stats.iceGatheringMs ? `${stats.iceGatheringMs.toFixed(0)} ms` : '-';
-        }
-
-        if (elements.connectionSetupTime) {
-            elements.connectionSetupTime.textContent = stats.connectionSetupMs ? `${stats.connectionSetupMs.toFixed(0)} ms` : '-';
         }
 
         if (elements.iceRtt) {
@@ -1597,69 +1561,30 @@
     }
 
     /**
-     * Update timing breakdown display
-     */
-    function updateTimingBreakdownDisplay(timingBreakdown) {
-        if (!timingBreakdown || timingBreakdown.length === 0) return;
-
-        // Calculate averages
-        const avg = {
-            dns: 0, tcp: 0, tls: 0, ttfb: 0, transfer: 0
-        };
-        let count = 0;
-        timingBreakdown.forEach(t => {
-            if (t.dnsMs >= 0) avg.dns += t.dnsMs;
-            if (t.tcpMs >= 0) avg.tcp += t.tcpMs;
-            if (t.tlsMs >= 0) avg.tls += t.tlsMs;
-            if (t.ttfbMs >= 0) avg.ttfb += t.ttfbMs;
-            if (t.transferMs >= 0) avg.transfer += t.transferMs;
-            count++;
-        });
-        if (count > 0) {
-            avg.dns /= count;
-            avg.tcp /= count;
-            avg.tls /= count;
-            avg.ttfb /= count;
-            avg.transfer /= count;
-        }
-
-        // Find max for bar scaling
-        const maxTime = Math.max(avg.dns, avg.tcp, avg.tls, avg.ttfb, avg.transfer, 1);
-
-        // Update bars and values
-        if (elements.timingDns) elements.timingDns.style.width = `${(avg.dns / maxTime) * 100}%`;
-        if (elements.timingDnsValue) elements.timingDnsValue.textContent = `${avg.dns.toFixed(1)} ms`;
-
-        if (elements.timingTcp) elements.timingTcp.style.width = `${(avg.tcp / maxTime) * 100}%`;
-        if (elements.timingTcpValue) elements.timingTcpValue.textContent = `${avg.tcp.toFixed(1)} ms`;
-
-        if (elements.timingTls) elements.timingTls.style.width = `${(avg.tls / maxTime) * 100}%`;
-        if (elements.timingTlsValue) elements.timingTlsValue.textContent = `${avg.tls.toFixed(1)} ms`;
-
-        if (elements.timingTtfb) elements.timingTtfb.style.width = `${(avg.ttfb / maxTime) * 100}%`;
-        if (elements.timingTtfbValue) elements.timingTtfbValue.textContent = `${avg.ttfb.toFixed(1)} ms`;
-
-        if (elements.timingTransfer) elements.timingTransfer.style.width = `${(avg.transfer / maxTime) * 100}%`;
-        if (elements.timingTransferValue) elements.timingTransferValue.textContent = `${avg.transfer.toFixed(1)} ms`;
-    }
-
-    /**
      * Update network quality score display
      */
     function updateNetworkQualityScoreDisplay(score) {
-        if (!score) return;
+        if (!score) {
+            console.warn('updateNetworkQualityScoreDisplay: no score provided');
+            return;
+        }
 
-        // Update gauge
+        console.log('Updating network quality display:', score);
+
+        // Update gauge - use setAttribute for SVG attributes
         if (elements.gaugeFill) {
             // Circle circumference is 2*PI*50 = 314
             const circumference = 314;
             const offset = circumference - (score.overall / 100) * circumference;
-            elements.gaugeFill.style.strokeDashoffset = offset;
+            // Use setAttribute for SVG elements - more reliable than style property
+            elements.gaugeFill.setAttribute('stroke-dashoffset', offset);
 
             // Set grade class for color
-            elements.gaugeFill.className = 'gauge-fill';
+            elements.gaugeFill.setAttribute('class', 'gauge-fill');
             const gradeClass = score.grade.toLowerCase().replace('+', '-plus');
             elements.gaugeFill.classList.add(`grade-${gradeClass}`);
+        } else {
+            console.warn('gaugeFill element not found');
         }
 
         if (elements.overallScore) {
