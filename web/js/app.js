@@ -73,9 +73,11 @@
         elements.unloadedMax = document.getElementById('unloadedMax');
         elements.downloadLatencyChart = document.getElementById('downloadLatencyChart');
         elements.downloadLatencyCount = document.getElementById('downloadLatencyCount');
+        elements.downloadLatencySummary = document.getElementById('downloadLatencySummary');
         elements.downloadLatencyTable = document.getElementById('downloadLatencyTable');
         elements.uploadLatencyChart = document.getElementById('uploadLatencyChart');
         elements.uploadLatencyCount = document.getElementById('uploadLatencyCount');
+        elements.uploadLatencySummary = document.getElementById('uploadLatencySummary');
         elements.uploadLatencyTable = document.getElementById('uploadLatencyTable');
 
         // Packet loss
@@ -450,6 +452,13 @@
                 elements.downloadLatencyCount.textContent = `${current}/5`;
             }
 
+            // Update summary
+            if (elements.downloadLatencySummary && values.length > 0) {
+                const min = Math.min(...values);
+                const max = Math.max(...values);
+                elements.downloadLatencySummary.textContent = `${min.toFixed(1)} - ${max.toFixed(1)} ms`;
+            }
+
             // Update table
             if (elements.downloadLatencyTable) {
                 const row = document.createElement('tr');
@@ -460,6 +469,13 @@
             // Update count badge
             if (elements.uploadLatencyCount) {
                 elements.uploadLatencyCount.textContent = `${current}/5`;
+            }
+
+            // Update summary
+            if (elements.uploadLatencySummary && values.length > 0) {
+                const min = Math.min(...values);
+                const max = Math.max(...values);
+                elements.uploadLatencySummary.textContent = `${min.toFixed(1)} - ${max.toFixed(1)} ms`;
             }
 
             // Update table
