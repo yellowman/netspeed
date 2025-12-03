@@ -244,8 +244,11 @@ func (s *Server) handleTurnCredentials(w http.ResponseWriter, r *http.Request) {
 		if h, _, err := net.SplitHostPort(host); err == nil {
 			host = h
 		}
-		// Remove brackets from IPv6 addresses for TURN URL format
-		host = strings.TrimPrefix(strings.TrimSuffix(host, "]"), "[")
+		// RFC 7065/3986: IPv6 addresses must be enclosed in brackets in URIs
+		// net.SplitHostPort strips brackets, so we need to re-add them for IPv6
+		if strings.Contains(host, ":") {
+			host = "[" + host + "]"
+		}
 		// Include both STUN and TURN URLs - browsers need STUN for reflexive candidates
 		turnServers = []string{
 			fmt.Sprintf("stun:%s:%s", host, s.cfg.EmbeddedTurnPort),

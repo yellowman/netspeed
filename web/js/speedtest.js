@@ -132,9 +132,14 @@ const SpeedTest = (function() {
         if (timing && timing.responseStart > 0 && timing.responseEnd > 0) {
             // Precise: just the body transfer time (excludes connection, TLS, headers)
             durationMs = timing.responseEnd - timing.responseStart;
+        } else if (timing && timing.startTime > 0) {
+            // Fallback: use startTime if available (includes connection overhead)
+            durationMs = performance.now() - timing.startTime;
         } else {
-            // Fallback to our manual timing
-            durationMs = performance.now() - (timing?.startTime || 0);
+            // Last resort: estimate based on typical transfer rates
+            // This shouldn't happen often, but prevents wildly wrong values
+            console.warn('Resource Timing unavailable for', url);
+            durationMs = received / (100 * 1024 * 1024 / 8) * 1000; // Assume 100 Mbps
         }
 
         const mbps = (received * 8) / (durationMs / 1000) / 1e6;
@@ -181,9 +186,13 @@ const SpeedTest = (function() {
         if (timing && timing.requestStart > 0 && timing.responseStart > 0) {
             // Precise: request send time (excludes connection setup, includes minimal server processing)
             durationMs = timing.responseStart - timing.requestStart;
+        } else if (timing && timing.startTime > 0) {
+            // Fallback: use startTime if available (includes connection overhead)
+            durationMs = performance.now() - timing.startTime;
         } else {
-            // Fallback
-            durationMs = performance.now() - (timing?.startTime || 0);
+            // Last resort: estimate based on typical transfer rates
+            console.warn('Resource Timing unavailable for upload');
+            durationMs = bytes / (100 * 1024 * 1024 / 8) * 1000; // Assume 100 Mbps
         }
 
         const mbps = (bytes * 8) / (durationMs / 1000) / 1e6;
@@ -229,17 +238,29 @@ const SpeedTest = (function() {
      * Run warmup transfers to prime the connection
      */
     async function runWarmup() {
-        // Do a few small downloads and uploads to warm up the connection
-        // This gets past TCP slow start and establishes keep-alive
+        // Browsers maintain ~6 connections per origin. We need to warm up
+        // multiple connections in parallel to avoid alternating between
+        // warm and cold connections during actual tests.
         try {
-            // Small download warmups
-            for (let i = 0; i < 3; i++) {
-                await runDownload(DOWNLOAD_PROFILES['1M'], 'warmup', i);
+            // Run 6 parallel warmup downloads to prime multiple connections
+            const downloadPromises = [];
+            for (let i = 0; i < 6; i++) {
+                downloadPromises.push(
+                    runDownload(DOWNLOAD_PROFILES['100k'], 'warmup', i)
+                        .catch(() => {}) // Ignore individual failures
+                );
             }
-            // Small upload warmups
-            for (let i = 0; i < 3; i++) {
-                await runUpload(UPLOAD_PROFILES['1M'], 'warmup', i);
+            await Promise.all(downloadPromises);
+
+            // Run 6 parallel warmup uploads
+            const uploadPromises = [];
+            for (let i = 0; i < 6; i++) {
+                uploadPromises.push(
+                    runUpload(UPLOAD_PROFILES['100k'], 'warmup', i)
+                        .catch(() => {})
+                );
             }
+            await Promise.all(uploadPromises);
         } catch (e) {
             // Warmup failures are non-fatal
             console.log('Warmup error (non-fatal):', e);
@@ -665,14 +686,11 @@ const SpeedTest = (function() {
      * Calculate network quality grades
      */
     function calculateQuality(summary) {
-        console.log('Grading with summary:', JSON.stringify(summary, null, 2));
-        const quality = {
+        return {
             videoStreaming: gradeStreaming(summary),
             gaming: gradeGaming(summary),
             videoChatting: gradeVideoChatting(summary)
         };
-        console.log('Calculated quality:', quality);
-        return quality;
     }
 
     function gradeStreaming(s) {
