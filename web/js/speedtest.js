@@ -243,16 +243,25 @@ const SpeedTest = (function() {
         // requestStart to responseStart is closest to actual network RTT
         const timing = await getResourceTiming(url);
         let rttMs;
+        let timingSource;
 
         if (timing && timing.requestStart > 0 && timing.responseStart > 0) {
             // Network time: from request sent to first byte received
             rttMs = timing.responseStart - timing.requestStart;
+            timingSource = 'resource-timing';
         } else if (timing && timing.fetchStart > 0 && timing.responseEnd > 0) {
             // Fallback: total fetch time (includes more overhead but still from timing API)
             rttMs = timing.responseEnd - timing.fetchStart;
+            timingSource = 'fetch-timing';
         } else {
             // Last resort: manual timing
             rttMs = manualEnd - manualStart;
+            timingSource = 'manual';
+        }
+
+        // Log first few probes to debug timing source
+        if (seq < 3) {
+            console.log(`Latency probe ${seq}: ${rttMs.toFixed(2)}ms (${timingSource})`, timing);
         }
 
         return {
