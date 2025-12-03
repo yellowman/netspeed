@@ -59,9 +59,7 @@
                         <span class="metric-value" id="downloadSpeed">--</span>
                         <span class="metric-unit">Mbps</span>
                     </div>
-                    <div class="metric-chart">
-                        <canvas id="downloadChart" height="60"></canvas>
-                    </div>
+                    <div class="metric-chart" id="downloadSparkline"></div>
                 </div>
 
                 <!-- Upload Metric -->
@@ -79,9 +77,7 @@
                         <span class="metric-value" id="uploadSpeed">--</span>
                         <span class="metric-unit">Mbps</span>
                     </div>
-                    <div class="metric-chart">
-                        <canvas id="uploadChart" height="60"></canvas>
-                    </div>
+                    <div class="metric-chart" id="uploadSparkline"></div>
                 </div>
 
                 <!-- Latency Metric -->
@@ -259,9 +255,7 @@
                                 </svg>
                             </button>
                             <div class="accordion-content">
-                                <div class="latency-chart-container">
-                                    <canvas id="unloadedLatencyChart" height="80"></canvas>
-                                </div>
+                                <div class="latency-chart-container" id="unloadedLatencyChart"></div>
                                 <div class="latency-stats">
                                     <div class="stat-item">
                                         <span class="stat-label">Min</span>
@@ -290,9 +284,7 @@
                                 </svg>
                             </button>
                             <div class="accordion-content">
-                                <div class="latency-chart-container">
-                                    <canvas id="downloadLatencyChart" height="80"></canvas>
-                                </div>
+                                <div class="latency-chart-container" id="downloadLatencyChart"></div>
                                 <table class="latency-table">
                                     <thead>
                                         <tr><th>#</th><th>Ping</th></tr>
@@ -313,9 +305,7 @@
                                 </svg>
                             </button>
                             <div class="accordion-content">
-                                <div class="latency-chart-container">
-                                    <canvas id="uploadLatencyChart" height="80"></canvas>
-                                </div>
+                                <div class="latency-chart-container" id="uploadLatencyChart"></div>
                                 <table class="latency-table">
                                     <thead>
                                         <tr><th>#</th><th>Ping</th></tr>

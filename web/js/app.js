@@ -45,9 +45,9 @@
 
         // Hero metrics
         elements.downloadValue = document.getElementById('downloadSpeed');
-        elements.downloadChart = document.getElementById('downloadChart');
+        elements.downloadSparkline = document.getElementById('downloadSparkline');
         elements.uploadValue = document.getElementById('uploadSpeed');
-        elements.uploadChart = document.getElementById('uploadChart');
+        elements.uploadSparkline = document.getElementById('uploadSparkline');
         elements.latencyValue = document.getElementById('latencyValue');
         elements.jitterValue = document.getElementById('jitterValue');
         elements.packetLossValue = document.getElementById('packetLossValue');
@@ -73,9 +73,11 @@
         elements.unloadedMax = document.getElementById('unloadedMax');
         elements.downloadLatencyChart = document.getElementById('downloadLatencyChart');
         elements.downloadLatencyCount = document.getElementById('downloadLatencyCount');
+        elements.downloadLatencySummary = document.getElementById('downloadLatencySummary');
         elements.downloadLatencyTable = document.getElementById('downloadLatencyTable');
         elements.uploadLatencyChart = document.getElementById('uploadLatencyChart');
         elements.uploadLatencyCount = document.getElementById('uploadLatencyCount');
+        elements.uploadLatencySummary = document.getElementById('uploadLatencySummary');
         elements.uploadLatencyTable = document.getElementById('uploadLatencyTable');
 
         // Packet loss
@@ -276,7 +278,8 @@
             const el = elements[`${type}Score`];
             if (el) {
                 el.className = 'quality-grade';
-                el.textContent = '--';
+                const text = el.querySelector('.grade-text');
+                if (text) text.textContent = '--';
             }
         });
 
@@ -345,6 +348,7 @@
         const phaseLabels = {
             'meta': 'Loading metadata...',
             'latency': 'Measuring latency...',
+            'warmup': 'Warming up connection...',
             'download': 'Testing download speed...',
             'upload': 'Testing upload speed...',
             'loaded-latency': 'Measuring loaded latency...',
@@ -448,6 +452,13 @@
                 elements.downloadLatencyCount.textContent = `${current}/5`;
             }
 
+            // Update summary
+            if (elements.downloadLatencySummary && values.length > 0) {
+                const min = Math.min(...values);
+                const max = Math.max(...values);
+                elements.downloadLatencySummary.textContent = `${min.toFixed(1)} - ${max.toFixed(1)} ms`;
+            }
+
             // Update table
             if (elements.downloadLatencyTable) {
                 const row = document.createElement('tr');
@@ -458,6 +469,13 @@
             // Update count badge
             if (elements.uploadLatencyCount) {
                 elements.uploadLatencyCount.textContent = `${current}/5`;
+            }
+
+            // Update summary
+            if (elements.uploadLatencySummary && values.length > 0) {
+                const min = Math.min(...values);
+                const max = Math.max(...values);
+                elements.uploadLatencySummary.textContent = `${min.toFixed(1)} - ${max.toFixed(1)} ms`;
             }
 
             // Update table
@@ -606,10 +624,15 @@
         if (!elements.downloadSparkline || state.downloadSamples.length < 2) return;
 
         const speeds = state.downloadSamples.map(s => s.mbps);
+        const width = elements.downloadSparkline.clientWidth || 150;
         Charts.sparkline(elements.downloadSparkline, speeds, {
-            width: 100,
-            height: 30,
-            strokeColor: 'var(--accent-primary)'
+            width: width,
+            height: 32,
+            strokeColor: 'var(--color-download)',
+            fillColor: 'var(--color-download)',
+            fillOpacity: 0.15,
+            strokeWidth: 1.5,
+            dotRadius: 2
         });
     }
 
@@ -620,10 +643,15 @@
         if (!elements.uploadSparkline || state.uploadSamples.length < 2) return;
 
         const speeds = state.uploadSamples.map(s => s.mbps);
+        const width = elements.uploadSparkline.clientWidth || 150;
         Charts.sparkline(elements.uploadSparkline, speeds, {
-            width: 100,
-            height: 30,
-            strokeColor: 'var(--accent-secondary)'
+            width: width,
+            height: 32,
+            strokeColor: 'var(--color-upload)',
+            fillColor: 'var(--color-upload)',
+            fillOpacity: 0.15,
+            strokeWidth: 1.5,
+            dotRadius: 2
         });
     }
 

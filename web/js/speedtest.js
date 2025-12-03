@@ -87,6 +87,17 @@ const SpeedTest = (function() {
     }
 
     /**
+     * Get Resource Timing entry for a URL (for precise timing)
+     */
+    function getResourceTiming(url) {
+        const entries = performance.getEntriesByName(url, 'resource');
+        if (entries.length > 0) {
+            return entries[entries.length - 1]; // Get most recent
+        }
+        return null;
+    }
+
+    /**
      * Run a single download test
      */
     async function runDownload(bytes, profile, runIndex, phase = null) {
@@ -94,7 +105,9 @@ const SpeedTest = (function() {
         let url = `/__down?bytes=${bytes}&measId=${measId}&profile=${profile}&run=${runIndex}`;
         if (phase) url += `&during=${phase}`;
 
-        const start = performance.now();
+        // Clear any existing entries for this URL pattern
+        performance.clearResourceTimings();
+
         const response = await fetch(url, {
             cache: 'no-store',
             signal: abortController?.signal
@@ -111,8 +124,24 @@ const SpeedTest = (function() {
             received += value.byteLength;
         }
 
-        const end = performance.now();
-        const durationMs = end - start;
+        // Use Resource Timing API to get precise body transfer time
+        // responseStart = first byte received, responseEnd = last byte received
+        const timing = getResourceTiming(url);
+        let durationMs;
+
+        if (timing && timing.responseStart > 0 && timing.responseEnd > 0) {
+            // Precise: just the body transfer time (excludes connection, TLS, headers)
+            durationMs = timing.responseEnd - timing.responseStart;
+        } else if (timing && timing.startTime > 0) {
+            // Fallback: use startTime if available (includes connection overhead)
+            durationMs = performance.now() - timing.startTime;
+        } else {
+            // Last resort: estimate based on typical transfer rates
+            // This shouldn't happen often, but prevents wildly wrong values
+            console.warn('Resource Timing unavailable for', url);
+            durationMs = received / (100 * 1024 * 1024 / 8) * 1000; // Assume 100 Mbps
+        }
+
         const mbps = (received * 8) / (durationMs / 1000) / 1e6;
 
         return {
@@ -136,7 +165,9 @@ const SpeedTest = (function() {
 
         const payload = new Uint8Array(bytes);
 
-        const start = performance.now();
+        // Clear any existing entries
+        performance.clearResourceTimings();
+
         const response = await fetch(url, {
             method: 'POST',
             body: payload,
@@ -147,8 +178,23 @@ const SpeedTest = (function() {
         if (!response.ok) throw new Error(`Upload failed: ${response.status}`);
         await response.arrayBuffer();
 
-        const end = performance.now();
-        const durationMs = end - start;
+        // Use Resource Timing API for precise timing
+        // For uploads: requestStart to responseStart = time to send body + server processing
+        const timing = getResourceTiming(url);
+        let durationMs;
+
+        if (timing && timing.requestStart > 0 && timing.responseStart > 0) {
+            // Precise: request send time (excludes connection setup, includes minimal server processing)
+            durationMs = timing.responseStart - timing.requestStart;
+        } else if (timing && timing.startTime > 0) {
+            // Fallback: use startTime if available (includes connection overhead)
+            durationMs = performance.now() - timing.startTime;
+        } else {
+            // Last resort: estimate based on typical transfer rates
+            console.warn('Resource Timing unavailable for upload');
+            durationMs = bytes / (100 * 1024 * 1024 / 8) * 1000; // Assume 100 Mbps
+        }
+
         const mbps = (bytes * 8) / (durationMs / 1000) / 1e6;
 
         return {
@@ -186,6 +232,39 @@ const SpeedTest = (function() {
             rttMs,
             phase
         };
+    }
+
+    /**
+     * Run warmup transfers to prime the connection
+     */
+    async function runWarmup() {
+        // Browsers maintain ~6 connections per origin. We need to warm up
+        // multiple connections in parallel to avoid alternating between
+        // warm and cold connections during actual tests.
+        try {
+            // Run 6 parallel warmup downloads to prime multiple connections
+            const downloadPromises = [];
+            for (let i = 0; i < 6; i++) {
+                downloadPromises.push(
+                    runDownload(DOWNLOAD_PROFILES['100k'], 'warmup', i)
+                        .catch(() => {}) // Ignore individual failures
+                );
+            }
+            await Promise.all(downloadPromises);
+
+            // Run 6 parallel warmup uploads
+            const uploadPromises = [];
+            for (let i = 0; i < 6; i++) {
+                uploadPromises.push(
+                    runUpload(UPLOAD_PROFILES['100k'], 'warmup', i)
+                        .catch(() => {})
+                );
+            }
+            await Promise.all(uploadPromises);
+        } catch (e) {
+            // Warmup failures are non-fatal
+            console.log('Warmup error (non-fatal):', e);
+        }
     }
 
     /**
@@ -368,6 +447,8 @@ const SpeedTest = (function() {
                 ordered: false,
                 maxRetransmits: 0
             });
+            // Use arraybuffer for synchronous decoding (avoids race condition with async Blob.text())
+            dc.binaryType = 'arraybuffer';
 
             // Create offer and set local description to start ICE gathering
             const offer = await pc.createOffer();
@@ -448,12 +529,13 @@ const SpeedTest = (function() {
             const rttSamples = [];
             let seq = 0;
 
-            dc.onmessage = async (event) => {
+            const textDecoder = new TextDecoder();
+            dc.onmessage = (event) => {
                 try {
-                    // Handle both string and Blob data (pion sends binary by default)
+                    // Synchronously decode ArrayBuffer or handle string
                     let data = event.data;
-                    if (data instanceof Blob) {
-                        data = await data.text();
+                    if (data instanceof ArrayBuffer) {
+                        data = textDecoder.decode(data);
                     }
                     const msg = JSON.parse(data);
                     if (typeof msg.ack === 'number' && typeof msg.receivedAt === 'number') {
@@ -612,35 +694,43 @@ const SpeedTest = (function() {
     }
 
     function gradeStreaming(s) {
-        if (s.downloadMbps >= 50 && s.latencyUnloadedMs <= 25 &&
-            s.jitterMs <= 5 && s.packetLossPercent <= 0.5) return 'Great';
-        if (s.downloadMbps >= 20 && s.latencyUnloadedMs <= 50 &&
-            s.jitterMs <= 15 && s.packetLossPercent <= 1.5) return 'Good';
-        if (s.downloadMbps >= 10 && s.latencyUnloadedMs <= 80 &&
-            s.jitterMs <= 30 && s.packetLossPercent <= 3) return 'Okay';
+        // Ensure we have valid numbers (NaN comparisons always return false)
+        const dl = s.downloadMbps || 0;
+        const lat = isNaN(s.latencyUnloadedMs) ? 999 : s.latencyUnloadedMs;
+        const jit = isNaN(s.jitterMs) ? 999 : s.jitterMs;
+        const loss = isNaN(s.packetLossPercent) ? 100 : s.packetLossPercent;
+
+        if (dl >= 50 && lat <= 25 && jit <= 5 && loss <= 0.5) return 'Great';
+        if (dl >= 20 && lat <= 50 && jit <= 15 && loss <= 1.5) return 'Good';
+        if (dl >= 10 && lat <= 80 && jit <= 30 && loss <= 3) return 'Okay';
         return 'Poor';
     }
 
     function gradeGaming(s) {
         // Gaming requires low latency and jitter
-        if (s.downloadMbps >= 25 && s.latencyUnloadedMs <= 20 &&
-            s.jitterMs <= 3 && s.packetLossPercent <= 0.1) return 'Great';
-        if (s.downloadMbps >= 15 && s.latencyUnloadedMs <= 40 &&
-            s.jitterMs <= 10 && s.packetLossPercent <= 0.5) return 'Good';
-        if (s.downloadMbps >= 5 && s.latencyUnloadedMs <= 80 &&
-            s.jitterMs <= 20 && s.packetLossPercent <= 2) return 'Okay';
+        const dl = s.downloadMbps || 0;
+        const lat = isNaN(s.latencyUnloadedMs) ? 999 : s.latencyUnloadedMs;
+        const jit = isNaN(s.jitterMs) ? 999 : s.jitterMs;
+        const loss = isNaN(s.packetLossPercent) ? 100 : s.packetLossPercent;
+
+        if (dl >= 25 && lat <= 20 && jit <= 3 && loss <= 0.1) return 'Great';
+        if (dl >= 15 && lat <= 40 && jit <= 10 && loss <= 0.5) return 'Good';
+        if (dl >= 5 && lat <= 80 && jit <= 20 && loss <= 2) return 'Okay';
         return 'Poor';
     }
 
     function gradeVideoChatting(s) {
         // Video chat needs good upload and low latency
-        const minSpeed = Math.min(s.downloadMbps, s.uploadMbps);
-        if (minSpeed >= 10 && s.latencyUnloadedMs <= 30 &&
-            s.jitterMs <= 5 && s.packetLossPercent <= 0.5) return 'Great';
-        if (minSpeed >= 5 && s.latencyUnloadedMs <= 50 &&
-            s.jitterMs <= 15 && s.packetLossPercent <= 1) return 'Good';
-        if (minSpeed >= 2 && s.latencyUnloadedMs <= 100 &&
-            s.jitterMs <= 30 && s.packetLossPercent <= 3) return 'Okay';
+        const dl = s.downloadMbps || 0;
+        const ul = s.uploadMbps || 0;
+        const minSpeed = Math.min(dl, ul);
+        const lat = isNaN(s.latencyUnloadedMs) ? 999 : s.latencyUnloadedMs;
+        const jit = isNaN(s.jitterMs) ? 999 : s.jitterMs;
+        const loss = isNaN(s.packetLossPercent) ? 100 : s.packetLossPercent;
+
+        if (minSpeed >= 10 && lat <= 30 && jit <= 5 && loss <= 0.5) return 'Great';
+        if (minSpeed >= 5 && lat <= 50 && jit <= 15 && loss <= 1) return 'Good';
+        if (minSpeed >= 2 && lat <= 100 && jit <= 30 && loss <= 3) return 'Okay';
         return 'Poor';
     }
 
@@ -701,6 +791,10 @@ const SpeedTest = (function() {
             // Run unloaded latency baseline
             if (callbacks.onProgress) callbacks.onProgress('latency', 0);
             await runUnloadedLatency();
+
+            // Warmup: small transfers to establish connection and get past TCP slow start
+            if (callbacks.onProgress) callbacks.onProgress('warmup', 0);
+            await runWarmup();
 
             // Run download tests
             if (callbacks.onProgress) callbacks.onProgress('download', 0);

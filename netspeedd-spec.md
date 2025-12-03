@@ -1085,7 +1085,97 @@ record per-probe rtt from browser.
 
 ---
 
-### 2.2 summary metrics
+### 2.2 client-side timing precision
+
+to get accurate throughput measurements, the client should use the **Resource Timing API** rather than wall-clock timing. wall-clock timing (`performance.now()` before and after `fetch()`) includes:
+
+- tcp connection establishment
+- tls handshake
+- request/response header parsing
+- tcp slow start
+
+these overheads can add 50-200ms to each measurement, significantly understating throughput for smaller transfers.
+
+#### 2.2.1 Resource Timing API
+
+the browser's `PerformanceResourceTiming` interface provides precise timing breakdown:
+
+```ts
+interface PerformanceResourceTiming {
+  startTime: number;        // fetch started
+  connectStart: number;     // tcp connection started
+  connectEnd: number;       // tcp connection completed
+  secureConnectionStart: number;  // tls handshake started (https only)
+  requestStart: number;     // browser started sending request
+  responseStart: number;    // first byte of response received
+  responseEnd: number;      // last byte of response received
+}
+```
+
+#### 2.2.2 download timing
+
+for download tests, measure only the body transfer time:
+
+```ts
+// after fetch completes
+const timing = performance.getEntriesByName(url, 'resource').pop();
+if (timing && timing.responseStart > 0 && timing.responseEnd > 0) {
+  // precise: just body transfer time (excludes connection, tls, headers)
+  durationMs = timing.responseEnd - timing.responseStart;
+}
+```
+
+this measures from first response byte to last response byte, excluding all connection overhead.
+
+#### 2.2.3 upload timing
+
+for upload tests, measure request send time:
+
+```ts
+const timing = performance.getEntriesByName(url, 'resource').pop();
+if (timing && timing.requestStart > 0 && timing.responseStart > 0) {
+  // request send time (excludes connection setup)
+  durationMs = timing.responseStart - timing.requestStart;
+}
+```
+
+this measures from when the browser started sending the request body to when the server's response arrived, which closely approximates the upload transfer time.
+
+#### 2.2.4 warmup phase
+
+even with precise timing, the first few requests suffer from tcp slow start. the client should perform a **warmup phase** before actual measurements:
+
+```ts
+async function runWarmup() {
+  // 3x small downloads + 3x small uploads to:
+  // - establish keep-alive connection
+  // - get past tcp slow start
+  // - prime connection pooling
+  for (let i = 0; i < 3; i++) {
+    await runDownload(1_000_000, 'warmup', i);  // 1MB
+  }
+  for (let i = 0; i < 3; i++) {
+    await runUpload(1_000_000, 'warmup', i);    // 1MB
+  }
+}
+```
+
+warmup results are discarded; they only serve to prime the connection.
+
+#### 2.2.5 clearing resource timing buffer
+
+call `performance.clearResourceTimings()` before each measurement to avoid buffer overflow and ensure `getEntriesByName()` returns the correct entry:
+
+```ts
+performance.clearResourceTimings();
+const response = await fetch(url, { ... });
+// read response body
+const timing = performance.getEntriesByName(url, 'resource').pop();
+```
+
+---
+
+### 2.3 summary metrics
 
 from all collected samples:
 
