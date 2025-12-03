@@ -15,6 +15,28 @@ import (
 	"github.com/yellowman/netspeed/internal/meta"
 )
 
+// calculateSpeedMbps calculates speed in megabits per second from bytes and duration.
+// Returns 0 if duration is zero to avoid division by zero.
+func calculateSpeedMbps(bytes int64, duration time.Duration) float64 {
+	if duration == 0 {
+		return 0
+	}
+	// Convert bytes to bits, then to megabits
+	bits := float64(bytes) * 8
+	megabits := bits / 1_000_000
+	// Convert duration to seconds
+	seconds := duration.Seconds()
+	return megabits / seconds
+}
+
+// formatSpeed returns a human-readable speed string.
+func formatSpeed(mbps float64) string {
+	if mbps >= 1000 {
+		return fmt.Sprintf("%.2f Gbps", mbps/1000)
+	}
+	return fmt.Sprintf("%.2f Mbps", mbps)
+}
+
 // handleMeta handles GET /meta - returns client metadata.
 func (s *Server) handleMeta(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
@@ -42,8 +64,11 @@ func (s *Server) handleDown(w http.ResponseWriter, r *http.Request) {
 
 	start := time.Now()
 
-	// Parse bytes parameter
+	// Parse query parameters
 	bytesStr := r.URL.Query().Get("bytes")
+	measId := r.URL.Query().Get("measId")
+	phase := r.URL.Query().Get("during") // "download", "upload", or empty for standalone
+
 	var nBytes int64
 	if bytesStr != "" {
 		v, err := strconv.ParseInt(bytesStr, 10, 64)
@@ -62,8 +87,9 @@ func (s *Server) handleDown(w http.ResponseWriter, r *http.Request) {
 		nBytes = v
 	}
 
-	// Get client meta for headers
+	// Get client info for headers and logging
 	clientMeta := s.metaProvider.MetaFor(r)
+	clientIP := clientMeta.ClientIP
 
 	// Set headers
 	w.Header().Set("Content-Type", "application/octet-stream")
@@ -74,9 +100,17 @@ func (s *Server) handleDown(w http.ResponseWriter, r *http.Request) {
 	// Note: For streaming responses, this reflects setup time, not total transfer time
 	s.setServerTiming(w, start)
 
-	// If bytes == 0, just return (latency-only test)
+	// If bytes == 0, this is a latency-only test (TTFB measurement)
 	if nBytes == 0 {
 		w.WriteHeader(http.StatusOK)
+		latencyMs := float64(time.Since(start).Microseconds()) / 1000.0
+		if phase != "" {
+			log.Printf("Latency probe: client=%s measId=%s phase=%s latency=%.3fms",
+				clientIP, measId, phase, latencyMs)
+		} else {
+			log.Printf("Latency probe: client=%s measId=%s latency=%.3fms",
+				clientIP, measId, latencyMs)
+		}
 		return
 	}
 
@@ -90,11 +124,22 @@ func (s *Server) handleDown(w http.ResponseWriter, r *http.Request) {
 		}
 		n, err := w.Write(buf[:chunk])
 		if err != nil {
-			// Client probably disconnected; abort
+			// Client disconnected - log partial transfer
+			duration := time.Since(start)
+			bytesSent := nBytes - remaining
+			speedMbps := calculateSpeedMbps(bytesSent, duration)
+			log.Printf("Download interrupted: client=%s measId=%s bytes=%d/%d duration=%s speed=%s",
+				clientIP, measId, bytesSent, nBytes, duration, formatSpeed(speedMbps))
 			return
 		}
 		remaining -= int64(n)
 	}
+
+	// Log completed download with speed
+	duration := time.Since(start)
+	speedMbps := calculateSpeedMbps(nBytes, duration)
+	log.Printf("Download: client=%s measId=%s bytes=%d duration=%s speed=%s",
+		clientIP, measId, nBytes, duration, formatSpeed(speedMbps))
 }
 
 // handleUp handles POST /__up - upload sink endpoint.
@@ -112,11 +157,15 @@ func (s *Server) handleUp(w http.ResponseWriter, r *http.Request) {
 		log.Printf("Upload read error: %v", err)
 	}
 
-	// Log upload details as per spec
+	// Calculate timing and speed
 	duration := time.Since(start)
+	speedMbps := calculateSpeedMbps(n, duration)
+
+	// Log upload details with speed
 	measId := r.URL.Query().Get("measId")
 	clientIP := meta.ClientIPFromRequest(r, s.cfg.TrustProxyHeaders)
-	log.Printf("Upload: client=%s measId=%s bytes=%d duration=%s", clientIP, measId, n, duration)
+	log.Printf("Upload: client=%s measId=%s bytes=%d duration=%s speed=%s",
+		clientIP, measId, n, duration, formatSpeed(speedMbps))
 
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	s.setServerTiming(w, start)
