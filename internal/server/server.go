@@ -172,12 +172,22 @@ func (s *Server) Run() error {
 		log.Printf("Serving static files from %s", s.cfg.WebDir)
 	}
 
-	if s.cfg.TLSEnabled() {
-		log.Printf("TLS enabled with cert=%s key=%s", s.cfg.TLSCertFile, s.cfg.TLSKeyFile)
-		return s.httpServer.ListenAndServeTLS(s.cfg.TLSCertFile, s.cfg.TLSKeyFile)
+	// Create optimized listener with larger TCP buffers for speed testing
+	lnCfg := DefaultListenerConfig()
+	log.Printf("TCP buffers: send=%dKB recv=%dKB nodelay=%v",
+		lnCfg.SendBufSize/1024, lnCfg.RecvBufSize/1024, lnCfg.NoDelay)
+
+	ln, err := NewOptimizedListener(s.cfg.ListenAddr, lnCfg)
+	if err != nil {
+		return fmt.Errorf("failed to create listener: %w", err)
 	}
 
-	return s.httpServer.ListenAndServe()
+	if s.cfg.TLSEnabled() {
+		log.Printf("TLS enabled with cert=%s key=%s", s.cfg.TLSCertFile, s.cfg.TLSKeyFile)
+		return s.httpServer.ServeTLS(ln, s.cfg.TLSCertFile, s.cfg.TLSKeyFile)
+	}
+
+	return s.httpServer.Serve(ln)
 }
 
 // Shutdown gracefully shuts down the server.
