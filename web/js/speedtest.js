@@ -326,7 +326,18 @@ const SpeedTest = (function() {
             // Fetch TURN credentials
             const credResponse = await fetch('/api/turn/credentials', { credentials: 'include' });
             if (!credResponse.ok) {
-                throw new Error('TURN credentials not available');
+                // TURN not configured - return unavailable result
+                const unavailableResult = {
+                    sent: 0,
+                    received: 0,
+                    lossPercent: 0,
+                    rttStatsMs: { min: 0, median: 0, p90: 0 },
+                    jitterMs: 0,
+                    unavailable: true,
+                    reason: 'TURN server not configured'
+                };
+                results.packetLoss = unavailableResult;
+                return unavailableResult;
             }
             const turnCreds = await credResponse.json();
 

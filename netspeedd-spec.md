@@ -742,14 +742,20 @@ and adds:
 
 **infra pieces:**
 
-- **turn server** (e.g. coturn)
-  - example addresses:
-    - `turn1.example.com:3478` (udp/tcp)
-    - `turns1.example.com:5349` (tls)
-  - config:
-    - `realm = "speed.example.com"`
-    - `use-auth-secret = yes`
-    - `static-auth-secret = <shared-hmac-secret>`
+- **turn server** - two options:
+  1. **embedded turn server** (default, zero config)
+     - netspeedd includes a built-in turn server using pion/turn
+     - listens on `:3478` udp by default
+     - auto-generates credentials
+     - no external dependencies
+  2. **external turn server** (e.g. coturn)
+     - example addresses:
+       - `turn1.example.com:3478` (udp/tcp)
+       - `turns1.example.com:5349` (tls)
+     - config:
+       - `realm = "speed.example.com"`
+       - `use-auth-secret = yes`
+       - `static-auth-secret = <shared-hmac-secret>`
 - **go backend extensions (same daemon or sidecar):**
   - `GET /api/turn/credentials` → mints short-lived turn creds
   - `POST /api/packet-test/offer` → webRTC sdp offer/answer

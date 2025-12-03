@@ -50,6 +50,13 @@ type Config struct {
 	TurnRealm     string
 	MaxTurnTTL    int64
 
+	// EmbeddedTurn enables the built-in TURN server
+	EmbeddedTurn bool
+	// EmbeddedTurnAddr is the address for the embedded TURN server
+	EmbeddedTurnAddr string
+	// EmbeddedTurnPublicIP is the public IP to advertise for the embedded TURN server
+	EmbeddedTurnPublicIP string
+
 	// WebDir is the path to the directory containing static web files
 	// If set, the server will serve static files from this directory
 	WebDir string
@@ -69,6 +76,9 @@ func Default() *Config {
 		Hostname:           "localhost",
 		Colo:               "LOCAL",
 		MaxTurnTTL:         600,
+		EmbeddedTurn:       true,
+		EmbeddedTurnAddr:   "0.0.0.0:3478",
+		TurnRealm:          "netspeed",
 	}
 }
 
@@ -160,6 +170,18 @@ func FromEnv() *Config {
 		if v, err := strconv.ParseInt(maxTurnTTL, 10, 64); err == nil && v > 0 {
 			cfg.MaxTurnTTL = v
 		}
+	}
+
+	if embeddedTurn := os.Getenv("NETSPEEDD_EMBEDDED_TURN"); embeddedTurn != "" {
+		cfg.EmbeddedTurn = embeddedTurn == "true" || embeddedTurn == "1"
+	}
+
+	if embeddedTurnAddr := os.Getenv("NETSPEEDD_EMBEDDED_TURN_ADDR"); embeddedTurnAddr != "" {
+		cfg.EmbeddedTurnAddr = embeddedTurnAddr
+	}
+
+	if embeddedTurnPublicIP := os.Getenv("NETSPEEDD_EMBEDDED_TURN_PUBLIC_IP"); embeddedTurnPublicIP != "" {
+		cfg.EmbeddedTurnPublicIP = embeddedTurnPublicIP
 	}
 
 	if webDir := os.Getenv("NETSPEEDD_WEB_DIR"); webDir != "" {
