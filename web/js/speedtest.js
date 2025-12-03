@@ -213,12 +213,13 @@ const SpeedTest = (function() {
 
     /**
      * Run a latency probe
+     * Uses Resource Timing API when available for more accurate cross-browser measurements
      */
     async function runLatencyProbe(phase, seq) {
         const measId = `${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
         const url = `/__down?bytes=0&measId=${measId}&during=${phase}&seq=${seq}`;
 
-        const start = performance.now();
+        const manualStart = performance.now();
         const response = await fetch(url, {
             cache: 'no-store',
             signal: abortController?.signal
@@ -226,9 +227,23 @@ const SpeedTest = (function() {
 
         if (!response.ok) throw new Error(`Latency probe failed: ${response.status}`);
         await response.arrayBuffer();
+        const manualEnd = performance.now();
 
-        const end = performance.now();
-        const rttMs = end - start;
+        // Try to get more accurate timing from Resource Timing API
+        // requestStart to responseStart is closest to actual network RTT
+        const timing = await getResourceTiming(url);
+        let rttMs;
+
+        if (timing && timing.requestStart > 0 && timing.responseStart > 0) {
+            // Network time: from request sent to first byte received
+            rttMs = timing.responseStart - timing.requestStart;
+        } else if (timing && timing.fetchStart > 0 && timing.responseEnd > 0) {
+            // Fallback: total fetch time (includes more overhead but still from timing API)
+            rttMs = timing.responseEnd - timing.fetchStart;
+        } else {
+            // Last resort: manual timing
+            rttMs = manualEnd - manualStart;
+        }
 
         return {
             ts: Date.now(),
@@ -672,6 +687,18 @@ const SpeedTest = (function() {
             .filter(s => s.phase === 'upload')
             .map(s => s.rttMs);
 
+        console.log('Sample counts:', {
+            downloads: dlSamples.length,
+            uploads: ulSamples.length,
+            latencyUnloaded: latUnloaded.length,
+            packetLoss: results.packetLoss
+        });
+        console.log('Sample values:', {
+            dlSamples: dlSamples.slice(0, 5),
+            ulSamples: ulSamples.slice(0, 5),
+            latUnloaded: latUnloaded.slice(0, 5)
+        });
+
         return {
             downloadMbps: percentile(dlSamples, 90),
             uploadMbps: percentile(ulSamples, 90),
@@ -689,11 +716,20 @@ const SpeedTest = (function() {
      * Calculate network quality grades
      */
     function calculateQuality(summary) {
-        return {
+        console.log('Quality grading input:', {
+            downloadMbps: summary.downloadMbps,
+            uploadMbps: summary.uploadMbps,
+            latencyUnloadedMs: summary.latencyUnloadedMs,
+            jitterMs: summary.jitterMs,
+            packetLossPercent: summary.packetLossPercent
+        });
+        const quality = {
             videoStreaming: gradeStreaming(summary),
             gaming: gradeGaming(summary),
             videoChatting: gradeVideoChatting(summary)
         };
+        console.log('Quality grades:', quality);
+        return quality;
     }
 
     function gradeStreaming(s) {
