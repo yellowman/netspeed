@@ -243,7 +243,11 @@ func (s *Server) handleTurnCredentials(w http.ResponseWriter, r *http.Request) {
 		if colonIdx := strings.LastIndex(host, ":"); colonIdx != -1 {
 			host = host[:colonIdx]
 		}
-		turnServers = []string{fmt.Sprintf("turn:%s:%s", host, s.cfg.EmbeddedTurnPort)}
+		// Include both STUN and TURN URLs - browsers need STUN for reflexive candidates
+		turnServers = []string{
+			fmt.Sprintf("stun:%s:%s", host, s.cfg.EmbeddedTurnPort),
+			fmt.Sprintf("turn:%s:%s", host, s.cfg.EmbeddedTurnPort),
+		}
 	}
 
 	// Check if TURN is configured
@@ -289,6 +293,8 @@ func (s *Server) handleTurnCredentials(w http.ResponseWriter, r *http.Request) {
 		Servers:    turnServers,
 		Realm:      s.cfg.TurnRealm,
 	}
+
+	log.Printf("TURN credentials: servers=%v username=%s realm=%s", turnServers, username, s.cfg.TurnRealm)
 
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-store")
