@@ -10,6 +10,7 @@ import (
 	"log"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/yellowman/netspeed/internal/meta"
@@ -231,8 +232,22 @@ func (s *Server) handleTurnCredentials(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Determine TURN servers - either configured or derived from embedded TURN
+	var turnServers []string
+	if len(s.cfg.TurnServers) > 0 {
+		turnServers = s.cfg.TurnServers
+	} else if s.cfg.EmbeddedTurnPort != "" && s.cfg.TurnSecret != "" {
+		// Derive TURN server URL from request host
+		host := r.Host
+		// Strip port from host if present
+		if colonIdx := strings.LastIndex(host, ":"); colonIdx != -1 {
+			host = host[:colonIdx]
+		}
+		turnServers = []string{fmt.Sprintf("turn:%s:%s", host, s.cfg.EmbeddedTurnPort)}
+	}
+
 	// Check if TURN is configured
-	if s.cfg.TurnSecret == "" || len(s.cfg.TurnServers) == 0 {
+	if s.cfg.TurnSecret == "" || len(turnServers) == 0 {
 		http.Error(w, "TURN not configured", http.StatusServiceUnavailable)
 		return
 	}
@@ -271,7 +286,7 @@ func (s *Server) handleTurnCredentials(w http.ResponseWriter, r *http.Request) {
 		Username:   username,
 		Credential: credential,
 		TTLSec:     ttl,
-		Servers:    s.cfg.TurnServers,
+		Servers:    turnServers,
 		Realm:      s.cfg.TurnRealm,
 	}
 
