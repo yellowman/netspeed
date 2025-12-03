@@ -264,8 +264,8 @@
         if (elements.downloadValue) elements.downloadValue.textContent = '--';
         if (elements.uploadValue) elements.uploadValue.textContent = '--';
         if (elements.latencyValue) elements.latencyValue.textContent = '--';
-        if (elements.jitterValue) elements.jitterValue.textContent = '--';
-        if (elements.packetLossValue) elements.packetLossValue.textContent = '--';
+        if (elements.jitterValue) elements.jitterValue.textContent = '-- ms';
+        if (elements.packetLossValue) elements.packetLossValue.textContent = '--%';
 
         // Clear sparklines
         if (elements.downloadSparkline) elements.downloadSparkline.innerHTML = '';
