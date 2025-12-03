@@ -141,14 +141,29 @@ const SpeedTest = (function() {
         let timingSource;
 
         if (timing && timing.responseStart > 0 && timing.responseEnd > 0) {
-            // Precise: just the body transfer time (excludes connection, TLS, headers)
-            durationMs = timing.responseEnd - timing.responseStart;
-            timingSource = 'resource-timing';
+            // Body transfer time (excludes connection, TLS, request headers)
+            const bodyTime = timing.responseEnd - timing.responseStart;
+
+            // For small/fast downloads, body time may be 0 or near-0.
+            // Fall back to requestStart->responseEnd which includes request overhead but avoids Infinity
+            if (bodyTime < 1) {
+                durationMs = timing.responseEnd - timing.requestStart;
+                timingSource = 'resource-timing-full';
+            } else {
+                durationMs = bodyTime;
+                timingSource = 'resource-timing';
+            }
         } else {
             // Fallback: use manual timing (includes connection overhead)
             durationMs = manualEnd - manualStart;
             timingSource = 'manual';
             console.log('Download timing fallback:', { profile, runIndex, timing, manualMs: durationMs });
+        }
+
+        // Final guard against division by zero
+        if (durationMs < 0.1) {
+            durationMs = manualEnd - manualStart;
+            timingSource = 'manual-guard';
         }
 
         const mbps = (received * 8) / (durationMs / 1000) / 1e6;
@@ -627,6 +642,14 @@ const SpeedTest = (function() {
             const sent = N;
             const received = acks.size;
             const lossPercent = ((sent - received) / sent) * 100;
+
+            console.log('Packet loss test results:', {
+                sent,
+                received,
+                lossPercent: lossPercent.toFixed(2) + '%',
+                rttSamplesCount: rttSamples.length,
+                rttSamplesSlice: rttSamples.slice(0, 5)
+            });
 
             // Calculate RTT stats
             rttSamples.sort((a, b) => a - b);
