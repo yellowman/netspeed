@@ -147,14 +147,17 @@ const SpeedTest = (function() {
 
             // For small/fast downloads, body time may be 0 or near-0.
             // Fall back to requestStart->responseEnd which includes request overhead but avoids Infinity
-            if (bodyTime < 1) {
+            if (bodyTime < 1 && timing.requestStart > 0) {
                 durationMs = timing.responseEnd - timing.requestStart;
                 timingSource = 'resource-timing-full';
-            } else {
+            } else if (bodyTime >= 1) {
                 durationMs = bodyTime;
                 timingSource = 'resource-timing';
             }
-        } else {
+            // If bodyTime < 1 and requestStart is 0, fall through to manual timing
+        }
+
+        if (!durationMs) {
             // Fallback: use manual timing (includes connection overhead)
             durationMs = manualEnd - manualStart;
             timingSource = 'manual';
