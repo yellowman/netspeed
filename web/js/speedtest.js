@@ -58,7 +58,8 @@ const SpeedTest = (function() {
         onLatencyProgress: null,
         onPacketLossProgress: null,
         onComplete: null,
-        onError: null
+        onError: null,
+        onTimingWarning: null
     };
 
     /**
@@ -158,6 +159,9 @@ const SpeedTest = (function() {
             durationMs = manualEnd - manualStart;
             timingSource = 'manual';
             console.log('Download timing fallback:', { profile, runIndex, timing, manualMs: durationMs });
+            if (callbacks.onTimingWarning) {
+                callbacks.onTimingWarning('download', 'Resource Timing API unavailable');
+            }
         }
 
         // Final guard against division by zero
@@ -229,6 +233,9 @@ const SpeedTest = (function() {
         if (!durationMs) {
             durationMs = manualEnd - manualStart;
             timingSource = 'manual';
+            if (callbacks.onTimingWarning) {
+                callbacks.onTimingWarning('upload', 'Resource Timing API unavailable');
+            }
         }
 
         // Log first few uploads to verify timing source
@@ -288,6 +295,9 @@ const SpeedTest = (function() {
             // Last resort: manual timing
             rttMs = manualEnd - manualStart;
             timingSource = 'manual';
+            if (callbacks.onTimingWarning) {
+                callbacks.onTimingWarning('latency', 'Resource Timing API unavailable');
+            }
         }
 
         // Log first few probes to debug timing source
