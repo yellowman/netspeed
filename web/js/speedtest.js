@@ -426,6 +426,8 @@ const SpeedTest = (function() {
                 ordered: false,
                 maxRetransmits: 0
             });
+            // Use arraybuffer for synchronous decoding (avoids race condition with async Blob.text())
+            dc.binaryType = 'arraybuffer';
 
             // Create offer and set local description to start ICE gathering
             const offer = await pc.createOffer();
@@ -506,12 +508,13 @@ const SpeedTest = (function() {
             const rttSamples = [];
             let seq = 0;
 
-            dc.onmessage = async (event) => {
+            const textDecoder = new TextDecoder();
+            dc.onmessage = (event) => {
                 try {
-                    // Handle both string and Blob data (pion sends binary by default)
+                    // Synchronously decode ArrayBuffer or handle string
                     let data = event.data;
-                    if (data instanceof Blob) {
-                        data = await data.text();
+                    if (data instanceof ArrayBuffer) {
+                        data = textDecoder.decode(data);
                     }
                     const msg = JSON.parse(data);
                     if (typeof msg.ack === 'number' && typeof msg.receivedAt === 'number') {
