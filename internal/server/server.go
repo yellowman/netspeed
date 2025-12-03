@@ -22,6 +22,7 @@ type Server struct {
 	cfg            *config.Config
 	httpServer     *http.Server
 	metaProvider   meta.Provider
+	geoipProvider  *meta.GeoIPProvider // track for cleanup
 	locations      locations.Store
 	payloadBuf     []byte
 	webrtcManager  *webrtc.Manager
@@ -30,20 +31,43 @@ type Server struct {
 // New creates a new Server with the given configuration.
 func New(cfg *config.Config) (*Server, error) {
 	// Build meta provider based on configuration
-	metaProvider := &meta.StaticProvider{
-		Hostname:   cfg.Hostname,
-		Colo:       cfg.Colo,
-		TrustProxy: cfg.TrustProxyHeaders,
-		// Default values - can be configured or looked up via GeoIP
-		Country:    "US",
-		City:       "Unknown",
-		Region:     "Unknown",
-		PostalCode: "",
-		Latitude:   0,
-		Longitude:  0,
-		Timezone:   "UTC",
-		ASN:        0,
-		ASOrg:      "Unknown",
+	var metaProvider meta.Provider
+	var geoipProvider *meta.GeoIPProvider
+
+	// Try to use GeoIP database if configured
+	if cfg.GeoIPDatabasePath != "" {
+		gp, err := meta.NewGeoIPProvider(
+			cfg.GeoIPDatabasePath,
+			cfg.Hostname,
+			cfg.Colo,
+			cfg.TrustProxyHeaders,
+		)
+		if err != nil {
+			log.Printf("Warning: failed to load GeoIP database: %v (falling back to static provider)", err)
+		} else {
+			metaProvider = gp
+			geoipProvider = gp
+			log.Printf("GeoIP ASN database loaded from %s", cfg.GeoIPDatabasePath)
+		}
+	}
+
+	// Fall back to static provider if GeoIP not available
+	if metaProvider == nil {
+		metaProvider = &meta.StaticProvider{
+			Hostname:   cfg.Hostname,
+			Colo:       cfg.Colo,
+			TrustProxy: cfg.TrustProxyHeaders,
+			// Default values
+			Country:    "US",
+			City:       "Unknown",
+			Region:     "Unknown",
+			PostalCode: "",
+			Latitude:   0,
+			Longitude:  0,
+			Timezone:   "UTC",
+			ASN:        0,
+			ASOrg:      "Unknown",
+		}
 	}
 
 	// Build location store
@@ -93,6 +117,7 @@ func New(cfg *config.Config) (*Server, error) {
 	s := &Server{
 		cfg:           cfg,
 		metaProvider:  metaProvider,
+		geoipProvider: geoipProvider,
 		locations:     locationStore,
 		payloadBuf:    payloadBuf,
 		webrtcManager: webrtcMgr,
@@ -202,6 +227,10 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	// Shutdown WebRTC manager first
 	if s.webrtcManager != nil {
 		s.webrtcManager.Shutdown()
+	}
+	// Close GeoIP database
+	if s.geoipProvider != nil {
+		s.geoipProvider.Close()
 	}
 	return s.httpServer.Shutdown(ctx)
 }

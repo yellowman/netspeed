@@ -33,6 +33,7 @@ func main() {
 		tlsKey         = flag.String("tls-key", "", "TLS key file path")
 		maxBytes       = flag.Int64("max-bytes", 0, "Maximum bytes for download/upload (default 1GiB)")
 		locationsFile  = flag.String("locations", "", "Path to locations JSON file")
+		geoipDB        = flag.String("geoip-db", "", "Path to MaxMind GeoLite2-ASN.mmdb file")
 		hostname       = flag.String("hostname", "", "Hostname to return in /meta")
 		colo           = flag.String("colo", "", "Server colo/datacenter IATA code")
 		trustProxy     = flag.Bool("trust-proxy", false, "Trust X-Forwarded-For headers")
@@ -60,6 +61,7 @@ func main() {
 		fmt.Fprintf(os.Stderr, "  NETSPEEDD_TLS_KEY         TLS key file\n")
 		fmt.Fprintf(os.Stderr, "  NETSPEEDD_MAX_BYTES       Maximum bytes\n")
 		fmt.Fprintf(os.Stderr, "  NETSPEEDD_LOCATIONS_FILE  Locations JSON file\n")
+		fmt.Fprintf(os.Stderr, "  NETSPEEDD_GEOIP_DB        MaxMind GeoLite2-ASN.mmdb file\n")
 		fmt.Fprintf(os.Stderr, "  NETSPEEDD_HOSTNAME        Hostname for /meta\n")
 		fmt.Fprintf(os.Stderr, "  NETSPEEDD_COLO            Datacenter IATA code\n")
 		fmt.Fprintf(os.Stderr, "  NETSPEEDD_TRUST_PROXY     Trust proxy headers (true/false)\n")
@@ -106,6 +108,9 @@ func main() {
 	}
 	if *locationsFile != "" {
 		cfg.LocationsFile = *locationsFile
+	}
+	if *geoipDB != "" {
+		cfg.GeoIPDatabasePath = *geoipDB
 	}
 	if *hostname != "" {
 		cfg.Hostname = *hostname
