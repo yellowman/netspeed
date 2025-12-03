@@ -1435,7 +1435,7 @@
             elements.lossTypeBadge.className = `loss-type-badge ${lossPattern.type}`;
         }
 
-        // Update timeline segments
+        // Update timeline segments - transparent for no loss, color only for loss
         if (elements.lossTimeline) {
             const segments = elements.lossTimeline.querySelectorAll('.timeline-segment');
             const maxLoss = Math.max(...lossPattern.lossDistribution, 1);
@@ -1444,7 +1444,7 @@
                 const ratio = loss / maxLoss;
                 seg.className = 'timeline-segment';
                 if (loss === 0) {
-                    seg.classList.add('loss-low');
+                    seg.classList.add('loss-none');
                 } else if (ratio < 0.5) {
                     seg.classList.add('loss-medium');
                 } else {
