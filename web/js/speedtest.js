@@ -108,6 +108,9 @@ const SpeedTest = (function() {
         // Clear any existing entries for this URL pattern
         performance.clearResourceTimings();
 
+        // Capture start time for manual fallback timing
+        const manualStart = performance.now();
+
         const response = await fetch(url, {
             cache: 'no-store',
             signal: abortController?.signal
@@ -124,6 +127,8 @@ const SpeedTest = (function() {
             received += value.byteLength;
         }
 
+        const manualEnd = performance.now();
+
         // Use Resource Timing API to get precise body transfer time
         // responseStart = first byte received, responseEnd = last byte received
         const timing = getResourceTiming(url);
@@ -132,14 +137,9 @@ const SpeedTest = (function() {
         if (timing && timing.responseStart > 0 && timing.responseEnd > 0) {
             // Precise: just the body transfer time (excludes connection, TLS, headers)
             durationMs = timing.responseEnd - timing.responseStart;
-        } else if (timing && timing.startTime > 0) {
-            // Fallback: use startTime if available (includes connection overhead)
-            durationMs = performance.now() - timing.startTime;
         } else {
-            // Last resort: estimate based on typical transfer rates
-            // This shouldn't happen often, but prevents wildly wrong values
-            console.warn('Resource Timing unavailable for', url);
-            durationMs = received / (100 * 1024 * 1024 / 8) * 1000; // Assume 100 Mbps
+            // Fallback: use manual timing (includes connection overhead)
+            durationMs = manualEnd - manualStart;
         }
 
         const mbps = (received * 8) / (durationMs / 1000) / 1e6;
@@ -168,6 +168,9 @@ const SpeedTest = (function() {
         // Clear any existing entries
         performance.clearResourceTimings();
 
+        // Capture start time for manual fallback timing
+        const manualStart = performance.now();
+
         const response = await fetch(url, {
             method: 'POST',
             body: payload,
@@ -178,6 +181,8 @@ const SpeedTest = (function() {
         if (!response.ok) throw new Error(`Upload failed: ${response.status}`);
         await response.arrayBuffer();
 
+        const manualEnd = performance.now();
+
         // Use Resource Timing API for precise timing
         // For uploads: requestStart to responseStart = time to send body + server processing
         const timing = getResourceTiming(url);
@@ -186,13 +191,9 @@ const SpeedTest = (function() {
         if (timing && timing.requestStart > 0 && timing.responseStart > 0) {
             // Precise: request send time (excludes connection setup, includes minimal server processing)
             durationMs = timing.responseStart - timing.requestStart;
-        } else if (timing && timing.startTime > 0) {
-            // Fallback: use startTime if available (includes connection overhead)
-            durationMs = performance.now() - timing.startTime;
         } else {
-            // Last resort: estimate based on typical transfer rates
-            console.warn('Resource Timing unavailable for upload');
-            durationMs = bytes / (100 * 1024 * 1024 / 8) * 1000; // Assume 100 Mbps
+            // Fallback: use manual timing (includes connection overhead)
+            durationMs = manualEnd - manualStart;
         }
 
         const mbps = (bytes * 8) / (durationMs / 1000) / 1e6;
