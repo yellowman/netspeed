@@ -342,10 +342,10 @@ const SpeedTest = (function() {
             const turnCreds = await credResponse.json();
 
             // Create RTCPeerConnection
-            // Separate STUN (no credentials) from TURN (with credentials)
+            // Separate STUN (no credentials) from TURN/TURNS (with credentials)
             const iceServers = [];
-            const stunUrls = turnCreds.servers.filter(s => s.startsWith('stun:'));
-            const turnUrls = turnCreds.servers.filter(s => s.startsWith('turn:'));
+            const stunUrls = turnCreds.servers.filter(s => s.startsWith('stun:') || s.startsWith('stuns:'));
+            const turnUrls = turnCreds.servers.filter(s => s.startsWith('turn:') || s.startsWith('turns:'));
 
             if (stunUrls.length > 0) {
                 iceServers.push({ urls: stunUrls });
