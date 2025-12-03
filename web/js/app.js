@@ -18,7 +18,8 @@
         uploadSamples: [],
         latencySamples: [],
         testStartTime: null,
-        timingWarningShown: false
+        timingWarningShown: false,
+        mapRendered: false
     };
 
     // DOM element cache
@@ -625,7 +626,14 @@
         }
 
         if (elements.clientNetwork) {
-            elements.clientNetwork.textContent = `${state.meta.asOrganization} (AS${state.meta.asn})`;
+            // Handle unknown/local network gracefully
+            if (state.meta.asOrganization && state.meta.asOrganization !== 'Unknown' && state.meta.asn > 0) {
+                elements.clientNetwork.textContent = `${state.meta.asOrganization} (AS${state.meta.asn})`;
+            } else if (state.meta.asn > 0) {
+                elements.clientNetwork.textContent = `AS${state.meta.asn}`;
+            } else {
+                elements.clientNetwork.textContent = 'Local Network';
+            }
         }
 
         if (elements.clientIp) {
@@ -637,50 +645,113 @@
             elements.connectionType.textContent = isIPv6 ? 'IPv6' : 'IPv4';
         }
 
-        // Update map with server location
-        if (elements.mapContainer && serverLocation && serverLocation.lat && serverLocation.lon) {
-            renderMap(serverLocation.lat, serverLocation.lon, serverLocation.city);
+        // Only render map once (don't reset on each test start)
+        if (elements.mapContainer && serverLocation && serverLocation.lat && serverLocation.lon && !state.mapRendered) {
+            const clientLat = state.meta.latitude;
+            const clientLon = state.meta.longitude;
+            const hasClientLocation = clientLat && clientLon && (clientLat !== 0 || clientLon !== 0);
+
+            if (hasClientLocation) {
+                renderMapWithBothLocations(
+                    serverLocation.lat, serverLocation.lon, serverLocation.city,
+                    clientLat, clientLon
+                );
+            } else {
+                renderMap(serverLocation.lat, serverLocation.lon, serverLocation.city);
+            }
+            state.mapRendered = true;
         }
     }
 
     /**
-     * Render map showing server location
+     * Render map showing server location only (using Leaflet)
      */
     function renderMap(lat, lon, label) {
-        // Use OpenStreetMap embed iframe
-        const zoom = 6;
-        const bbox = calculateBbox(lat, lon, zoom);
+        // Clear container and create map div
+        elements.mapContainer.innerHTML = '<div id="leaflet-map" style="width:100%;height:100%"></div>';
 
-        // Create marker layer URL
-        const markerUrl = `https://www.openstreetmap.org/export/embed.html?bbox=${bbox}&layer=mapnik&marker=${lat},${lon}`;
+        const map = L.map('leaflet-map', {
+            zoomControl: false,
+            attributionControl: false
+        }).setView([lat, lon], 10);
 
-        elements.mapContainer.innerHTML = `
-            <iframe
-                class="map-iframe"
-                src="${markerUrl}"
-                frameborder="0"
-                scrolling="no"
-                loading="lazy"
-                title="Server location: ${label}"
-            ></iframe>
-        `;
+        // Add tile layer (dark theme compatible)
+        L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
+            maxZoom: 19
+        }).addTo(map);
+
+        // Server marker (blue)
+        const serverIcon = L.divIcon({
+            className: 'map-marker server-marker',
+            html: '<div class="marker-dot server"></div>',
+            iconSize: [12, 12],
+            iconAnchor: [6, 6]
+        });
+
+        L.marker([lat, lon], { icon: serverIcon })
+            .bindTooltip(label, { permanent: false, direction: 'top' })
+            .addTo(map);
+
+        state.leafletMap = map;
     }
 
     /**
-     * Calculate bounding box for map given center point and zoom level
+     * Render map showing both server and client locations (using Leaflet)
      */
-    function calculateBbox(lat, lon, zoom) {
-        // Approximate degrees for the viewport at given zoom
-        // Higher zoom = smaller area
-        const latDelta = 180 / Math.pow(2, zoom);
-        const lonDelta = 360 / Math.pow(2, zoom);
+    function renderMapWithBothLocations(serverLat, serverLon, serverLabel, clientLat, clientLon) {
+        // Clear container and create map div
+        elements.mapContainer.innerHTML = '<div id="leaflet-map" style="width:100%;height:100%"></div>';
 
-        const west = lon - lonDelta;
-        const south = lat - latDelta;
-        const east = lon + lonDelta;
-        const north = lat + latDelta;
+        const map = L.map('leaflet-map', {
+            zoomControl: false,
+            attributionControl: false
+        });
 
-        return `${west},${south},${east},${north}`;
+        // Add tile layer (dark theme compatible)
+        L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
+            maxZoom: 19
+        }).addTo(map);
+
+        // Server marker (blue)
+        const serverIcon = L.divIcon({
+            className: 'map-marker server-marker',
+            html: '<div class="marker-dot server"></div>',
+            iconSize: [12, 12],
+            iconAnchor: [6, 6]
+        });
+
+        // Client marker (green)
+        const clientIcon = L.divIcon({
+            className: 'map-marker client-marker',
+            html: '<div class="marker-dot client"></div>',
+            iconSize: [12, 12],
+            iconAnchor: [6, 6]
+        });
+
+        const serverMarker = L.marker([serverLat, serverLon], { icon: serverIcon })
+            .bindTooltip(`Server: ${serverLabel}`, { permanent: false, direction: 'top' })
+            .addTo(map);
+
+        const clientMarker = L.marker([clientLat, clientLon], { icon: clientIcon })
+            .bindTooltip('You', { permanent: false, direction: 'top' })
+            .addTo(map);
+
+        // Fit bounds to show both markers with padding
+        const bounds = L.latLngBounds([
+            [serverLat, serverLon],
+            [clientLat, clientLon]
+        ]);
+        map.fitBounds(bounds, { padding: [30, 30] });
+
+        // Draw a line between them
+        L.polyline([[clientLat, clientLon], [serverLat, serverLon]], {
+            color: '#8b5cf6',
+            weight: 2,
+            opacity: 0.6,
+            dashArray: '5, 10'
+        }).addTo(map);
+
+        state.leafletMap = map;
     }
 
     /**
