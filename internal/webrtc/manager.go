@@ -62,7 +62,9 @@ type PacketMessage struct {
 
 // AckMessage is the JSON format for acknowledgments.
 type AckMessage struct {
-	Ack int `json:"ack"`
+	Ack        int   `json:"ack"`
+	ReceivedAt int64 `json:"receivedAt"`
+	SentAt     int64 `json:"sentAt"`
 }
 
 // NewManager creates a new WebRTC manager.
@@ -234,8 +236,12 @@ func (m *Manager) setupPacketLossChannel(session *Session, dc *webrtc.DataChanne
 		session.Stats.LastRecvTime = time.Now()
 		session.Stats.mu.Unlock()
 
-		// Send ack
-		ack := AckMessage{Ack: pkt.Seq}
+		// Send ack with timestamps for RTT calculation
+		ack := AckMessage{
+			Ack:        pkt.Seq,
+			ReceivedAt: time.Now().UnixMilli(),
+			SentAt:     pkt.SentAt,
+		}
 		ackData, err := json.Marshal(ack)
 		if err != nil {
 			log.Printf("Session %s: failed to marshal ack: %v", session.ID, err)

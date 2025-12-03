@@ -82,6 +82,12 @@ func main() {
 		os.Exit(0)
 	}
 
+	// Track which flags were explicitly set on command line
+	flagsSet := make(map[string]bool)
+	flag.Visit(func(f *flag.Flag) {
+		flagsSet[f.Name] = true
+	})
+
 	// Load config from environment, then override with flags
 	cfg := config.FromEnv()
 
@@ -107,12 +113,19 @@ func main() {
 	if *colo != "" {
 		cfg.Colo = *colo
 	}
-	cfg.TrustProxyHeaders = *trustProxy
-	cfg.EnableCORS = *enableCORS
-	if *corsOrigins != "*" {
+	// Only override boolean flags if explicitly set on command line
+	if flagsSet["trust-proxy"] {
+		cfg.TrustProxyHeaders = *trustProxy
+	}
+	if flagsSet["cors"] {
+		cfg.EnableCORS = *enableCORS
+	}
+	if flagsSet["cors-origins"] {
 		cfg.AllowedOrigins = strings.Split(*corsOrigins, ",")
 	}
-	cfg.EnableServerTiming = *serverTiming
+	if flagsSet["server-timing"] {
+		cfg.EnableServerTiming = *serverTiming
+	}
 	if *turnSecret != "" {
 		cfg.TurnSecret = *turnSecret
 	}
@@ -125,8 +138,10 @@ func main() {
 	if *webDir != "" {
 		cfg.WebDir = *webDir
 	}
-	// Handle embedded TURN flag - can disable via -embedded-turn=false
-	cfg.EmbeddedTurn = *embeddedTurn
+	// Only override embedded-turn if explicitly set on command line
+	if flagsSet["embedded-turn"] {
+		cfg.EmbeddedTurn = *embeddedTurn
+	}
 	if *embeddedTurnAddr != "" {
 		cfg.EmbeddedTurnAddr = *embeddedTurnAddr
 	}

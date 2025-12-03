@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net"
 	"net/http"
 	"strconv"
 	"strings"
@@ -239,10 +240,12 @@ func (s *Server) handleTurnCredentials(w http.ResponseWriter, r *http.Request) {
 	} else if s.cfg.EmbeddedTurnPort != "" && s.cfg.TurnSecret != "" {
 		// Derive TURN server URL from request host
 		host := r.Host
-		// Strip port from host if present
-		if colonIdx := strings.LastIndex(host, ":"); colonIdx != -1 {
-			host = host[:colonIdx]
+		// Strip port from host if present, handling IPv6 addresses properly
+		if h, _, err := net.SplitHostPort(host); err == nil {
+			host = h
 		}
+		// Remove brackets from IPv6 addresses for TURN URL format
+		host = strings.TrimPrefix(strings.TrimSuffix(host, "]"), "[")
 		// Include both STUN and TURN URLs - browsers need STUN for reflexive candidates
 		turnServers = []string{
 			fmt.Sprintf("stun:%s:%s", host, s.cfg.EmbeddedTurnPort),
