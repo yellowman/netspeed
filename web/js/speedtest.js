@@ -672,6 +672,18 @@ const SpeedTest = (function() {
             .filter(s => s.phase === 'upload')
             .map(s => s.rttMs);
 
+        console.log('Sample counts:', {
+            downloads: dlSamples.length,
+            uploads: ulSamples.length,
+            latencyUnloaded: latUnloaded.length,
+            packetLoss: results.packetLoss
+        });
+        console.log('Sample values:', {
+            dlSamples: dlSamples.slice(0, 5),
+            ulSamples: ulSamples.slice(0, 5),
+            latUnloaded: latUnloaded.slice(0, 5)
+        });
+
         return {
             downloadMbps: percentile(dlSamples, 90),
             uploadMbps: percentile(ulSamples, 90),
@@ -689,11 +701,20 @@ const SpeedTest = (function() {
      * Calculate network quality grades
      */
     function calculateQuality(summary) {
-        return {
+        console.log('Quality grading input:', {
+            downloadMbps: summary.downloadMbps,
+            uploadMbps: summary.uploadMbps,
+            latencyUnloadedMs: summary.latencyUnloadedMs,
+            jitterMs: summary.jitterMs,
+            packetLossPercent: summary.packetLossPercent
+        });
+        const quality = {
             videoStreaming: gradeStreaming(summary),
             gaming: gradeGaming(summary),
             videoChatting: gradeVideoChatting(summary)
         };
+        console.log('Quality grades:', quality);
+        return quality;
     }
 
     function gradeStreaming(s) {
