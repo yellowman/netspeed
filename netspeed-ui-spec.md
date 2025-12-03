@@ -883,9 +883,728 @@ simple footer with:
 
 4. **error**
    - if a test segment fails:
-     - mark that card as “Test failed” with a tooltip.
+     - mark that card as "Test failed" with a tooltip.
      - still compute partial summary from available data.
    - if TURN / WebRTC fails:
-     - show “Packet loss test unavailable” placeholder.
+     - show "Packet loss test unavailable" placeholder.
      - do not block other metrics.
+
+---
+
+## 7. extended location display
+
+### 7.1 client location details
+
+display additional location information from `/meta` response:
+
+```ts
+type ExtendedLocation = {
+  country: string;      // ISO country code (e.g., "US")
+  region: string;       // State/province (e.g., "Oregon")
+  city: string;         // City name (e.g., "Bend")
+  postalCode: string;   // ZIP/postal code
+  timezone: string;     // IANA timezone (e.g., "America/Los_Angeles")
+  latitude: number;
+  longitude: number;
+};
+```
+
+**ui layout:**
+
+in the server location card, add expanded client details:
+
+- "Location: `<city>`, `<region>`, `<country>`"
+- "Timezone: `<timezone>`"
+- "Coordinates: `<latitude>°, <longitude>°`"
+- "Distance to server: `<calculated_distance>` km"
+
+**distance calculation:**
+
+```ts
+function haversineDistance(lat1: number, lon1: number, lat2: number, lon2: number): number {
+  const R = 6371; // Earth's radius in km
+  const dLat = (lat2 - lat1) * Math.PI / 180;
+  const dLon = (lon2 - lon1) * Math.PI / 180;
+  const a = Math.sin(dLat/2) * Math.sin(dLat/2) +
+            Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) *
+            Math.sin(dLon/2) * Math.sin(dLon/2);
+  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+  return R * c;
+}
+```
+
+---
+
+## 8. timing breakdown
+
+### 8.1 request timing metrics
+
+capture detailed timing from the Resource Timing API for each request:
+
+```ts
+type TimingBreakdown = {
+  dnsMs: number;        // domainLookupEnd - domainLookupStart
+  tcpMs: number;        // connectEnd - connectStart
+  tlsMs: number;        // connectEnd - secureConnectionStart (if HTTPS)
+  ttfbMs: number;       // responseStart - requestStart (time to first byte)
+  transferMs: number;   // responseEnd - responseStart (body transfer time)
+  totalMs: number;      // responseEnd - fetchStart
+};
+```
+
+**collection:**
+
+```ts
+function extractTiming(entry: PerformanceResourceTiming): TimingBreakdown {
+  return {
+    dnsMs: entry.domainLookupEnd - entry.domainLookupStart,
+    tcpMs: entry.connectEnd - entry.connectStart,
+    tlsMs: entry.secureConnectionStart > 0
+           ? entry.connectEnd - entry.secureConnectionStart
+           : 0,
+    ttfbMs: entry.responseStart - entry.requestStart,
+    transferMs: entry.responseEnd - entry.responseStart,
+    totalMs: entry.responseEnd - entry.fetchStart
+  };
+}
+```
+
+**ui display:**
+
+show timing breakdown in a dedicated section with horizontal stacked bars:
+
+```
+Request Timing Breakdown
+├── DNS Lookup:    2.3 ms  ████
+├── TCP Connect:   8.1 ms  ████████
+├── TLS Handshake: 12.4 ms ████████████
+├── TTFB:          6.2 ms  ██████
+└── Transfer:      45.1 ms ██████████████████████████████████████████
+```
+
+aggregate across all requests to show:
+- average timing per phase
+- min/max timing per phase
+- percentage of total time spent in each phase
+
+---
+
+## 9. packet loss pattern analysis
+
+### 9.1 loss pattern detection
+
+analyze packet loss to distinguish between random loss and burst loss:
+
+```ts
+type LossPattern = {
+  type: 'random' | 'burst' | 'tail' | 'none';
+  burstCount: number;           // number of consecutive loss sequences
+  maxBurstLength: number;       // longest consecutive packet loss
+  avgBurstLength: number;       // average burst length
+  lossDistribution: number[];   // histogram of loss positions (10 buckets)
+  earlyLossPercent: number;     // % of losses in first half
+  lateLossPercent: number;      // % of losses in second half
+};
+```
+
+**detection algorithm:**
+
+```ts
+function analyzeLossPattern(sent: number, acks: Set<number>): LossPattern {
+  const losses: number[] = [];
+  for (let i = 0; i < sent; i++) {
+    if (!acks.has(i)) losses.push(i);
+  }
+
+  if (losses.length === 0) {
+    return { type: 'none', burstCount: 0, maxBurstLength: 0, avgBurstLength: 0,
+             lossDistribution: new Array(10).fill(0), earlyLossPercent: 0, lateLossPercent: 0 };
+  }
+
+  // Detect bursts (consecutive losses)
+  const bursts: number[] = [];
+  let currentBurst = 1;
+  for (let i = 1; i < losses.length; i++) {
+    if (losses[i] === losses[i-1] + 1) {
+      currentBurst++;
+    } else {
+      bursts.push(currentBurst);
+      currentBurst = 1;
+    }
+  }
+  bursts.push(currentBurst);
+
+  const maxBurstLength = Math.max(...bursts);
+  const avgBurstLength = bursts.reduce((a, b) => a + b, 0) / bursts.length;
+
+  // Calculate distribution across test duration
+  const bucketSize = sent / 10;
+  const distribution = new Array(10).fill(0);
+  losses.forEach(seq => {
+    const bucket = Math.min(9, Math.floor(seq / bucketSize));
+    distribution[bucket]++;
+  });
+
+  const midpoint = sent / 2;
+  const earlyLosses = losses.filter(s => s < midpoint).length;
+  const earlyLossPercent = (earlyLosses / losses.length) * 100;
+  const lateLossPercent = 100 - earlyLossPercent;
+
+  // Classify pattern
+  let type: 'random' | 'burst' | 'tail' | 'none';
+  if (maxBurstLength >= 10 || avgBurstLength > 3) {
+    type = 'burst';
+  } else if (lateLossPercent > 70) {
+    type = 'tail';  // Connection degradation toward end
+  } else {
+    type = 'random';
+  }
+
+  return {
+    type,
+    burstCount: bursts.length,
+    maxBurstLength,
+    avgBurstLength,
+    lossDistribution: distribution,
+    earlyLossPercent,
+    lateLossPercent
+  };
+}
+```
+
+**ui display:**
+
+show packet loss analysis card with:
+
+- loss type badge: "Random Loss" (yellow), "Burst Loss" (red), "Tail Loss" (orange), "No Loss" (green)
+- loss timeline visualization (horizontal bar divided into 10 segments, colored by loss density)
+- burst statistics:
+  - "Burst count: N sequences"
+  - "Max burst: N consecutive packets"
+  - "Avg burst: N.N packets"
+- distribution chart showing loss density across test duration
+
+---
+
+## 10. data channel statistics
+
+### 10.1 webrtc data channel metrics
+
+collect statistics from the WebRTC data channel during packet loss test:
+
+```ts
+type DataChannelStats = {
+  // Connection info
+  connectionType: 'host' | 'srflx' | 'prflx' | 'relay';
+  localCandidateType: string;
+  remoteCandidateType: string;
+  protocol: 'udp' | 'tcp';
+
+  // Throughput
+  bytesSent: number;
+  bytesReceived: number;
+  messagesSent: number;
+  messagesReceived: number;
+
+  // Timing
+  connectionSetupMs: number;     // time from offer to data channel open
+  iceGatheringMs: number;        // time for ICE gathering
+  dtlsHandshakeMs: number;       // DTLS handshake duration
+
+  // Quality
+  availableOutgoingBitrate?: number;  // estimated available bandwidth
+  currentRoundTripTime?: number;      // current RTT from ICE
+};
+```
+
+**collection from RTCPeerConnection:**
+
+```ts
+async function collectDataChannelStats(pc: RTCPeerConnection): Promise<DataChannelStats> {
+  const stats = await pc.getStats();
+
+  let connectionType = 'unknown';
+  let localCandidateType = '';
+  let remoteCandidateType = '';
+  let protocol = 'udp';
+  let bytesSent = 0;
+  let bytesReceived = 0;
+  let messagesSent = 0;
+  let messagesReceived = 0;
+  let availableOutgoingBitrate;
+  let currentRoundTripTime;
+
+  stats.forEach(report => {
+    if (report.type === 'candidate-pair' && report.nominated) {
+      currentRoundTripTime = report.currentRoundTripTime * 1000; // to ms
+      availableOutgoingBitrate = report.availableOutgoingBitrate;
+    }
+
+    if (report.type === 'local-candidate' && report.isRemote === false) {
+      localCandidateType = report.candidateType;
+      protocol = report.protocol;
+    }
+
+    if (report.type === 'remote-candidate') {
+      remoteCandidateType = report.candidateType;
+    }
+
+    if (report.type === 'data-channel') {
+      bytesSent = report.bytesSent;
+      bytesReceived = report.bytesReceived;
+      messagesSent = report.messagesSent;
+      messagesReceived = report.messagesReceived;
+    }
+  });
+
+  // Determine connection type based on candidate types
+  if (localCandidateType === 'relay' || remoteCandidateType === 'relay') {
+    connectionType = 'relay';  // TURN server used
+  } else if (localCandidateType === 'srflx' || remoteCandidateType === 'srflx') {
+    connectionType = 'srflx';  // STUN server used (NAT traversal)
+  } else if (localCandidateType === 'prflx' || remoteCandidateType === 'prflx') {
+    connectionType = 'prflx';  // Peer reflexive
+  } else {
+    connectionType = 'host';   // Direct connection
+  }
+
+  return {
+    connectionType,
+    localCandidateType,
+    remoteCandidateType,
+    protocol,
+    bytesSent,
+    bytesReceived,
+    messagesSent,
+    messagesReceived,
+    connectionSetupMs: 0,  // calculated separately
+    iceGatheringMs: 0,     // calculated separately
+    dtlsHandshakeMs: 0,    // calculated separately
+    availableOutgoingBitrate,
+    currentRoundTripTime
+  };
+}
+```
+
+**ui display:**
+
+show data channel stats in packet loss section:
+
+- connection path indicator: "Direct" / "STUN (NAT)" / "TURN Relay"
+- protocol badge: "UDP" / "TCP"
+- data transferred: "Sent: X.X KB, Received: X.X KB"
+- connection timing breakdown:
+  - "ICE Gathering: X ms"
+  - "DTLS Handshake: X ms"
+  - "Total Setup: X ms"
+
+---
+
+## 11. bandwidth estimation
+
+### 11.1 available bandwidth metrics
+
+estimate available bandwidth from throughput samples and WebRTC stats:
+
+```ts
+type BandwidthEstimate = {
+  // Raw estimates
+  downloadPeakMbps: number;      // maximum observed download
+  downloadSustainedMbps: number; // 75th percentile download
+  uploadPeakMbps: number;        // maximum observed upload
+  uploadSustainedMbps: number;   // 75th percentile upload
+
+  // WebRTC-based estimate (if available)
+  webrtcEstimateMbps?: number;
+
+  // Stability metrics
+  downloadVariability: number;   // coefficient of variation (std/mean)
+  uploadVariability: number;
+
+  // Trend analysis
+  downloadTrend: 'stable' | 'improving' | 'degrading';
+  uploadTrend: 'stable' | 'improving' | 'degrading';
+};
+```
+
+**calculation:**
+
+```ts
+function estimateBandwidth(samples: ThroughputSample[]): BandwidthEstimate {
+  const dlSamples = samples.filter(s => s.direction === 'download').map(s => s.mbps);
+  const ulSamples = samples.filter(s => s.direction === 'upload').map(s => s.mbps);
+
+  function stats(arr: number[]) {
+    if (arr.length === 0) return { peak: 0, sustained: 0, variability: 0, trend: 'stable' as const };
+
+    const sorted = [...arr].sort((a, b) => a - b);
+    const peak = Math.max(...arr);
+    const sustained = sorted[Math.floor(sorted.length * 0.75)] || peak;
+
+    const mean = arr.reduce((a, b) => a + b, 0) / arr.length;
+    const std = Math.sqrt(arr.reduce((sum, x) => sum + (x - mean) ** 2, 0) / arr.length);
+    const variability = mean > 0 ? std / mean : 0;
+
+    // Trend: compare first third to last third
+    const third = Math.floor(arr.length / 3);
+    if (third > 0) {
+      const firstThird = arr.slice(0, third).reduce((a, b) => a + b, 0) / third;
+      const lastThird = arr.slice(-third).reduce((a, b) => a + b, 0) / third;
+      const change = (lastThird - firstThird) / firstThird;
+      if (change > 0.1) return { peak, sustained, variability, trend: 'improving' as const };
+      if (change < -0.1) return { peak, sustained, variability, trend: 'degrading' as const };
+    }
+
+    return { peak, sustained, variability, trend: 'stable' as const };
+  }
+
+  const dlStats = stats(dlSamples);
+  const ulStats = stats(ulSamples);
+
+  return {
+    downloadPeakMbps: dlStats.peak,
+    downloadSustainedMbps: dlStats.sustained,
+    uploadPeakMbps: ulStats.peak,
+    uploadSustainedMbps: ulStats.sustained,
+    downloadVariability: dlStats.variability,
+    uploadVariability: ulStats.variability,
+    downloadTrend: dlStats.trend,
+    uploadTrend: ulStats.trend
+  };
+}
+```
+
+**ui display:**
+
+show bandwidth estimation card with:
+
+- peak vs sustained comparison:
+  ```
+  Download: 850 Mbps peak / 720 Mbps sustained
+  Upload: 420 Mbps peak / 380 Mbps sustained
+  ```
+- stability indicator: "Stable" / "Variable" based on variability coefficient
+- trend arrow: ↑ improving / → stable / ↓ degrading
+- variability percentage: "±12% variation"
+
+---
+
+## 12. network quality scoring (enhanced)
+
+### 12.1 composite quality score
+
+calculate an overall network quality score (0-100) and component subscores:
+
+```ts
+type NetworkQualityScore = {
+  overall: number;           // 0-100 composite score
+  components: {
+    bandwidth: number;       // 0-100 based on download/upload speed
+    latency: number;         // 0-100 based on unloaded latency
+    stability: number;       // 0-100 based on jitter and variability
+    reliability: number;     // 0-100 based on packet loss
+  };
+  grade: 'A+' | 'A' | 'B' | 'C' | 'D' | 'F';
+  description: string;
+};
+```
+
+**scoring algorithm:**
+
+```ts
+function calculateNetworkQualityScore(summary: Summary, bandwidth: BandwidthEstimate): NetworkQualityScore {
+  // Bandwidth score (0-100)
+  // 1000 Mbps = 100, 100 Mbps = 80, 25 Mbps = 50, 5 Mbps = 20
+  const bwScore = Math.min(100,
+    (Math.log10(Math.max(1, summary.downloadMbps)) / Math.log10(1000)) * 100
+  );
+
+  // Latency score (0-100)
+  // <5ms = 100, 10ms = 90, 25ms = 70, 50ms = 50, 100ms = 20
+  const latScore = Math.max(0, 100 - (summary.latencyUnloadedMs * 1.5));
+
+  // Stability score (0-100)
+  // Based on jitter and bandwidth variability
+  const jitterPenalty = Math.min(50, summary.jitterMs * 3);
+  const variabilityPenalty = Math.min(30, bandwidth.downloadVariability * 100);
+  const stabScore = Math.max(0, 100 - jitterPenalty - variabilityPenalty);
+
+  // Reliability score (0-100)
+  // 0% loss = 100, 0.1% = 95, 1% = 70, 5% = 30
+  const reliScore = Math.max(0, 100 - (summary.packetLossPercent * 15));
+
+  // Weighted composite (bandwidth 35%, latency 25%, stability 20%, reliability 20%)
+  const overall = Math.round(
+    bwScore * 0.35 + latScore * 0.25 + stabScore * 0.20 + reliScore * 0.20
+  );
+
+  // Letter grade
+  let grade: 'A+' | 'A' | 'B' | 'C' | 'D' | 'F';
+  if (overall >= 95) grade = 'A+';
+  else if (overall >= 85) grade = 'A';
+  else if (overall >= 70) grade = 'B';
+  else if (overall >= 55) grade = 'C';
+  else if (overall >= 40) grade = 'D';
+  else grade = 'F';
+
+  // Description
+  const descriptions = {
+    'A+': 'Exceptional - Suitable for any application',
+    'A': 'Excellent - Great for gaming, streaming, and video calls',
+    'B': 'Good - Suitable for most online activities',
+    'C': 'Fair - May experience occasional issues with demanding applications',
+    'D': 'Poor - Expect frequent buffering and lag',
+    'F': 'Very Poor - Connection issues likely for most activities'
+  };
+
+  return {
+    overall,
+    components: {
+      bandwidth: Math.round(bwScore),
+      latency: Math.round(latScore),
+      stability: Math.round(stabScore),
+      reliability: Math.round(reliScore)
+    },
+    grade,
+    description: descriptions[grade]
+  };
+}
+```
+
+**ui display:**
+
+show network quality score prominently:
+
+- large circular gauge showing overall score (0-100)
+- letter grade badge in center
+- four component bars:
+  - "Bandwidth: 85/100"
+  - "Latency: 92/100"
+  - "Stability: 78/100"
+  - "Reliability: 95/100"
+- description text below
+- color coding: green (A+/A), blue (B), yellow (C), orange (D), red (F)
+
+---
+
+## 13. test confidence metrics
+
+### 13.1 measurement quality assessment
+
+evaluate the confidence/reliability of test results:
+
+```ts
+type TestConfidence = {
+  overall: 'high' | 'medium' | 'low';
+  overallScore: number;          // 0-100
+
+  metrics: {
+    sampleCount: {
+      download: number;
+      upload: number;
+      latency: number;
+      adequate: boolean;
+    };
+
+    coefficientOfVariation: {
+      download: number;          // std/mean as percentage
+      upload: number;
+      latency: number;
+      acceptable: boolean;       // <30% is acceptable
+    };
+
+    outlierRate: {
+      download: number;          // percentage of samples excluded
+      upload: number;
+      latency: number;
+      acceptable: boolean;       // <20% is acceptable
+    };
+
+    timingAccuracy: {
+      resourceTimingUsed: boolean;
+      serverTimingUsed: boolean;
+      fallbackCount: number;
+      accurate: boolean;
+    };
+
+    connectionStability: {
+      abortedTests: number;
+      retriedTests: number;
+      packetTestCompleted: boolean;
+      stable: boolean;
+    };
+  };
+
+  warnings: string[];
+};
+```
+
+**calculation:**
+
+```ts
+function assessTestConfidence(
+  samples: ThroughputSample[],
+  latency: LatencySample[],
+  packetLoss: PacketLossResult | null,
+  timingStats: { resourceTiming: number; serverTiming: number; fallback: number }
+): TestConfidence {
+  const warnings: string[] = [];
+
+  // Sample counts
+  const dlCount = samples.filter(s => s.direction === 'download').length;
+  const ulCount = samples.filter(s => s.direction === 'upload').length;
+  const latCount = latency.filter(s => s.phase === 'unloaded').length;
+  const sampleAdequate = dlCount >= 20 && ulCount >= 15 && latCount >= 10;
+  if (!sampleAdequate) warnings.push('Insufficient samples for high confidence');
+
+  // Coefficient of variation
+  function cv(arr: number[]): number {
+    if (arr.length < 2) return 0;
+    const mean = arr.reduce((a, b) => a + b, 0) / arr.length;
+    const std = Math.sqrt(arr.reduce((sum, x) => sum + (x - mean) ** 2, 0) / arr.length);
+    return (std / mean) * 100;
+  }
+
+  const dlCV = cv(samples.filter(s => s.direction === 'download').map(s => s.mbps));
+  const ulCV = cv(samples.filter(s => s.direction === 'upload').map(s => s.mbps));
+  const latCV = cv(latency.filter(s => s.phase === 'unloaded').map(s => s.rttMs));
+  const cvAcceptable = dlCV < 30 && ulCV < 30 && latCV < 50;
+  if (!cvAcceptable) warnings.push('High variability in measurements');
+
+  // Outlier rate (samples that were filtered out)
+  // This would need to be tracked during test execution
+  const outlierAcceptable = true; // placeholder
+
+  // Timing accuracy
+  const totalRequests = timingStats.resourceTiming + timingStats.serverTiming + timingStats.fallback;
+  const accurateTimingPercent = totalRequests > 0
+    ? ((timingStats.resourceTiming + timingStats.serverTiming) / totalRequests) * 100
+    : 0;
+  const timingAccurate = accurateTimingPercent > 80;
+  if (!timingAccurate) warnings.push('Timing API fallbacks may reduce accuracy');
+
+  // Connection stability
+  const connectionStable = packetLoss !== null && !packetLoss.unavailable;
+  if (!connectionStable) warnings.push('Packet loss test incomplete');
+
+  // Overall score (0-100)
+  let score = 100;
+  if (!sampleAdequate) score -= 20;
+  if (!cvAcceptable) score -= 25;
+  if (!timingAccurate) score -= 15;
+  if (!connectionStable) score -= 15;
+
+  let overall: 'high' | 'medium' | 'low';
+  if (score >= 80) overall = 'high';
+  else if (score >= 50) overall = 'medium';
+  else overall = 'low';
+
+  return {
+    overall,
+    overallScore: Math.max(0, score),
+    metrics: {
+      sampleCount: { download: dlCount, upload: ulCount, latency: latCount, adequate: sampleAdequate },
+      coefficientOfVariation: { download: dlCV, upload: ulCV, latency: latCV, acceptable: cvAcceptable },
+      outlierRate: { download: 0, upload: 0, latency: 0, acceptable: outlierAcceptable },
+      timingAccuracy: {
+        resourceTimingUsed: timingStats.resourceTiming > 0,
+        serverTimingUsed: timingStats.serverTiming > 0,
+        fallbackCount: timingStats.fallback,
+        accurate: timingAccurate
+      },
+      connectionStability: {
+        abortedTests: 0,
+        retriedTests: 0,
+        packetTestCompleted: connectionStable,
+        stable: connectionStable
+      }
+    },
+    warnings
+  };
+}
+```
+
+**ui display:**
+
+show test confidence section:
+
+- confidence badge: "High Confidence" (green) / "Medium Confidence" (yellow) / "Low Confidence" (red)
+- expandable details:
+  - "Samples: ✓ Download (31), ✓ Upload (25), ✓ Latency (18)"
+  - "Variability: ✓ Download ±8%, ✓ Upload ±12%, ✓ Latency ±15%"
+  - "Timing: ✓ Resource Timing API used (95% of requests)"
+  - "Connection: ✓ Stable throughout test"
+- warnings list (if any):
+  - "⚠ High variability in measurements"
+  - "⚠ Some timing fallbacks used"
+
+---
+
+## 14. updated data model
+
+### 14.1 enhanced result types
+
+```ts
+type EnhancedResults = {
+  // Existing fields
+  meta: Meta;
+  locations: Location[];
+  throughputSamples: ThroughputSample[];
+  latencySamples: LatencySample[];
+  packetLoss: PacketLossResult | null;
+  summary: Summary;
+  quality: NetworkQuality;
+  startTime: number;
+  endTime: number;
+
+  // New fields
+  extendedLocation: ExtendedLocation;
+  timingBreakdown: TimingBreakdown[];
+  lossPattern: LossPattern;
+  dataChannelStats: DataChannelStats | null;
+  bandwidthEstimate: BandwidthEstimate;
+  networkQualityScore: NetworkQualityScore;
+  testConfidence: TestConfidence;
+};
+```
+
+### 14.2 timing sample extension
+
+extend `ThroughputSample` to include timing breakdown:
+
+```ts
+type ThroughputSampleExtended = ThroughputSample & {
+  timing?: TimingBreakdown;
+};
+```
+
+---
+
+## 15. test run counts
+
+### 15.1 download profiles
+
+| Profile | Size | Runs |
+|---------|------|------|
+| 100kB   | 100,000 bytes | 10 |
+| 1MB     | 1,000,000 bytes | 8 |
+| 10MB    | 10,000,000 bytes | 6 |
+| 25MB    | 25,000,000 bytes | 4 |
+| 100MB   | 100,000,000 bytes | 3 |
+
+**Total download tests:** 31
+
+### 15.2 upload profiles
+
+| Profile | Size | Runs |
+|---------|------|------|
+| 100kB   | 100,000 bytes | 8 |
+| 1MB     | 1,000,000 bytes | 6 |
+| 10MB    | 10,000,000 bytes | 4 |
+| 25MB    | 25,000,000 bytes | 4 |
+| 50MB    | 50,000,000 bytes | 3 |
+
+**Total upload tests:** 25
+
+**Note:** Sizes use decimal (kB/MB) notation: 1 kB = 1,000 bytes, 1 MB = 1,000,000 bytes.
 

@@ -45,7 +45,15 @@ const SpeedTest = (function() {
         latencySamples: [],
         packetLoss: null,
         startTime: null,
-        endTime: null
+        endTime: null,
+        // New enhanced fields
+        timingBreakdown: [],
+        lossPattern: null,
+        dataChannelStats: null,
+        bandwidthEstimate: null,
+        networkQualityScore: null,
+        testConfidence: null,
+        timingStats: { resourceTiming: 0, serverTiming: 0, fallback: 0 }
     };
 
     // Event callbacks
@@ -752,6 +760,12 @@ const SpeedTest = (function() {
                 jitterMs = rttSamples.reduce((sum, rtt) => sum + Math.abs(rtt - mean), 0) / rttSamples.length;
             }
 
+            // Collect data channel stats before closing
+            results.dataChannelStats = await collectDataChannelStats(pc);
+
+            // Analyze loss pattern
+            results.lossPattern = analyzeLossPattern(sent, acks);
+
             const result = {
                 sent,
                 received,
@@ -1006,6 +1020,343 @@ const SpeedTest = (function() {
     }
 
     /**
+     * Analyze loss pattern from packet loss test
+     */
+    function analyzeLossPattern(sent, acks) {
+        const losses = [];
+        for (let i = 0; i < sent; i++) {
+            if (!acks.has(i)) losses.push(i);
+        }
+
+        if (losses.length === 0) {
+            return {
+                type: 'none',
+                burstCount: 0,
+                maxBurstLength: 0,
+                avgBurstLength: 0,
+                lossDistribution: new Array(10).fill(0),
+                earlyLossPercent: 0,
+                lateLossPercent: 0
+            };
+        }
+
+        // Detect bursts (consecutive losses)
+        const bursts = [];
+        let currentBurst = 1;
+        for (let i = 1; i < losses.length; i++) {
+            if (losses[i] === losses[i - 1] + 1) {
+                currentBurst++;
+            } else {
+                bursts.push(currentBurst);
+                currentBurst = 1;
+            }
+        }
+        bursts.push(currentBurst);
+
+        const maxBurstLength = Math.max(...bursts);
+        const avgBurstLength = bursts.reduce((a, b) => a + b, 0) / bursts.length;
+
+        // Calculate distribution across test duration
+        const bucketSize = sent / 10;
+        const distribution = new Array(10).fill(0);
+        losses.forEach(seq => {
+            const bucket = Math.min(9, Math.floor(seq / bucketSize));
+            distribution[bucket]++;
+        });
+
+        const midpoint = sent / 2;
+        const earlyLosses = losses.filter(s => s < midpoint).length;
+        const earlyLossPercent = (earlyLosses / losses.length) * 100;
+        const lateLossPercent = 100 - earlyLossPercent;
+
+        // Classify pattern
+        let type;
+        if (maxBurstLength >= 10 || avgBurstLength > 3) {
+            type = 'burst';
+        } else if (lateLossPercent > 70) {
+            type = 'tail';
+        } else {
+            type = 'random';
+        }
+
+        return {
+            type,
+            burstCount: bursts.length,
+            maxBurstLength,
+            avgBurstLength,
+            lossDistribution: distribution,
+            earlyLossPercent,
+            lateLossPercent
+        };
+    }
+
+    /**
+     * Estimate bandwidth from samples
+     */
+    function estimateBandwidth(samples) {
+        const dlSamples = samples.filter(s => s.direction === 'download').map(s => s.mbps);
+        const ulSamples = samples.filter(s => s.direction === 'upload').map(s => s.mbps);
+
+        function stats(arr) {
+            if (arr.length === 0) return { peak: 0, sustained: 0, variability: 0, trend: 'stable' };
+
+            const sorted = [...arr].sort((a, b) => a - b);
+            const peak = Math.max(...arr);
+            const sustained = sorted[Math.floor(sorted.length * 0.75)] || peak;
+
+            const mean = arr.reduce((a, b) => a + b, 0) / arr.length;
+            const std = Math.sqrt(arr.reduce((sum, x) => sum + (x - mean) ** 2, 0) / arr.length);
+            const variability = mean > 0 ? std / mean : 0;
+
+            // Trend: compare first third to last third
+            const third = Math.floor(arr.length / 3);
+            let trend = 'stable';
+            if (third > 0) {
+                const firstThird = arr.slice(0, third).reduce((a, b) => a + b, 0) / third;
+                const lastThird = arr.slice(-third).reduce((a, b) => a + b, 0) / third;
+                const change = firstThird > 0 ? (lastThird - firstThird) / firstThird : 0;
+                if (change > 0.1) trend = 'improving';
+                else if (change < -0.1) trend = 'degrading';
+            }
+
+            return { peak, sustained, variability, trend };
+        }
+
+        const dlStats = stats(dlSamples);
+        const ulStats = stats(ulSamples);
+
+        return {
+            downloadPeakMbps: dlStats.peak,
+            downloadSustainedMbps: dlStats.sustained,
+            uploadPeakMbps: ulStats.peak,
+            uploadSustainedMbps: ulStats.sustained,
+            downloadVariability: dlStats.variability,
+            uploadVariability: ulStats.variability,
+            downloadTrend: dlStats.trend,
+            uploadTrend: ulStats.trend
+        };
+    }
+
+    /**
+     * Calculate network quality score (0-100)
+     */
+    function calculateNetworkQualityScore(summary, bandwidth) {
+        // Bandwidth score (0-100)
+        const bwScore = Math.min(100,
+            (Math.log10(Math.max(1, summary.downloadMbps)) / Math.log10(1000)) * 100
+        );
+
+        // Latency score (0-100)
+        const latScore = Math.max(0, 100 - (summary.latencyUnloadedMs * 1.5));
+
+        // Stability score (0-100)
+        const jitterPenalty = Math.min(50, summary.jitterMs * 3);
+        const variabilityPenalty = Math.min(30, bandwidth.downloadVariability * 100);
+        const stabScore = Math.max(0, 100 - jitterPenalty - variabilityPenalty);
+
+        // Reliability score (0-100)
+        const reliScore = Math.max(0, 100 - (summary.packetLossPercent * 15));
+
+        // Weighted composite
+        const overall = Math.round(
+            bwScore * 0.35 + latScore * 0.25 + stabScore * 0.20 + reliScore * 0.20
+        );
+
+        // Letter grade
+        let grade;
+        if (overall >= 95) grade = 'A+';
+        else if (overall >= 85) grade = 'A';
+        else if (overall >= 70) grade = 'B';
+        else if (overall >= 55) grade = 'C';
+        else if (overall >= 40) grade = 'D';
+        else grade = 'F';
+
+        const descriptions = {
+            'A+': 'Exceptional - Suitable for any application',
+            'A': 'Excellent - Great for gaming, streaming, and video calls',
+            'B': 'Good - Suitable for most online activities',
+            'C': 'Fair - May experience occasional issues with demanding applications',
+            'D': 'Poor - Expect frequent buffering and lag',
+            'F': 'Very Poor - Connection issues likely for most activities'
+        };
+
+        return {
+            overall,
+            components: {
+                bandwidth: Math.round(bwScore),
+                latency: Math.round(latScore),
+                stability: Math.round(stabScore),
+                reliability: Math.round(reliScore)
+            },
+            grade,
+            description: descriptions[grade]
+        };
+    }
+
+    /**
+     * Assess test confidence
+     */
+    function assessTestConfidence(samples, latency, packetLoss, timingStats) {
+        const warnings = [];
+
+        // Sample counts
+        const dlCount = samples.filter(s => s.direction === 'download').length;
+        const ulCount = samples.filter(s => s.direction === 'upload').length;
+        const latCount = latency.filter(s => s.phase === 'unloaded').length;
+        const sampleAdequate = dlCount >= 20 && ulCount >= 15 && latCount >= 10;
+        if (!sampleAdequate) warnings.push('Insufficient samples for high confidence');
+
+        // Coefficient of variation
+        function cv(arr) {
+            if (arr.length < 2) return 0;
+            const mean = arr.reduce((a, b) => a + b, 0) / arr.length;
+            const std = Math.sqrt(arr.reduce((sum, x) => sum + (x - mean) ** 2, 0) / arr.length);
+            return (std / mean) * 100;
+        }
+
+        const dlCV = cv(samples.filter(s => s.direction === 'download').map(s => s.mbps));
+        const ulCV = cv(samples.filter(s => s.direction === 'upload').map(s => s.mbps));
+        const latCV = cv(latency.filter(s => s.phase === 'unloaded').map(s => s.rttMs));
+        const cvAcceptable = dlCV < 30 && ulCV < 30 && latCV < 50;
+        if (!cvAcceptable) warnings.push('High variability in measurements');
+
+        // Timing accuracy
+        const totalRequests = timingStats.resourceTiming + timingStats.serverTiming + timingStats.fallback;
+        const accurateTimingPercent = totalRequests > 0
+            ? ((timingStats.resourceTiming + timingStats.serverTiming) / totalRequests) * 100
+            : 0;
+        const timingAccurate = accurateTimingPercent > 80;
+        if (!timingAccurate && totalRequests > 0) warnings.push('Timing API fallbacks may reduce accuracy');
+
+        // Connection stability
+        const connectionStable = packetLoss !== null && !packetLoss.unavailable;
+        if (!connectionStable) warnings.push('Packet loss test incomplete');
+
+        // Overall score
+        let score = 100;
+        if (!sampleAdequate) score -= 20;
+        if (!cvAcceptable) score -= 25;
+        if (!timingAccurate) score -= 15;
+        if (!connectionStable) score -= 15;
+
+        let overall;
+        if (score >= 80) overall = 'high';
+        else if (score >= 50) overall = 'medium';
+        else overall = 'low';
+
+        return {
+            overall,
+            overallScore: Math.max(0, score),
+            metrics: {
+                sampleCount: { download: dlCount, upload: ulCount, latency: latCount, adequate: sampleAdequate },
+                coefficientOfVariation: { download: dlCV, upload: ulCV, latency: latCV, acceptable: cvAcceptable },
+                timingAccuracy: {
+                    resourceTimingUsed: timingStats.resourceTiming > 0,
+                    serverTimingUsed: timingStats.serverTiming > 0,
+                    fallbackCount: timingStats.fallback,
+                    accurate: timingAccurate
+                },
+                connectionStability: {
+                    packetTestCompleted: connectionStable,
+                    stable: connectionStable
+                }
+            },
+            warnings
+        };
+    }
+
+    /**
+     * Extract timing breakdown from a request
+     */
+    function extractTimingBreakdown(entry) {
+        if (!entry) return null;
+
+        return {
+            dnsMs: entry.domainLookupEnd - entry.domainLookupStart,
+            tcpMs: entry.connectEnd - entry.connectStart,
+            tlsMs: entry.secureConnectionStart > 0
+                ? entry.connectEnd - entry.secureConnectionStart
+                : 0,
+            ttfbMs: entry.responseStart - entry.requestStart,
+            transferMs: entry.responseEnd - entry.responseStart,
+            totalMs: entry.responseEnd - entry.fetchStart
+        };
+    }
+
+    /**
+     * Collect data channel stats from WebRTC peer connection
+     */
+    async function collectDataChannelStats(pc) {
+        try {
+            const stats = await pc.getStats();
+            let connectionType = 'unknown';
+            let localCandidateType = '';
+            let remoteCandidateType = '';
+            let protocol = 'udp';
+            let bytesSent = 0;
+            let bytesReceived = 0;
+            let messagesSent = 0;
+            let messagesReceived = 0;
+            let availableOutgoingBitrate;
+            let currentRoundTripTime;
+
+            stats.forEach(report => {
+                if (report.type === 'candidate-pair' && report.nominated) {
+                    if (report.currentRoundTripTime !== undefined) {
+                        currentRoundTripTime = report.currentRoundTripTime * 1000;
+                    }
+                    if (report.availableOutgoingBitrate !== undefined) {
+                        availableOutgoingBitrate = report.availableOutgoingBitrate;
+                    }
+                }
+
+                if (report.type === 'local-candidate') {
+                    localCandidateType = report.candidateType;
+                    if (report.protocol) protocol = report.protocol;
+                }
+
+                if (report.type === 'remote-candidate') {
+                    remoteCandidateType = report.candidateType;
+                }
+
+                if (report.type === 'data-channel') {
+                    bytesSent = report.bytesSent || 0;
+                    bytesReceived = report.bytesReceived || 0;
+                    messagesSent = report.messagesSent || 0;
+                    messagesReceived = report.messagesReceived || 0;
+                }
+            });
+
+            // Determine connection type
+            if (localCandidateType === 'relay' || remoteCandidateType === 'relay') {
+                connectionType = 'relay';
+            } else if (localCandidateType === 'srflx' || remoteCandidateType === 'srflx') {
+                connectionType = 'srflx';
+            } else if (localCandidateType === 'prflx' || remoteCandidateType === 'prflx') {
+                connectionType = 'prflx';
+            } else if (localCandidateType === 'host' || remoteCandidateType === 'host') {
+                connectionType = 'host';
+            }
+
+            return {
+                connectionType,
+                localCandidateType,
+                remoteCandidateType,
+                protocol,
+                bytesSent,
+                bytesReceived,
+                messagesSent,
+                messagesReceived,
+                availableOutgoingBitrate,
+                currentRoundTripTime
+            };
+        } catch (e) {
+            console.error('Failed to collect data channel stats:', e);
+            return null;
+        }
+    }
+
+    /**
      * Start the full test suite
      */
     async function start() {
@@ -1030,7 +1381,14 @@ const SpeedTest = (function() {
             latencySamples: [],
             packetLoss: null,
             startTime: Date.now(),
-            endTime: null
+            endTime: null,
+            timingBreakdown: [],
+            lossPattern: null,
+            dataChannelStats: null,
+            bandwidthEstimate: null,
+            networkQualityScore: null,
+            testConfidence: null,
+            timingStats: { resourceTiming: 0, serverTiming: 0, fallback: 0 }
         };
 
         try {
@@ -1079,6 +1437,27 @@ const SpeedTest = (function() {
             // Calculate final summary
             const summary = calculateSummary();
             const quality = calculateQuality(summary);
+
+            // Calculate enhanced metrics
+            results.bandwidthEstimate = estimateBandwidth(results.throughputSamples);
+            results.networkQualityScore = calculateNetworkQualityScore(summary, results.bandwidthEstimate);
+            results.testConfidence = assessTestConfidence(
+                results.throughputSamples,
+                results.latencySamples,
+                results.packetLoss,
+                results.timingStats
+            );
+
+            // Collect timing breakdown from Resource Timing API
+            try {
+                const entries = performance.getEntriesByType('resource')
+                    .filter(e => e.name.includes('/__down') || e.name.includes('/__up'));
+                results.timingBreakdown = entries
+                    .map(e => extractTimingBreakdown(e))
+                    .filter(t => t !== null);
+            } catch (e) {
+                console.log('Could not collect timing breakdown:', e);
+            }
 
             if (callbacks.onComplete) {
                 callbacks.onComplete(results, summary, quality);

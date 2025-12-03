@@ -98,6 +98,76 @@
         elements.rttP90 = document.getElementById('rttP90');
         elements.rttJitter = document.getElementById('rttJitter');
 
+        // Extended location
+        elements.clientLocation = document.getElementById('clientLocation');
+        elements.clientTimezone = document.getElementById('clientTimezone');
+        elements.serverDistance = document.getElementById('serverDistance');
+
+        // Loss pattern analysis
+        elements.lossTypeBadge = document.getElementById('lossTypeBadge');
+        elements.lossTimeline = document.getElementById('lossTimeline');
+        elements.burstCount = document.getElementById('burstCount');
+        elements.maxBurst = document.getElementById('maxBurst');
+        elements.avgBurst = document.getElementById('avgBurst');
+
+        // Data channel stats
+        elements.webrtcConnectionBadge = document.getElementById('webrtcConnectionBadge');
+        elements.connectionPath = document.getElementById('connectionPath');
+        elements.webrtcProtocol = document.getElementById('webrtcProtocol');
+        elements.dataSent = document.getElementById('dataSent');
+        elements.dataReceived = document.getElementById('dataReceived');
+        elements.iceGatheringTime = document.getElementById('iceGatheringTime');
+        elements.connectionSetupTime = document.getElementById('connectionSetupTime');
+        elements.iceRtt = document.getElementById('iceRtt');
+
+        // Bandwidth estimation
+        elements.downloadTrend = document.getElementById('downloadTrend');
+        elements.downloadPeak = document.getElementById('downloadPeak');
+        elements.downloadSustained = document.getElementById('downloadSustained');
+        elements.downloadVariability = document.getElementById('downloadVariability');
+        elements.uploadTrend = document.getElementById('uploadTrend');
+        elements.uploadPeak = document.getElementById('uploadPeak');
+        elements.uploadSustained = document.getElementById('uploadSustained');
+        elements.uploadVariability = document.getElementById('uploadVariability');
+
+        // Timing breakdown
+        elements.timingDns = document.getElementById('timingDns');
+        elements.timingDnsValue = document.getElementById('timingDnsValue');
+        elements.timingTcp = document.getElementById('timingTcp');
+        elements.timingTcpValue = document.getElementById('timingTcpValue');
+        elements.timingTls = document.getElementById('timingTls');
+        elements.timingTlsValue = document.getElementById('timingTlsValue');
+        elements.timingTtfb = document.getElementById('timingTtfb');
+        elements.timingTtfbValue = document.getElementById('timingTtfbValue');
+        elements.timingTransfer = document.getElementById('timingTransfer');
+        elements.timingTransferValue = document.getElementById('timingTransferValue');
+
+        // Network quality score
+        elements.gaugeFill = document.getElementById('gaugeFill');
+        elements.overallScore = document.getElementById('overallScore');
+        elements.scoreGrade = document.getElementById('scoreGrade');
+        elements.scoreDescription = document.getElementById('scoreDescription');
+        elements.bandwidthBar = document.getElementById('bandwidthBar');
+        elements.bandwidthScore = document.getElementById('bandwidthScore');
+        elements.latencyBar = document.getElementById('latencyBar');
+        elements.latencyScore = document.getElementById('latencyScore');
+        elements.stabilityBar = document.getElementById('stabilityBar');
+        elements.stabilityScore = document.getElementById('stabilityScore');
+        elements.reliabilityBar = document.getElementById('reliabilityBar');
+        elements.reliabilityScore = document.getElementById('reliabilityScore');
+
+        // Test confidence
+        elements.confidenceBadge = document.getElementById('confidenceBadge');
+        elements.sampleCountIcon = document.getElementById('sampleCountIcon');
+        elements.sampleCountDetail = document.getElementById('sampleCountDetail');
+        elements.variabilityIcon = document.getElementById('variabilityIcon');
+        elements.variabilityDetail = document.getElementById('variabilityDetail');
+        elements.timingIcon = document.getElementById('timingIcon');
+        elements.timingDetail = document.getElementById('timingDetail');
+        elements.connectionIcon = document.getElementById('connectionIcon');
+        elements.connectionDetail = document.getElementById('connectionDetail');
+        elements.confidenceWarnings = document.getElementById('confidenceWarnings');
+
         // Test grids
         elements.downloadGrid = document.getElementById('downloadTestsGrid');
         elements.uploadGrid = document.getElementById('uploadTestsGrid');
@@ -651,6 +721,29 @@
             updatePacketLossDetails(results.packetLoss);
         }
 
+        // Update new enhanced metrics displays
+        if (results.lossPattern) {
+            updateLossPatternDisplay(results.lossPattern);
+        }
+
+        updateDataChannelStatsDisplay(results.dataChannelStats);
+
+        if (results.bandwidthEstimate) {
+            updateBandwidthEstimationDisplay(results.bandwidthEstimate);
+        }
+
+        if (results.timingBreakdown) {
+            updateTimingBreakdownDisplay(results.timingBreakdown);
+        }
+
+        if (results.networkQualityScore) {
+            updateNetworkQualityScoreDisplay(results.networkQualityScore);
+        }
+
+        if (results.testConfidence) {
+            updateTestConfidenceDisplay(results.testConfidence);
+        }
+
         // Hide progress indicator
         if (elements.progressIndicator) {
             elements.progressIndicator.style.display = 'none';
@@ -718,6 +811,29 @@
         if (elements.connectionType) {
             const isIPv6 = state.meta.clientIp.includes(':');
             elements.connectionType.textContent = isIPv6 ? 'IPv6' : 'IPv4';
+        }
+
+        // Extended location display
+        if (elements.clientLocation) {
+            const parts = [];
+            if (state.meta.city && state.meta.city !== 'Unknown') parts.push(state.meta.city);
+            if (state.meta.region && state.meta.region !== 'Unknown') parts.push(state.meta.region);
+            if (state.meta.country) parts.push(state.meta.country);
+            elements.clientLocation.textContent = parts.length > 0 ? parts.join(', ') : 'Unknown';
+        }
+
+        if (elements.clientTimezone) {
+            elements.clientTimezone.textContent = state.meta.timezone || 'Unknown';
+        }
+
+        // Calculate and display distance to server
+        const serverLocation = state.locations.find(l => l.iata === state.meta.colo);
+        if (elements.serverDistance && serverLocation && state.meta.latitude && state.meta.longitude) {
+            const distance = haversineDistance(
+                state.meta.latitude, state.meta.longitude,
+                serverLocation.lat, serverLocation.lon
+            );
+            elements.serverDistance.textContent = `${Math.round(distance)} km`;
         }
 
         // Only render map once (don't reset on each test start)
@@ -1295,6 +1411,344 @@
         document.querySelectorAll('.modal.active').forEach(modal => {
             modal.classList.remove('active');
         });
+    }
+
+    /**
+     * Calculate haversine distance between two points (in km)
+     */
+    function haversineDistance(lat1, lon1, lat2, lon2) {
+        const R = 6371; // Earth's radius in km
+        const dLat = (lat2 - lat1) * Math.PI / 180;
+        const dLon = (lon2 - lon1) * Math.PI / 180;
+        const a = Math.sin(dLat/2) * Math.sin(dLat/2) +
+                  Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) *
+                  Math.sin(dLon/2) * Math.sin(dLon/2);
+        const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+        return R * c;
+    }
+
+    /**
+     * Format bytes for display
+     */
+    function formatBytes(bytes) {
+        if (bytes < 1000) return `${bytes} B`;
+        if (bytes < 1000000) return `${(bytes / 1000).toFixed(1)} KB`;
+        return `${(bytes / 1000000).toFixed(2)} MB`;
+    }
+
+    /**
+     * Update loss pattern analysis display
+     */
+    function updateLossPatternDisplay(lossPattern) {
+        if (!lossPattern) return;
+
+        // Update badge
+        if (elements.lossTypeBadge) {
+            const typeLabels = {
+                'none': 'No Loss',
+                'random': 'Random',
+                'burst': 'Burst',
+                'tail': 'Tail'
+            };
+            elements.lossTypeBadge.textContent = typeLabels[lossPattern.type] || 'Unknown';
+            elements.lossTypeBadge.className = `loss-type-badge ${lossPattern.type}`;
+        }
+
+        // Update timeline segments
+        if (elements.lossTimeline) {
+            const segments = elements.lossTimeline.querySelectorAll('.timeline-segment');
+            const maxLoss = Math.max(...lossPattern.lossDistribution, 1);
+            segments.forEach((seg, i) => {
+                const loss = lossPattern.lossDistribution[i] || 0;
+                const ratio = loss / maxLoss;
+                seg.className = 'timeline-segment';
+                if (loss === 0) {
+                    seg.classList.add('loss-low');
+                } else if (ratio < 0.5) {
+                    seg.classList.add('loss-medium');
+                } else {
+                    seg.classList.add('loss-high');
+                }
+            });
+        }
+
+        // Update stats
+        if (elements.burstCount) {
+            elements.burstCount.textContent = lossPattern.burstCount > 0 ? lossPattern.burstCount : '-';
+        }
+        if (elements.maxBurst) {
+            elements.maxBurst.textContent = lossPattern.maxBurstLength > 0 ? `${lossPattern.maxBurstLength} pkts` : '-';
+        }
+        if (elements.avgBurst) {
+            elements.avgBurst.textContent = lossPattern.avgBurstLength > 0 ? `${lossPattern.avgBurstLength.toFixed(1)} pkts` : '-';
+        }
+    }
+
+    /**
+     * Update data channel stats display
+     */
+    function updateDataChannelStatsDisplay(stats) {
+        if (!stats) {
+            // Set placeholders for unavailable stats
+            const ph = '<span class="placeholder"></span>';
+            if (elements.webrtcConnectionBadge) elements.webrtcConnectionBadge.innerHTML = ph;
+            if (elements.connectionPath) elements.connectionPath.innerHTML = ph;
+            if (elements.webrtcProtocol) elements.webrtcProtocol.innerHTML = ph;
+            if (elements.dataSent) elements.dataSent.innerHTML = ph;
+            if (elements.dataReceived) elements.dataReceived.innerHTML = ph;
+            if (elements.iceGatheringTime) elements.iceGatheringTime.innerHTML = ph;
+            if (elements.connectionSetupTime) elements.connectionSetupTime.innerHTML = ph;
+            if (elements.iceRtt) elements.iceRtt.innerHTML = ph;
+            return;
+        }
+
+        // Connection type badge
+        if (elements.webrtcConnectionBadge) {
+            const typeLabels = {
+                'host': 'Direct',
+                'srflx': 'STUN',
+                'prflx': 'Peer Reflexive',
+                'relay': 'TURN Relay',
+                'unknown': 'Unknown'
+            };
+            elements.webrtcConnectionBadge.textContent = typeLabels[stats.connectionType] || 'Unknown';
+            elements.webrtcConnectionBadge.className = 'connection-type-badge';
+            if (stats.connectionType === 'host') elements.webrtcConnectionBadge.classList.add('direct');
+            else if (stats.connectionType === 'srflx' || stats.connectionType === 'prflx') elements.webrtcConnectionBadge.classList.add('stun');
+            else if (stats.connectionType === 'relay') elements.webrtcConnectionBadge.classList.add('relay');
+        }
+
+        // Connection path
+        if (elements.connectionPath) {
+            const pathLabels = {
+                'host': 'Direct connection (no NAT traversal)',
+                'srflx': 'Via STUN (NAT traversal)',
+                'prflx': 'Peer reflexive (discovered path)',
+                'relay': 'Via TURN relay server'
+            };
+            elements.connectionPath.textContent = pathLabels[stats.connectionType] || 'Unknown';
+        }
+
+        if (elements.webrtcProtocol) {
+            elements.webrtcProtocol.textContent = stats.protocol?.toUpperCase() || 'UDP';
+        }
+
+        if (elements.dataSent) {
+            elements.dataSent.textContent = formatBytes(stats.bytesSent);
+        }
+
+        if (elements.dataReceived) {
+            elements.dataReceived.textContent = formatBytes(stats.bytesReceived);
+        }
+
+        if (elements.iceGatheringTime) {
+            elements.iceGatheringTime.textContent = stats.iceGatheringMs ? `${stats.iceGatheringMs.toFixed(0)} ms` : '-';
+        }
+
+        if (elements.connectionSetupTime) {
+            elements.connectionSetupTime.textContent = stats.connectionSetupMs ? `${stats.connectionSetupMs.toFixed(0)} ms` : '-';
+        }
+
+        if (elements.iceRtt) {
+            elements.iceRtt.textContent = stats.currentRoundTripTime ? `${stats.currentRoundTripTime.toFixed(1)} ms` : '-';
+        }
+    }
+
+    /**
+     * Update bandwidth estimation display
+     */
+    function updateBandwidthEstimationDisplay(bandwidth) {
+        if (!bandwidth) return;
+
+        const trendArrows = {
+            'stable': '→',
+            'improving': '↑',
+            'degrading': '↓'
+        };
+
+        // Download
+        if (elements.downloadTrend) {
+            elements.downloadTrend.textContent = `${trendArrows[bandwidth.downloadTrend] || '→'} ${bandwidth.downloadTrend}`;
+            elements.downloadTrend.className = `bandwidth-trend ${bandwidth.downloadTrend}`;
+        }
+        if (elements.downloadPeak) {
+            elements.downloadPeak.textContent = `${bandwidth.downloadPeakMbps.toFixed(1)} Mbps`;
+        }
+        if (elements.downloadSustained) {
+            elements.downloadSustained.textContent = `${bandwidth.downloadSustainedMbps.toFixed(1)} Mbps`;
+        }
+        if (elements.downloadVariability) {
+            elements.downloadVariability.textContent = `±${(bandwidth.downloadVariability * 100).toFixed(0)}%`;
+        }
+
+        // Upload
+        if (elements.uploadTrend) {
+            elements.uploadTrend.textContent = `${trendArrows[bandwidth.uploadTrend] || '→'} ${bandwidth.uploadTrend}`;
+            elements.uploadTrend.className = `bandwidth-trend ${bandwidth.uploadTrend}`;
+        }
+        if (elements.uploadPeak) {
+            elements.uploadPeak.textContent = `${bandwidth.uploadPeakMbps.toFixed(1)} Mbps`;
+        }
+        if (elements.uploadSustained) {
+            elements.uploadSustained.textContent = `${bandwidth.uploadSustainedMbps.toFixed(1)} Mbps`;
+        }
+        if (elements.uploadVariability) {
+            elements.uploadVariability.textContent = `±${(bandwidth.uploadVariability * 100).toFixed(0)}%`;
+        }
+    }
+
+    /**
+     * Update timing breakdown display
+     */
+    function updateTimingBreakdownDisplay(timingBreakdown) {
+        if (!timingBreakdown || timingBreakdown.length === 0) return;
+
+        // Calculate averages
+        const avg = {
+            dns: 0, tcp: 0, tls: 0, ttfb: 0, transfer: 0
+        };
+        let count = 0;
+        timingBreakdown.forEach(t => {
+            if (t.dnsMs >= 0) avg.dns += t.dnsMs;
+            if (t.tcpMs >= 0) avg.tcp += t.tcpMs;
+            if (t.tlsMs >= 0) avg.tls += t.tlsMs;
+            if (t.ttfbMs >= 0) avg.ttfb += t.ttfbMs;
+            if (t.transferMs >= 0) avg.transfer += t.transferMs;
+            count++;
+        });
+        if (count > 0) {
+            avg.dns /= count;
+            avg.tcp /= count;
+            avg.tls /= count;
+            avg.ttfb /= count;
+            avg.transfer /= count;
+        }
+
+        // Find max for bar scaling
+        const maxTime = Math.max(avg.dns, avg.tcp, avg.tls, avg.ttfb, avg.transfer, 1);
+
+        // Update bars and values
+        if (elements.timingDns) elements.timingDns.style.width = `${(avg.dns / maxTime) * 100}%`;
+        if (elements.timingDnsValue) elements.timingDnsValue.textContent = `${avg.dns.toFixed(1)} ms`;
+
+        if (elements.timingTcp) elements.timingTcp.style.width = `${(avg.tcp / maxTime) * 100}%`;
+        if (elements.timingTcpValue) elements.timingTcpValue.textContent = `${avg.tcp.toFixed(1)} ms`;
+
+        if (elements.timingTls) elements.timingTls.style.width = `${(avg.tls / maxTime) * 100}%`;
+        if (elements.timingTlsValue) elements.timingTlsValue.textContent = `${avg.tls.toFixed(1)} ms`;
+
+        if (elements.timingTtfb) elements.timingTtfb.style.width = `${(avg.ttfb / maxTime) * 100}%`;
+        if (elements.timingTtfbValue) elements.timingTtfbValue.textContent = `${avg.ttfb.toFixed(1)} ms`;
+
+        if (elements.timingTransfer) elements.timingTransfer.style.width = `${(avg.transfer / maxTime) * 100}%`;
+        if (elements.timingTransferValue) elements.timingTransferValue.textContent = `${avg.transfer.toFixed(1)} ms`;
+    }
+
+    /**
+     * Update network quality score display
+     */
+    function updateNetworkQualityScoreDisplay(score) {
+        if (!score) return;
+
+        // Update gauge
+        if (elements.gaugeFill) {
+            // Circle circumference is 2*PI*50 = 314
+            const circumference = 314;
+            const offset = circumference - (score.overall / 100) * circumference;
+            elements.gaugeFill.style.strokeDashoffset = offset;
+
+            // Set grade class for color
+            elements.gaugeFill.className = 'gauge-fill';
+            const gradeClass = score.grade.toLowerCase().replace('+', '-plus');
+            elements.gaugeFill.classList.add(`grade-${gradeClass}`);
+        }
+
+        if (elements.overallScore) {
+            elements.overallScore.textContent = score.overall;
+        }
+
+        if (elements.scoreGrade) {
+            elements.scoreGrade.textContent = score.grade;
+        }
+
+        if (elements.scoreDescription) {
+            elements.scoreDescription.textContent = score.description;
+        }
+
+        // Component bars
+        const components = score.components;
+        if (elements.bandwidthBar) elements.bandwidthBar.style.width = `${components.bandwidth}%`;
+        if (elements.bandwidthScore) elements.bandwidthScore.textContent = components.bandwidth;
+
+        if (elements.latencyBar) elements.latencyBar.style.width = `${components.latency}%`;
+        if (elements.latencyScore) elements.latencyScore.textContent = components.latency;
+
+        if (elements.stabilityBar) elements.stabilityBar.style.width = `${components.stability}%`;
+        if (elements.stabilityScore) elements.stabilityScore.textContent = components.stability;
+
+        if (elements.reliabilityBar) elements.reliabilityBar.style.width = `${components.reliability}%`;
+        if (elements.reliabilityScore) elements.reliabilityScore.textContent = components.reliability;
+    }
+
+    /**
+     * Update test confidence display
+     */
+    function updateTestConfidenceDisplay(confidence) {
+        if (!confidence) return;
+
+        // Update badge
+        if (elements.confidenceBadge) {
+            const labels = { 'high': 'High Confidence', 'medium': 'Medium Confidence', 'low': 'Low Confidence' };
+            elements.confidenceBadge.textContent = labels[confidence.overall] || 'Unknown';
+            elements.confidenceBadge.className = `confidence-badge ${confidence.overall}`;
+        }
+
+        const metrics = confidence.metrics;
+
+        // Sample count
+        if (elements.sampleCountIcon) {
+            elements.sampleCountIcon.className = `confidence-icon ${metrics.sampleCount.adequate ? 'pass' : 'fail'}`;
+        }
+        if (elements.sampleCountDetail) {
+            elements.sampleCountDetail.textContent = `DL: ${metrics.sampleCount.download}, UL: ${metrics.sampleCount.upload}, Lat: ${metrics.sampleCount.latency}`;
+        }
+
+        // Variability
+        if (elements.variabilityIcon) {
+            elements.variabilityIcon.className = `confidence-icon ${metrics.coefficientOfVariation.acceptable ? 'pass' : 'fail'}`;
+        }
+        if (elements.variabilityDetail) {
+            elements.variabilityDetail.textContent = `DL: ±${metrics.coefficientOfVariation.download.toFixed(0)}%, UL: ±${metrics.coefficientOfVariation.upload.toFixed(0)}%`;
+        }
+
+        // Timing
+        if (elements.timingIcon) {
+            elements.timingIcon.className = `confidence-icon ${metrics.timingAccuracy.accurate ? 'pass' : 'fail'}`;
+        }
+        if (elements.timingDetail) {
+            const timingText = metrics.timingAccuracy.resourceTimingUsed ? 'Resource Timing API' :
+                              (metrics.timingAccuracy.fallbackCount > 0 ? `${metrics.timingAccuracy.fallbackCount} fallbacks` : 'Available');
+            elements.timingDetail.textContent = timingText;
+        }
+
+        // Connection
+        if (elements.connectionIcon) {
+            elements.connectionIcon.className = `confidence-icon ${metrics.connectionStability.stable ? 'pass' : 'fail'}`;
+        }
+        if (elements.connectionDetail) {
+            elements.connectionDetail.textContent = metrics.connectionStability.packetTestCompleted ? 'Stable' : 'Incomplete';
+        }
+
+        // Warnings
+        if (elements.confidenceWarnings) {
+            if (confidence.warnings.length > 0) {
+                elements.confidenceWarnings.innerHTML = confidence.warnings
+                    .map(w => `<div class="confidence-warning">${w}</div>`)
+                    .join('');
+            } else {
+                elements.confidenceWarnings.innerHTML = '';
+            }
+        }
     }
 
     // Initialize when DOM is ready
