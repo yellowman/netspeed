@@ -688,11 +688,25 @@ button {
 }
 
 .map-container {
-    height: 120px;
+    height: 150px;
     background: var(--color-bg-tertiary);
     display: flex;
     align-items: center;
     justify-content: center;
+    overflow: hidden;
+    border-radius: var(--radius-sm);
+}
+
+.map-iframe {
+    width: 100%;
+    height: 100%;
+    border: none;
+    filter: saturate(0.8) contrast(0.95);
+}
+
+/* Dark theme map adjustments */
+[data-theme="dark"] .map-iframe {
+    filter: invert(0.9) hue-rotate(180deg) saturate(0.6) contrast(0.9);
 }
 
 .map-placeholder {

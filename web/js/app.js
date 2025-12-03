@@ -66,6 +66,7 @@
         elements.clientNetwork = document.getElementById('networkInfo');
         elements.clientIp = document.getElementById('ipAddress');
         elements.connectionType = document.getElementById('connectionType');
+        elements.mapContainer = document.getElementById('mapContainer');
 
         // Latency sections
         elements.unloadedLatencyChart = document.getElementById('unloadedLatencyChart');
@@ -635,6 +636,51 @@
             const isIPv6 = state.meta.clientIp.includes(':');
             elements.connectionType.textContent = isIPv6 ? 'IPv6' : 'IPv4';
         }
+
+        // Update map with server location
+        if (elements.mapContainer && serverLocation && serverLocation.lat && serverLocation.lon) {
+            renderMap(serverLocation.lat, serverLocation.lon, serverLocation.city);
+        }
+    }
+
+    /**
+     * Render map showing server location
+     */
+    function renderMap(lat, lon, label) {
+        // Use OpenStreetMap embed iframe
+        const zoom = 6;
+        const bbox = calculateBbox(lat, lon, zoom);
+
+        // Create marker layer URL
+        const markerUrl = `https://www.openstreetmap.org/export/embed.html?bbox=${bbox}&layer=mapnik&marker=${lat},${lon}`;
+
+        elements.mapContainer.innerHTML = `
+            <iframe
+                class="map-iframe"
+                src="${markerUrl}"
+                frameborder="0"
+                scrolling="no"
+                loading="lazy"
+                title="Server location: ${label}"
+            ></iframe>
+        `;
+    }
+
+    /**
+     * Calculate bounding box for map given center point and zoom level
+     */
+    function calculateBbox(lat, lon, zoom) {
+        // Approximate degrees for the viewport at given zoom
+        // Higher zoom = smaller area
+        const latDelta = 180 / Math.pow(2, zoom);
+        const lonDelta = 360 / Math.pow(2, zoom);
+
+        const west = lon - lonDelta;
+        const south = lat - latDelta;
+        const east = lon + lonDelta;
+        const north = lat + latDelta;
+
+        return `${west},${south},${east},${north}`;
     }
 
     /**
