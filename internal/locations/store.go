@@ -73,88 +73,10 @@ func (s *MemoryStore) All() []Location {
 	return result
 }
 
-// DefaultLocations returns a set of default sample locations.
+// DefaultLocations returns a minimal set of fallback locations.
+// For full location support, use locations.json file.
 func DefaultLocations() []Location {
 	return []Location{
-		{
-			IATA:   "JFK",
-			Lat:    40.6413,
-			Lon:    -73.7781,
-			CCA2:   "US",
-			Region: "North America",
-			City:   "New York",
-		},
-		{
-			IATA:   "LAX",
-			Lat:    33.9425,
-			Lon:    -118.4081,
-			CCA2:   "US",
-			Region: "North America",
-			City:   "Los Angeles",
-		},
-		{
-			IATA:   "ORD",
-			Lat:    41.9742,
-			Lon:    -87.9073,
-			CCA2:   "US",
-			Region: "North America",
-			City:   "Chicago",
-		},
-		{
-			IATA:   "LHR",
-			Lat:    51.4700,
-			Lon:    -0.4543,
-			CCA2:   "GB",
-			Region: "Europe",
-			City:   "London",
-		},
-		{
-			IATA:   "FRA",
-			Lat:    50.0379,
-			Lon:    8.5622,
-			CCA2:   "DE",
-			Region: "Europe",
-			City:   "Frankfurt",
-		},
-		{
-			IATA:   "CDG",
-			Lat:    49.0097,
-			Lon:    2.5479,
-			CCA2:   "FR",
-			Region: "Europe",
-			City:   "Paris",
-		},
-		{
-			IATA:   "NRT",
-			Lat:    35.7720,
-			Lon:    140.3929,
-			CCA2:   "JP",
-			Region: "Asia",
-			City:   "Tokyo",
-		},
-		{
-			IATA:   "SIN",
-			Lat:    1.3644,
-			Lon:    103.9915,
-			CCA2:   "SG",
-			Region: "Asia",
-			City:   "Singapore",
-		},
-		{
-			IATA:   "SYD",
-			Lat:    -33.9399,
-			Lon:    151.1753,
-			CCA2:   "AU",
-			Region: "Oceania",
-			City:   "Sydney",
-		},
-		{
-			IATA:   "GRU",
-			Lat:    -23.4356,
-			Lon:    -46.4731,
-			CCA2:   "BR",
-			Region: "South America",
-			City:   "Sao Paulo",
-		},
+		{IATA: "LOCAL", Lat: 0, Lon: 0, CCA2: "", Region: "", City: "Local Server"},
 	}
 }

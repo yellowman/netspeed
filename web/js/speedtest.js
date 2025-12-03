@@ -676,6 +676,70 @@ const SpeedTest = (function() {
                 rttSamplesSlice: rttSamples.slice(0, 5)
             });
 
+            // Detect if this looks like a connection failure rather than actual packet loss
+            // Check if responses suddenly stopped (connection died) vs random loss throughout
+            let likelyConnectionIssue = false;
+            let connectionIssueReason = '';
+
+            if (received === 0) {
+                // No responses at all - definitely a connection issue
+                likelyConnectionIssue = true;
+                connectionIssueReason = 'No responses received - connection failed';
+            } else if (lossPercent > 10) {
+                // Check the pattern: did responses stop after some point?
+                // Get the highest sequence number that got an ack
+                const ackedSeqs = Array.from(acks.keys()).sort((a, b) => a - b);
+                const maxAckedSeq = ackedSeqs[ackedSeqs.length - 1];
+                const minAckedSeq = ackedSeqs[0];
+
+                // If we got acks for early packets but not late ones, connection likely died
+                // Check what % of the last 20% of packets got acks
+                const lateThreshold = Math.floor(sent * 0.8);
+                const lateAcks = ackedSeqs.filter(seq => seq >= lateThreshold).length;
+                const expectedLateAcks = sent - lateThreshold;
+                const lateAckPercent = (lateAcks / expectedLateAcks) * 100;
+
+                // If we got less than 50% of the late packets but more than 80% of early ones,
+                // it's likely the connection died partway through
+                const earlyAcks = ackedSeqs.filter(seq => seq < lateThreshold).length;
+                const earlyAckPercent = (earlyAcks / lateThreshold) * 100;
+
+                console.log('Packet loss pattern analysis:', {
+                    earlyAckPercent: earlyAckPercent.toFixed(1) + '%',
+                    lateAckPercent: lateAckPercent.toFixed(1) + '%',
+                    maxAckedSeq,
+                    totalSent: sent
+                });
+
+                if (earlyAckPercent > 80 && lateAckPercent < 50) {
+                    likelyConnectionIssue = true;
+                    connectionIssueReason = `Connection died mid-test - last response at packet ${maxAckedSeq}/${sent}`;
+                } else if (lossPercent > 50) {
+                    // Very high loss throughout - something is wrong
+                    likelyConnectionIssue = true;
+                    connectionIssueReason = `Connection unstable - received only ${received}/${sent} responses`;
+                }
+            }
+
+            if (likelyConnectionIssue) {
+                console.warn('Packet loss test:', connectionIssueReason);
+                const unavailableResult = {
+                    sent,
+                    received,
+                    lossPercent: 0,
+                    rttStatsMs: { min: 0, median: 0, p90: 0 },
+                    jitterMs: 0,
+                    unavailable: true,
+                    reason: connectionIssueReason
+                };
+                results.packetLoss = unavailableResult;
+
+                // Clean up
+                dc.close();
+                pc.close();
+                return unavailableResult;
+            }
+
             // Calculate RTT stats
             rttSamples.sort((a, b) => a - b);
             const rttMin = rttSamples.length > 0 ? rttSamples[0] : 0;
@@ -731,10 +795,32 @@ const SpeedTest = (function() {
             return result;
         } catch (err) {
             console.error('Packet loss test failed:', err);
+
+            // Determine reason for failure
+            let reason = 'WebRTC connection failed';
+            if (err.message?.includes('ICE gathering timeout')) {
+                reason = 'ICE gathering timeout - check TURN server configuration';
+            } else if (err.message?.includes('Data channel timeout')) {
+                reason = 'Data channel timeout - connection may be blocked by firewall';
+            } else if (err.message?.includes('offer failed')) {
+                reason = 'Server rejected connection - WebRTC may not be configured';
+            }
+
+            const unavailableResult = {
+                sent: 0,
+                received: 0,
+                lossPercent: 0,
+                rttStatsMs: { min: 0, median: 0, p90: 0 },
+                jitterMs: 0,
+                unavailable: true,
+                reason: reason
+            };
+            results.packetLoss = unavailableResult;
+
             if (callbacks.onError) {
                 callbacks.onError('packetLoss', null, null, err);
             }
-            return null;
+            return unavailableResult;
         }
     }
 
