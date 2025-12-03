@@ -276,7 +276,8 @@
             const el = elements[`${type}Score`];
             if (el) {
                 el.className = 'quality-grade';
-                el.textContent = '--';
+                const text = el.querySelector('.grade-text');
+                if (text) text.textContent = '--';
             }
         });
 
