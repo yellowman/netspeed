@@ -741,7 +741,8 @@
             [serverLat, serverLon],
             [clientLat, clientLon]
         ]);
-        map.fitBounds(bounds, { padding: [30, 30] });
+        // maxZoom 10 keeps view at ~250+ sq miles minimum
+        map.fitBounds(bounds, { padding: [30, 30], maxZoom: 10 });
 
         // Draw a line between them
         L.polyline([[clientLat, clientLon], [serverLat, serverLon]], {
