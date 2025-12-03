@@ -77,6 +77,22 @@ func (s *MemoryStore) All() []Location {
 func DefaultLocations() []Location {
 	return []Location{
 		{
+			IATA:   "Bend",
+			Lat:    44.0582,
+			Lon:    -121.3153,
+			CCA2:   "US",
+			Region: "North America",
+			City:   "Bend",
+		},
+		{
+			IATA:   "RDM",
+			Lat:    44.2541,
+			Lon:    -121.1500,
+			CCA2:   "US",
+			Region: "North America",
+			City:   "Redmond",
+		},
+		{
 			IATA:   "JFK",
 			Lat:    40.6413,
 			Lon:    -73.7781,
