@@ -609,12 +609,12 @@
         const width = elements.downloadSparkline.clientWidth || 150;
         Charts.sparkline(elements.downloadSparkline, speeds, {
             width: width,
-            height: 40,
+            height: 32,
             strokeColor: 'var(--color-download)',
             fillColor: 'var(--color-download)',
             fillOpacity: 0.15,
-            strokeWidth: 2,
-            dotRadius: 3
+            strokeWidth: 1.5,
+            dotRadius: 2
         });
     }
 
@@ -628,12 +628,12 @@
         const width = elements.uploadSparkline.clientWidth || 150;
         Charts.sparkline(elements.uploadSparkline, speeds, {
             width: width,
-            height: 40,
+            height: 32,
             strokeColor: 'var(--color-upload)',
             fillColor: 'var(--color-upload)',
             fillOpacity: 0.15,
-            strokeWidth: 2,
-            dotRadius: 3
+            strokeWidth: 1.5,
+            dotRadius: 2
         });
     }
 
