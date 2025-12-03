@@ -91,21 +91,17 @@ const SpeedTest = (function() {
      * Waits briefly for the entry to be recorded if not immediately available
      */
     async function getResourceTiming(url) {
-        // Try immediately first
-        let entries = performance.getEntriesByName(url, 'resource');
-        if (entries.length > 0) {
-            const entry = entries[entries.length - 1];
-            if (entry.responseStart > 0 && entry.responseEnd > 0) {
-                return entry;
+        // Try multiple times with increasing delays
+        for (let attempt = 0; attempt < 5; attempt++) {
+            const entries = performance.getEntriesByName(url, 'resource');
+            if (entries.length > 0) {
+                const entry = entries[entries.length - 1];
+                if (entry.responseStart > 0 && entry.responseEnd > 0) {
+                    return entry;
+                }
             }
-        }
-
-        // Wait a tick for the browser to record the entry
-        await new Promise(resolve => setTimeout(resolve, 0));
-
-        entries = performance.getEntriesByName(url, 'resource');
-        if (entries.length > 0) {
-            return entries[entries.length - 1];
+            // Wait increasingly longer for the browser to record the entry
+            await new Promise(resolve => setTimeout(resolve, attempt * 5));
         }
         return null;
     }
@@ -138,13 +134,17 @@ const SpeedTest = (function() {
         // responseStart = first byte received, responseEnd = last byte received
         const timing = await getResourceTiming(url);
         let durationMs;
+        let timingSource;
 
         if (timing && timing.responseStart > 0 && timing.responseEnd > 0) {
             // Precise: just the body transfer time (excludes connection, TLS, headers)
             durationMs = timing.responseEnd - timing.responseStart;
+            timingSource = 'resource-timing';
         } else {
             // Fallback: use manual timing (includes connection overhead)
             durationMs = manualEnd - manualStart;
+            timingSource = 'manual';
+            console.log('Download timing fallback:', { profile, runIndex, timing, manualMs: durationMs });
         }
 
         const mbps = (received * 8) / (durationMs / 1000) / 1e6;
