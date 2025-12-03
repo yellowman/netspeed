@@ -288,6 +288,8 @@
         // Reset hero values
         if (elements.downloadValue) elements.downloadValue.textContent = '--';
         if (elements.uploadValue) elements.uploadValue.textContent = '--';
+        if (elements.downloadUnit) elements.downloadUnit.textContent = 'Mbps';
+        if (elements.uploadUnit) elements.uploadUnit.textContent = 'Mbps';
         if (elements.latencyValue) elements.latencyValue.textContent = '--';
         if (elements.jitterValue) elements.jitterValue.textContent = '-- ms';
         if (elements.packetLossValue) elements.packetLossValue.textContent = '--%';
