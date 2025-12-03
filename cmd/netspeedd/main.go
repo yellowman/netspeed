@@ -159,19 +159,20 @@ func main() {
 			// Configure the HTTP server to use the embedded TURN server
 			cfg.TurnSecret = turnSrv.Secret()
 			cfg.TurnRealm = turnSrv.Realm()
-			// Build TURN server URL
+			// Extract port from listen address for dynamic URL generation
 			turnAddr := turnSrv.ListenAddr()
-			if publicIP != "" {
-				// Extract port from listen address
-				_, port, _ := net.SplitHostPort(turnAddr)
-				if port == "" {
-					port = "3478"
-				}
-				cfg.TurnServers = []string{fmt.Sprintf("turn:%s:%s", publicIP, port)}
-			} else {
-				cfg.TurnServers = []string{fmt.Sprintf("turn:%s", turnAddr)}
+			_, port, _ := net.SplitHostPort(turnAddr)
+			if port == "" {
+				port = "3478"
 			}
-			log.Printf("Embedded TURN configured: servers=%v", cfg.TurnServers)
+			cfg.EmbeddedTurnPort = port
+			// If public IP is set, use static URL; otherwise handler uses request host
+			if publicIP != "" {
+				cfg.TurnServers = []string{fmt.Sprintf("turn:%s:%s", publicIP, port)}
+				log.Printf("Embedded TURN configured: servers=%v", cfg.TurnServers)
+			} else {
+				log.Printf("Embedded TURN configured on port %s (URL derived from request host)", port)
+			}
 		}
 	}
 

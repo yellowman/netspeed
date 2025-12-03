@@ -56,6 +56,8 @@ type Config struct {
 	EmbeddedTurnAddr string
 	// EmbeddedTurnPublicIP is the public IP to advertise for the embedded TURN server
 	EmbeddedTurnPublicIP string
+	// EmbeddedTurnPort stores the port when embedded TURN is active (for dynamic URL generation)
+	EmbeddedTurnPort string
 
 	// WebDir is the path to the directory containing static web files
 	// If set, the server will serve static files from this directory
