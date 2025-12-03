@@ -88,6 +88,7 @@ func New(cfg Config) (*Server, error) {
 			// COTURN-style time-limited credentials
 			// The credential/password is base64(HMAC-SHA1(secret, username))
 			// This matches what the /api/turn/credentials endpoint generates
+			log.Printf("TURN auth request: user=%s realm=%s from=%s", username, realm, srcAddr)
 			mac := hmac.New(sha1.New, []byte(cfg.Secret))
 			mac.Write([]byte(username))
 			password := base64.StdEncoding.EncodeToString(mac.Sum(nil))
