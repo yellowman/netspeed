@@ -83,7 +83,7 @@
                         </button>
                     </div>
                     <div class="metric-value-container">
-                        <span class="metric-value" id="downloadSpeed">--</span>
+                        <span class="metric-value" id="downloadSpeed">···</span>
                         <span class="metric-unit" id="downloadUnit">Mbps</span>
                     </div>
                     <div class="metric-chart" id="downloadSparkline"></div>
@@ -101,7 +101,7 @@
                         </button>
                     </div>
                     <div class="metric-value-container">
-                        <span class="metric-value" id="uploadSpeed">--</span>
+                        <span class="metric-value" id="uploadSpeed">···</span>
                         <span class="metric-unit" id="uploadUnit">Mbps</span>
                     </div>
                     <div class="metric-chart" id="uploadSparkline"></div>
@@ -119,20 +119,20 @@
                         </button>
                     </div>
                     <div class="metric-value-container">
-                        <span class="metric-value" id="latencyValue">--</span>
+                        <span class="metric-value" id="latencyValue">···</span>
                         <span class="metric-unit">ms</span>
                     </div>
                     <div class="metric-secondary">
                         <div class="metric-secondary-item">
                             <span class="secondary-label">Jitter</span>
-                            <span class="secondary-value" id="jitterValue">-- ms</span>
+                            <span class="secondary-value" id="jitterValue">··· ms</span>
                         </div>
                         <div class="metric-secondary-item">
                             <span class="secondary-label">Packet Loss</span>
-                            <span class="secondary-value" id="packetLossValue">--%</span>
+                            <span class="secondary-value" id="packetLossValue">···%</span>
                         </div>
                     </div>
-                    <div class="metric-timestamp" id="testTimestamp">--</div>
+                    <div class="metric-timestamp" id="testTimestamp">···</div>
                 </div>
             </div>
 
@@ -193,7 +193,7 @@
                     <div class="quality-label">Video Streaming</div>
                     <div class="quality-grade" id="streamingGrade">
                         <span class="grade-dot"></span>
-                        <span class="grade-text">--</span>
+                        <span class="grade-text">···</span>
                     </div>
                 </div>
                 <div class="quality-card">
@@ -208,7 +208,7 @@
                     <div class="quality-label">Online Gaming</div>
                     <div class="quality-grade" id="gamingGrade">
                         <span class="grade-dot"></span>
-                        <span class="grade-text">--</span>
+                        <span class="grade-text">···</span>
                     </div>
                 </div>
                 <div class="quality-card">
@@ -220,7 +220,7 @@
                     <div class="quality-label">Video Chatting</div>
                     <div class="quality-grade" id="videoChatGrade">
                         <span class="grade-dot"></span>
-                        <span class="grade-text">--</span>
+                        <span class="grade-text">···</span>
                     </div>
                 </div>
             </div>
@@ -247,19 +247,19 @@
                         <div class="server-info">
                             <div class="info-row">
                                 <span class="info-label">Connected via</span>
-                                <span class="info-value" id="connectionType">--</span>
+                                <span class="info-value" id="connectionType">···</span>
                             </div>
                             <div class="info-row">
                                 <span class="info-label">Server location</span>
-                                <span class="info-value" id="serverLocation">--</span>
+                                <span class="info-value" id="serverLocation">···</span>
                             </div>
                             <div class="info-row">
                                 <span class="info-label">Your network</span>
-                                <span class="info-value" id="networkInfo">--</span>
+                                <span class="info-value" id="networkInfo">···</span>
                             </div>
                             <div class="info-row">
                                 <span class="info-label">Your IP address</span>
-                                <span class="info-value mono" id="ipAddress">--</span>
+                                <span class="info-value mono" id="ipAddress">···</span>
                             </div>
                         </div>
                     </div>
@@ -276,7 +276,7 @@
                             <button class="accordion-header" aria-expanded="false">
                                 <span class="accordion-title">Unloaded latency</span>
                                 <span class="accordion-badge" id="unloadedLatencyCount">0/20</span>
-                                <span class="accordion-summary" id="unloadedLatencySummary">--</span>
+                                <span class="accordion-summary" id="unloadedLatencySummary">···</span>
                                 <svg class="accordion-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                                     <polyline points="6 9 12 15 18 9"/>
                                 </svg>
@@ -286,15 +286,15 @@
                                 <div class="latency-stats">
                                     <div class="stat-item">
                                         <span class="stat-label">Min</span>
-                                        <span class="stat-value" id="unloadedMin">--</span>
+                                        <span class="stat-value" id="unloadedMin">···</span>
                                     </div>
                                     <div class="stat-item">
                                         <span class="stat-label">Median</span>
-                                        <span class="stat-value" id="unloadedMedian">--</span>
+                                        <span class="stat-value" id="unloadedMedian">···</span>
                                     </div>
                                     <div class="stat-item">
                                         <span class="stat-label">Max</span>
-                                        <span class="stat-value" id="unloadedMax">--</span>
+                                        <span class="stat-value" id="unloadedMax">···</span>
                                     </div>
                                 </div>
                             </div>
@@ -305,7 +305,7 @@
                             <button class="accordion-header" aria-expanded="false">
                                 <span class="accordion-title">Latency during download</span>
                                 <span class="accordion-badge" id="downloadLatencyCount">0/5</span>
-                                <span class="accordion-summary" id="downloadLatencySummary">--</span>
+                                <span class="accordion-summary" id="downloadLatencySummary">···</span>
                                 <svg class="accordion-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                                     <polyline points="6 9 12 15 18 9"/>
                                 </svg>
@@ -326,7 +326,7 @@
                             <button class="accordion-header" aria-expanded="false">
                                 <span class="accordion-title">Latency during upload</span>
                                 <span class="accordion-badge" id="uploadLatencyCount">0/5</span>
-                                <span class="accordion-summary" id="uploadLatencySummary">--</span>
+                                <span class="accordion-summary" id="uploadLatencySummary">···</span>
                                 <svg class="accordion-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                                     <polyline points="6 9 12 15 18 9"/>
                                 </svg>
@@ -351,7 +351,7 @@
             <div class="card">
                 <div class="card-header">
                     <h3 class="card-title">Packet Loss Test</h3>
-                    <span class="packet-loss-badge" id="packetLossBadge">--/--</span>
+                    <span class="packet-loss-badge" id="packetLossBadge">···/···</span>
                 </div>
                 <div class="card-body">
                     <div class="packet-loss-bar">
@@ -360,11 +360,11 @@
                     <div class="packet-loss-details">
                         <div class="detail-row">
                             <span class="detail-label">Packet Loss</span>
-                            <span class="detail-value" id="packetLossDetail">--%</span>
+                            <span class="detail-value" id="packetLossDetail">···%</span>
                         </div>
                         <div class="detail-row">
                             <span class="detail-label">Received</span>
-                            <span class="detail-value" id="packetsReceived">-- / -- packets</span>
+                            <span class="detail-value" id="packetsReceived">··· / ··· packets</span>
                         </div>
                         <div class="detail-row">
                             <span class="detail-label">Method</span>
@@ -374,19 +374,19 @@
                     <div class="packet-loss-stats" id="packetLossStats">
                         <div class="stat-item">
                             <span class="stat-label">RTT Min</span>
-                            <span class="stat-value" id="rttMin">--</span>
+                            <span class="stat-value" id="rttMin">···</span>
                         </div>
                         <div class="stat-item">
                             <span class="stat-label">RTT Median</span>
-                            <span class="stat-value" id="rttMedian">--</span>
+                            <span class="stat-value" id="rttMedian">···</span>
                         </div>
                         <div class="stat-item">
                             <span class="stat-label">RTT P90</span>
-                            <span class="stat-value" id="rttP90">--</span>
+                            <span class="stat-value" id="rttP90">···</span>
                         </div>
                         <div class="stat-item">
                             <span class="stat-label">Jitter</span>
-                            <span class="stat-value" id="rttJitter">--</span>
+                            <span class="stat-value" id="rttJitter">···</span>
                         </div>
                     </div>
                 </div>

@@ -288,13 +288,13 @@
         state.quality = null;
 
         // Reset hero values
-        if (elements.downloadValue) elements.downloadValue.textContent = '--';
-        if (elements.uploadValue) elements.uploadValue.textContent = '--';
+        if (elements.downloadValue) elements.downloadValue.textContent = '···';
+        if (elements.uploadValue) elements.uploadValue.textContent = '···';
         if (elements.downloadUnit) elements.downloadUnit.textContent = 'Mbps';
         if (elements.uploadUnit) elements.uploadUnit.textContent = 'Mbps';
-        if (elements.latencyValue) elements.latencyValue.textContent = '--';
-        if (elements.jitterValue) elements.jitterValue.textContent = '-- ms';
-        if (elements.packetLossValue) elements.packetLossValue.textContent = '--%';
+        if (elements.latencyValue) elements.latencyValue.textContent = '···';
+        if (elements.jitterValue) elements.jitterValue.textContent = '··· ms';
+        if (elements.packetLossValue) elements.packetLossValue.textContent = '···%';
 
         // Clear sparklines
         if (elements.downloadSparkline) elements.downloadSparkline.innerHTML = '';
@@ -306,7 +306,7 @@
             if (el) {
                 el.className = 'quality-grade';
                 const text = el.querySelector('.grade-text');
-                if (text) text.textContent = '--';
+                if (text) text.textContent = '···';
             }
         });
 
@@ -673,7 +673,7 @@
         const map = L.map('leaflet-map', {
             zoomControl: false,
             attributionControl: false
-        }).setView([lat, lon], 10);
+        }).setView([lat, lon], 8);
 
         // Add tile layer (dark theme compatible)
         L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
@@ -741,8 +741,8 @@
             [serverLat, serverLon],
             [clientLat, clientLon]
         ]);
-        // maxZoom 10 keeps view at ~250+ sq miles minimum
-        map.fitBounds(bounds, { padding: [30, 30], maxZoom: 10 });
+        // maxZoom 8 keeps view at ~1000+ sq miles minimum (avoids too tight zoom)
+        map.fitBounds(bounds, { padding: [30, 30], maxZoom: 8 });
 
         // Draw a line between them
         L.polyline([[clientLat, clientLon], [serverLat, serverLon]], {
@@ -879,7 +879,7 @@
                     <span>${sizeLabel} ${type} test</span>
                     <span class="run-count">(0/${totalRuns})</span>
                 </div>
-                <span class="test-speed">--</span>
+                <span class="test-speed">···</span>
                 <span class="accordion-icon"></span>
             </div>
             <div class="accordion-content">
@@ -960,7 +960,7 @@
             elements.streamingScore.className = `quality-grade ${gradeClass[grade] || ''}`;
             const dot = elements.streamingScore.querySelector('.grade-dot');
             const text = elements.streamingScore.querySelector('.grade-text');
-            if (text) text.textContent = grade || '--';
+            if (text) text.textContent = grade || '···';
         }
 
         // Gaming
@@ -968,7 +968,7 @@
             const grade = quality.gaming;
             elements.gamingScore.className = `quality-grade ${gradeClass[grade] || ''}`;
             const text = elements.gamingScore.querySelector('.grade-text');
-            if (text) text.textContent = grade || '--';
+            if (text) text.textContent = grade || '···';
         }
 
         // Video Chatting
@@ -976,7 +976,7 @@
             const grade = quality.videoChatting;
             elements.videoChatScore.className = `quality-grade ${gradeClass[grade] || ''}`;
             const text = elements.videoChatScore.querySelector('.grade-text');
-            if (text) text.textContent = grade || '--';
+            if (text) text.textContent = grade || '···';
         }
     }
 
@@ -998,10 +998,10 @@
             if (elements.packetsReceived) {
                 elements.packetsReceived.textContent = packetLoss.reason || 'Test unavailable';
             }
-            if (elements.rttMin) elements.rttMin.textContent = '--';
-            if (elements.rttMedian) elements.rttMedian.textContent = '--';
-            if (elements.rttP90) elements.rttP90.textContent = '--';
-            if (elements.rttJitter) elements.rttJitter.textContent = '--';
+            if (elements.rttMin) elements.rttMin.textContent = '···';
+            if (elements.rttMedian) elements.rttMedian.textContent = '···';
+            if (elements.rttP90) elements.rttP90.textContent = '···';
+            if (elements.rttJitter) elements.rttJitter.textContent = '···';
             return;
         }
 
