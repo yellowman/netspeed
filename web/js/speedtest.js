@@ -717,12 +717,17 @@ const SpeedTest = (function() {
      * Calculate summary statistics
      */
     function calculateSummary() {
-        const dlSamples = results.throughputSamples
+        const dlSamplesRaw = results.throughputSamples
             .filter(s => s.direction === 'download')
             .map(s => s.mbps);
-        const ulSamples = results.throughputSamples
+        const ulSamplesRaw = results.throughputSamples
             .filter(s => s.direction === 'upload')
             .map(s => s.mbps);
+
+        // Filter outliers from throughput samples - timing precision issues can
+        // cause inflated speeds for small/fast transfers
+        const dlSamples = filterOutliers(dlSamplesRaw);
+        const ulSamples = filterOutliers(ulSamplesRaw);
 
         // Get all unloaded latency samples, then skip the first 2 which often have
         // cold-start overhead (connection setup, TLS, etc) that skews jitter
