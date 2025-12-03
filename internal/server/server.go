@@ -48,14 +48,21 @@ func New(cfg *config.Config) (*Server, error) {
 
 	// Build location store
 	var locationStore locations.Store
-	if cfg.LocationsFile != "" {
-		store, err := locations.NewFileStore(cfg.LocationsFile)
-		if err != nil {
-			return nil, fmt.Errorf("failed to load locations: %w", err)
-		}
+	locationsFile := cfg.LocationsFile
+	if locationsFile == "" {
+		// Try default locations.json in current directory
+		locationsFile = "locations.json"
+	}
+	if store, err := locations.NewFileStore(locationsFile); err == nil {
 		locationStore = store
+		log.Printf("Loaded locations from %s", locationsFile)
+	} else if cfg.LocationsFile != "" {
+		// User explicitly specified a file that failed to load
+		return nil, fmt.Errorf("failed to load locations: %w", err)
 	} else {
+		// Fall back to built-in defaults
 		locationStore = locations.NewMemoryStore(locations.DefaultLocations())
+		log.Printf("Using built-in default locations")
 	}
 
 	// Allocate payload buffer (1 MiB of random data)
