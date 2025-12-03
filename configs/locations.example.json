@@ -1,0 +1,98 @@
+[
+  {
+    "iata": "JFK",
+    "lat": 40.6413,
+    "lon": -73.7781,
+    "cca2": "US",
+    "region": "North America",
+    "city": "New York"
+  },
+  {
+    "iata": "LAX",
+    "lat": 33.9425,
+    "lon": -118.4081,
+    "cca2": "US",
+    "region": "North America",
+    "city": "Los Angeles"
+  },
+  {
+    "iata": "ORD",
+    "lat": 41.9742,
+    "lon": -87.9073,
+    "cca2": "US",
+    "region": "North America",
+    "city": "Chicago"
+  },
+  {
+    "iata": "LHR",
+    "lat": 51.47,
+    "lon": -0.4543,
+    "cca2": "GB",
+    "region": "Europe",
+    "city": "London"
+  },
+  {
+    "iata": "FRA",
+    "lat": 50.0379,
+    "lon": 8.5622,
+    "cca2": "DE",
+    "region": "Europe",
+    "city": "Frankfurt"
+  },
+  {
+    "iata": "CDG",
+    "lat": 49.0097,
+    "lon": 2.5479,
+    "cca2": "FR",
+    "region": "Europe",
+    "city": "Paris"
+  },
+  {
+    "iata": "AMS",
+    "lat": 52.3105,
+    "lon": 4.7683,
+    "cca2": "NL",
+    "region": "Europe",
+    "city": "Amsterdam"
+  },
+  {
+    "iata": "NRT",
+    "lat": 35.772,
+    "lon": 140.3929,
+    "cca2": "JP",
+    "region": "Asia",
+    "city": "Tokyo"
+  },
+  {
+    "iata": "SIN",
+    "lat": 1.3644,
+    "lon": 103.9915,
+    "cca2": "SG",
+    "region": "Asia",
+    "city": "Singapore"
+  },
+  {
+    "iata": "HKG",
+    "lat": 22.308,
+    "lon": 113.9185,
+    "cca2": "HK",
+    "region": "Asia",
+    "city": "Hong Kong"
+  },
+  {
+    "iata": "SYD",
+    "lat": -33.9399,
+    "lon": 151.1753,
+    "cca2": "AU",
+    "region": "Oceania",
+    "city": "Sydney"
+  },
+  {
+    "iata": "GRU",
+    "lat": -23.4356,
+    "lon": -46.4731,
+    "cca2": "BR",
+    "region": "South America",
+    "city": "Sao Paulo"
+  }
+]

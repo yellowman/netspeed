@@ -1,0 +1,20 @@
+# Binaries
+netspeedd
+*.exe
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+
+# Config (user-specific)
+config.yaml
+config.yml
+
+# Test coverage
+coverage.out
+coverage.html
