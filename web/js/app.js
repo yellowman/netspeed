@@ -664,74 +664,94 @@
     }
 
     /**
-     * Render map showing server location only
+     * Render map showing server location only (using Leaflet)
      */
     function renderMap(lat, lon, label) {
-        // Use OpenStreetMap embed iframe with tighter zoom
-        const zoom = 8;
-        const bbox = calculateBbox(lat, lon, zoom);
+        // Clear container and create map div
+        elements.mapContainer.innerHTML = '<div id="leaflet-map" style="width:100%;height:100%"></div>';
 
-        const markerUrl = `https://www.openstreetmap.org/export/embed.html?bbox=${bbox}&layer=mapnik&marker=${lat},${lon}`;
+        const map = L.map('leaflet-map', {
+            zoomControl: false,
+            attributionControl: false
+        }).setView([lat, lon], 10);
 
-        elements.mapContainer.innerHTML = `
-            <iframe
-                class="map-iframe"
-                src="${markerUrl}"
-                frameborder="0"
-                scrolling="no"
-                loading="lazy"
-                title="Server location: ${label}"
-            ></iframe>
-        `;
+        // Add tile layer (dark theme compatible)
+        L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
+            maxZoom: 19
+        }).addTo(map);
+
+        // Server marker (blue)
+        const serverIcon = L.divIcon({
+            className: 'map-marker server-marker',
+            html: '<div class="marker-dot server"></div>',
+            iconSize: [12, 12],
+            iconAnchor: [6, 6]
+        });
+
+        L.marker([lat, lon], { icon: serverIcon })
+            .bindTooltip(label, { permanent: false, direction: 'top' })
+            .addTo(map);
+
+        state.leafletMap = map;
     }
 
     /**
-     * Render map showing both server and client locations
+     * Render map showing both server and client locations (using Leaflet)
      */
     function renderMapWithBothLocations(serverLat, serverLon, serverLabel, clientLat, clientLon) {
-        // Calculate bounding box that includes both points with padding
-        const minLat = Math.min(serverLat, clientLat);
-        const maxLat = Math.max(serverLat, clientLat);
-        const minLon = Math.min(serverLon, clientLon);
-        const maxLon = Math.max(serverLon, clientLon);
+        // Clear container and create map div
+        elements.mapContainer.innerHTML = '<div id="leaflet-map" style="width:100%;height:100%"></div>';
 
-        // Add padding (20% on each side)
-        const latPadding = Math.max((maxLat - minLat) * 0.2, 0.5);
-        const lonPadding = Math.max((maxLon - minLon) * 0.2, 0.5);
+        const map = L.map('leaflet-map', {
+            zoomControl: false,
+            attributionControl: false
+        });
 
-        const bbox = `${minLon - lonPadding},${minLat - latPadding},${maxLon + lonPadding},${maxLat + latPadding}`;
+        // Add tile layer (dark theme compatible)
+        L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
+            maxZoom: 19
+        }).addTo(map);
 
-        // OSM embed only supports one marker, so we show the server location marker
-        // The client can see their approximate position from the map extent
-        const markerUrl = `https://www.openstreetmap.org/export/embed.html?bbox=${bbox}&layer=mapnik&marker=${serverLat},${serverLon}`;
+        // Server marker (blue)
+        const serverIcon = L.divIcon({
+            className: 'map-marker server-marker',
+            html: '<div class="marker-dot server"></div>',
+            iconSize: [12, 12],
+            iconAnchor: [6, 6]
+        });
 
-        elements.mapContainer.innerHTML = `
-            <iframe
-                class="map-iframe"
-                src="${markerUrl}"
-                frameborder="0"
-                scrolling="no"
-                loading="lazy"
-                title="Server: ${serverLabel}"
-            ></iframe>
-        `;
-    }
+        // Client marker (green)
+        const clientIcon = L.divIcon({
+            className: 'map-marker client-marker',
+            html: '<div class="marker-dot client"></div>',
+            iconSize: [12, 12],
+            iconAnchor: [6, 6]
+        });
 
-    /**
-     * Calculate bounding box for map given center point and zoom level
-     */
-    function calculateBbox(lat, lon, zoom) {
-        // Approximate degrees for the viewport at given zoom
-        // Higher zoom = smaller area
-        const latDelta = 180 / Math.pow(2, zoom);
-        const lonDelta = 360 / Math.pow(2, zoom);
+        const serverMarker = L.marker([serverLat, serverLon], { icon: serverIcon })
+            .bindTooltip(`Server: ${serverLabel}`, { permanent: false, direction: 'top' })
+            .addTo(map);
 
-        const west = lon - lonDelta;
-        const south = lat - latDelta;
-        const east = lon + lonDelta;
-        const north = lat + latDelta;
+        const clientMarker = L.marker([clientLat, clientLon], { icon: clientIcon })
+            .bindTooltip('You', { permanent: false, direction: 'top' })
+            .addTo(map);
 
-        return `${west},${south},${east},${north}`;
+        // Fit bounds to show both markers with padding
+        const bounds = L.latLngBounds([
+            [serverLat, serverLon],
+            [clientLat, clientLon]
+        ]);
+        map.fitBounds(bounds, { padding: [30, 30] });
+
+        // Draw a line between them
+        L.polyline([[clientLat, clientLon], [serverLat, serverLon]], {
+            color: '#8b5cf6',
+            weight: 2,
+            opacity: 0.6,
+            dashArray: '5, 10'
+        }).addTo(map);
+
+        state.leafletMap = map;
     }
 
     /**

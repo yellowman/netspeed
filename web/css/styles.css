@@ -709,6 +709,39 @@ button {
     filter: invert(0.9) hue-rotate(180deg) saturate(0.6) contrast(0.9);
 }
 
+/* Leaflet map marker styles */
+.marker-dot {
+    width: 12px;
+    height: 12px;
+    border-radius: 50%;
+    border: 2px solid #fff;
+    box-shadow: 0 2px 4px rgba(0, 0, 0, 0.3);
+}
+
+.marker-dot.server {
+    background: var(--color-accent-primary, #3b82f6);
+}
+
+.marker-dot.client {
+    background: #22c55e;
+}
+
+/* Leaflet tooltip styling */
+.leaflet-tooltip {
+    background: var(--color-bg-primary, #1a1a2e);
+    border: 1px solid var(--color-border, #2a2a4a);
+    color: var(--color-text-primary, #fff);
+    font-family: inherit;
+    font-size: 0.75rem;
+    padding: 4px 8px;
+    border-radius: 4px;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
+}
+
+.leaflet-tooltip::before {
+    border-top-color: var(--color-border, #2a2a4a);
+}
+
 .map-placeholder {
     display: flex;
     flex-direction: column;
