@@ -662,43 +662,54 @@ const SpeedTest = (function() {
      * Calculate network quality grades
      */
     function calculateQuality(summary) {
-        return {
+        console.log('Grading with summary:', JSON.stringify(summary, null, 2));
+        const quality = {
             videoStreaming: gradeStreaming(summary),
             gaming: gradeGaming(summary),
             videoChatting: gradeVideoChatting(summary)
         };
+        console.log('Calculated quality:', quality);
+        return quality;
     }
 
     function gradeStreaming(s) {
-        if (s.downloadMbps >= 50 && s.latencyUnloadedMs <= 25 &&
-            s.jitterMs <= 5 && s.packetLossPercent <= 0.5) return 'Great';
-        if (s.downloadMbps >= 20 && s.latencyUnloadedMs <= 50 &&
-            s.jitterMs <= 15 && s.packetLossPercent <= 1.5) return 'Good';
-        if (s.downloadMbps >= 10 && s.latencyUnloadedMs <= 80 &&
-            s.jitterMs <= 30 && s.packetLossPercent <= 3) return 'Okay';
+        // Ensure we have valid numbers (NaN comparisons always return false)
+        const dl = s.downloadMbps || 0;
+        const lat = isNaN(s.latencyUnloadedMs) ? 999 : s.latencyUnloadedMs;
+        const jit = isNaN(s.jitterMs) ? 999 : s.jitterMs;
+        const loss = isNaN(s.packetLossPercent) ? 100 : s.packetLossPercent;
+
+        if (dl >= 50 && lat <= 25 && jit <= 5 && loss <= 0.5) return 'Great';
+        if (dl >= 20 && lat <= 50 && jit <= 15 && loss <= 1.5) return 'Good';
+        if (dl >= 10 && lat <= 80 && jit <= 30 && loss <= 3) return 'Okay';
         return 'Poor';
     }
 
     function gradeGaming(s) {
         // Gaming requires low latency and jitter
-        if (s.downloadMbps >= 25 && s.latencyUnloadedMs <= 20 &&
-            s.jitterMs <= 3 && s.packetLossPercent <= 0.1) return 'Great';
-        if (s.downloadMbps >= 15 && s.latencyUnloadedMs <= 40 &&
-            s.jitterMs <= 10 && s.packetLossPercent <= 0.5) return 'Good';
-        if (s.downloadMbps >= 5 && s.latencyUnloadedMs <= 80 &&
-            s.jitterMs <= 20 && s.packetLossPercent <= 2) return 'Okay';
+        const dl = s.downloadMbps || 0;
+        const lat = isNaN(s.latencyUnloadedMs) ? 999 : s.latencyUnloadedMs;
+        const jit = isNaN(s.jitterMs) ? 999 : s.jitterMs;
+        const loss = isNaN(s.packetLossPercent) ? 100 : s.packetLossPercent;
+
+        if (dl >= 25 && lat <= 20 && jit <= 3 && loss <= 0.1) return 'Great';
+        if (dl >= 15 && lat <= 40 && jit <= 10 && loss <= 0.5) return 'Good';
+        if (dl >= 5 && lat <= 80 && jit <= 20 && loss <= 2) return 'Okay';
         return 'Poor';
     }
 
     function gradeVideoChatting(s) {
         // Video chat needs good upload and low latency
-        const minSpeed = Math.min(s.downloadMbps, s.uploadMbps);
-        if (minSpeed >= 10 && s.latencyUnloadedMs <= 30 &&
-            s.jitterMs <= 5 && s.packetLossPercent <= 0.5) return 'Great';
-        if (minSpeed >= 5 && s.latencyUnloadedMs <= 50 &&
-            s.jitterMs <= 15 && s.packetLossPercent <= 1) return 'Good';
-        if (minSpeed >= 2 && s.latencyUnloadedMs <= 100 &&
-            s.jitterMs <= 30 && s.packetLossPercent <= 3) return 'Okay';
+        const dl = s.downloadMbps || 0;
+        const ul = s.uploadMbps || 0;
+        const minSpeed = Math.min(dl, ul);
+        const lat = isNaN(s.latencyUnloadedMs) ? 999 : s.latencyUnloadedMs;
+        const jit = isNaN(s.jitterMs) ? 999 : s.jitterMs;
+        const loss = isNaN(s.packetLossPercent) ? 100 : s.packetLossPercent;
+
+        if (minSpeed >= 10 && lat <= 30 && jit <= 5 && loss <= 0.5) return 'Great';
+        if (minSpeed >= 5 && lat <= 50 && jit <= 15 && loss <= 1) return 'Good';
+        if (minSpeed >= 2 && lat <= 100 && jit <= 30 && loss <= 3) return 'Okay';
         return 'Poor';
     }
 
