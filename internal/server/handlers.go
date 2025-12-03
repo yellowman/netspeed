@@ -246,7 +246,8 @@ func (s *Server) handleTurnCredentials(w http.ResponseWriter, r *http.Request) {
 		}
 		// RFC 7065/3986: IPv6 addresses must be enclosed in brackets in URIs
 		// net.SplitHostPort strips brackets, so we need to re-add them for IPv6
-		if strings.Contains(host, ":") {
+		// But if SplitHostPort failed (no port), brackets may already be present
+		if strings.Contains(host, ":") && !strings.HasPrefix(host, "[") {
 			host = "[" + host + "]"
 		}
 		// Include both STUN and TURN URLs - browsers need STUN for reflexive candidates
