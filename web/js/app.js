@@ -1647,19 +1647,27 @@
      * Update network quality score display
      */
     function updateNetworkQualityScoreDisplay(score) {
-        if (!score) return;
+        if (!score) {
+            console.warn('updateNetworkQualityScoreDisplay: no score provided');
+            return;
+        }
 
-        // Update gauge
+        console.log('Updating network quality display:', score);
+
+        // Update gauge - use setAttribute for SVG attributes
         if (elements.gaugeFill) {
             // Circle circumference is 2*PI*50 = 314
             const circumference = 314;
             const offset = circumference - (score.overall / 100) * circumference;
-            elements.gaugeFill.style.strokeDashoffset = offset;
+            // Use setAttribute for SVG elements - more reliable than style property
+            elements.gaugeFill.setAttribute('stroke-dashoffset', offset);
 
             // Set grade class for color
-            elements.gaugeFill.className = 'gauge-fill';
+            elements.gaugeFill.setAttribute('class', 'gauge-fill');
             const gradeClass = score.grade.toLowerCase().replace('+', '-plus');
             elements.gaugeFill.classList.add(`grade-${gradeClass}`);
+        } else {
+            console.warn('gaugeFill element not found');
         }
 
         if (elements.overallScore) {

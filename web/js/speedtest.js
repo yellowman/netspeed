@@ -1176,21 +1176,34 @@ const SpeedTest = (function() {
      * Calculate network quality score (0-100)
      */
     function calculateNetworkQualityScore(summary, bandwidth) {
+        // Defensive checks for inputs
+        if (!summary || !bandwidth) {
+            console.warn('calculateNetworkQualityScore: missing summary or bandwidth');
+            return null;
+        }
+
+        // Ensure we have valid numbers (default to safe values if NaN/undefined)
+        const downloadMbps = summary.downloadMbps || 0;
+        const latencyMs = isNaN(summary.latencyUnloadedMs) ? 50 : summary.latencyUnloadedMs;
+        const jitterMs = isNaN(summary.jitterMs) ? 10 : summary.jitterMs;
+        const packetLossPercent = isNaN(summary.packetLossPercent) ? 0 : summary.packetLossPercent;
+        const downloadVariability = isNaN(bandwidth.downloadVariability) ? 0.1 : bandwidth.downloadVariability;
+
         // Bandwidth score (0-100)
         const bwScore = Math.min(100,
-            (Math.log10(Math.max(1, summary.downloadMbps)) / Math.log10(1000)) * 100
+            (Math.log10(Math.max(1, downloadMbps)) / Math.log10(1000)) * 100
         );
 
         // Latency score (0-100)
-        const latScore = Math.max(0, 100 - (summary.latencyUnloadedMs * 1.5));
+        const latScore = Math.max(0, 100 - (latencyMs * 1.5));
 
         // Stability score (0-100)
-        const jitterPenalty = Math.min(50, summary.jitterMs * 3);
-        const variabilityPenalty = Math.min(30, bandwidth.downloadVariability * 100);
+        const jitterPenalty = Math.min(50, jitterMs * 3);
+        const variabilityPenalty = Math.min(30, downloadVariability * 100);
         const stabScore = Math.max(0, 100 - jitterPenalty - variabilityPenalty);
 
         // Reliability score (0-100)
-        const reliScore = Math.max(0, 100 - (summary.packetLossPercent * 15));
+        const reliScore = Math.max(0, 100 - (packetLossPercent * 15));
 
         // Weighted composite
         const overall = Math.round(
@@ -1214,6 +1227,8 @@ const SpeedTest = (function() {
             'D': 'Poor - Expect frequent buffering and lag',
             'F': 'Very Poor - Connection issues likely for most activities'
         };
+
+        console.log('Network quality score calculated:', { overall, grade, bwScore, latScore, stabScore, reliScore });
 
         return {
             overall,
