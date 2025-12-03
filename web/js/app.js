@@ -947,7 +947,7 @@
             Charts.sparkline(chartContainer, profileSamples, {
                 width: chartContainer.clientWidth || 150,
                 height: 40,
-                strokeColor: type === 'download' ? 'var(--accent-primary)' : 'var(--accent-secondary)'
+                strokeColor: type === 'download' ? 'var(--color-download)' : 'var(--color-upload)'
             });
         }
 
