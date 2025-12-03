@@ -155,7 +155,7 @@ func (s *Server) handleUp(w http.ResponseWriter, r *http.Request) {
 
 	// Read and discard body safely with limit
 	n, err := io.Copy(io.Discard, io.LimitReader(r.Body, s.cfg.MaxBytes))
-	if err != nil && err != io.EOF {
+	if err != nil {
 		log.Printf("Upload read error: %v", err)
 	}
 
