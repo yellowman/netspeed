@@ -71,16 +71,19 @@
 
         // Latency sections
         elements.unloadedLatencyChart = document.getElementById('unloadedLatencyChart');
+        elements.unloadedLatencyBoxPlot = document.getElementById('unloadedLatencyBoxPlot');
         elements.unloadedLatencyCount = document.getElementById('unloadedLatencyCount');
         elements.unloadedLatencySummary = document.getElementById('unloadedLatencySummary');
         elements.unloadedMin = document.getElementById('unloadedMin');
         elements.unloadedMedian = document.getElementById('unloadedMedian');
         elements.unloadedMax = document.getElementById('unloadedMax');
         elements.downloadLatencyChart = document.getElementById('downloadLatencyChart');
+        elements.downloadLatencyBoxPlot = document.getElementById('downloadLatencyBoxPlot');
         elements.downloadLatencyCount = document.getElementById('downloadLatencyCount');
         elements.downloadLatencySummary = document.getElementById('downloadLatencySummary');
         elements.downloadLatencyTable = document.getElementById('downloadLatencyTable');
         elements.uploadLatencyChart = document.getElementById('uploadLatencyChart');
+        elements.uploadLatencyBoxPlot = document.getElementById('uploadLatencyBoxPlot');
         elements.uploadLatencyCount = document.getElementById('uploadLatencyCount');
         elements.uploadLatencySummary = document.getElementById('uploadLatencySummary');
         elements.uploadLatencyTable = document.getElementById('uploadLatencyTable');
@@ -140,6 +143,47 @@
         document.addEventListener('keydown', (e) => {
             if (e.key === 'Escape') closeModals();
         });
+
+        // Setup box plot tooltips
+        setupBoxPlotTooltips();
+    }
+
+    /**
+     * Setup tooltips for box plot elements
+     */
+    function setupBoxPlotTooltips() {
+        // Create tooltip element
+        const tooltip = document.createElement('div');
+        tooltip.className = 'boxplot-tooltip';
+        tooltip.innerHTML = `
+            <h4>Distribution Chart</h4>
+            <ul>
+                <li><strong>Thick bar:</strong> Middle 50% of values (25th-75th percentile)</li>
+                <li><strong>Solid line:</strong> Median (middle value)</li>
+                <li><strong>Dashed line:</strong> Average (mean)</li>
+                <li><strong>Whiskers:</strong> Full range (min to max)</li>
+                <li><strong>End caps:</strong> Minimum and maximum values</li>
+            </ul>
+        `;
+        document.body.appendChild(tooltip);
+
+        // Event delegation for box plot tooltips
+        document.addEventListener('mouseenter', (e) => {
+            const target = e.target.closest('[data-tooltip-target="boxplot"]');
+            if (target) {
+                const rect = target.getBoundingClientRect();
+                tooltip.style.left = `${rect.left}px`;
+                tooltip.style.top = `${rect.bottom + 8}px`;
+                tooltip.classList.add('visible');
+            }
+        }, true);
+
+        document.addEventListener('mouseleave', (e) => {
+            const target = e.target.closest('[data-tooltip-target="boxplot"]');
+            if (target) {
+                tooltip.classList.remove('visible');
+            }
+        }, true);
     }
 
     /**
@@ -473,6 +517,16 @@
                 if (elements.unloadedMin) elements.unloadedMin.textContent = `${min.toFixed(1)} ms`;
                 if (elements.unloadedMedian) elements.unloadedMedian.textContent = `${median.toFixed(1)} ms`;
                 if (elements.unloadedMax) elements.unloadedMax.textContent = `${max.toFixed(1)} ms`;
+
+                // Update box plot
+                if (elements.unloadedLatencyBoxPlot && values.length >= 2) {
+                    Charts.boxPlot(elements.unloadedLatencyBoxPlot, values, {
+                        width: elements.unloadedLatencyBoxPlot.clientWidth || 280,
+                        height: 50,
+                        barColor: 'var(--color-latency)',
+                        unit: 'ms'
+                    });
+                }
             }
         } else if (phase === 'download') {
             // Update count badge
@@ -493,6 +547,16 @@
                 row.innerHTML = `<td>${current}</td><td>${sample.rttMs.toFixed(1)} ms</td>`;
                 elements.downloadLatencyTable.appendChild(row);
             }
+
+            // Update box plot
+            if (elements.downloadLatencyBoxPlot && values.length >= 2) {
+                Charts.boxPlot(elements.downloadLatencyBoxPlot, values, {
+                    width: elements.downloadLatencyBoxPlot.clientWidth || 280,
+                    height: 50,
+                    barColor: 'var(--color-download)',
+                    unit: 'ms'
+                });
+            }
         } else if (phase === 'upload') {
             // Update count badge
             if (elements.uploadLatencyCount) {
@@ -511,6 +575,16 @@
                 const row = document.createElement('tr');
                 row.innerHTML = `<td>${current}</td><td>${sample.rttMs.toFixed(1)} ms</td>`;
                 elements.uploadLatencyTable.appendChild(row);
+            }
+
+            // Update box plot
+            if (elements.uploadLatencyBoxPlot && values.length >= 2) {
+                Charts.boxPlot(elements.uploadLatencyBoxPlot, values, {
+                    width: elements.uploadLatencyBoxPlot.clientWidth || 280,
+                    height: 50,
+                    barColor: 'var(--color-upload)',
+                    unit: 'ms'
+                });
             }
         }
     }
@@ -838,13 +912,38 @@
             speedValue.textContent = `${sample.mbps.toFixed(1)} Mbps`;
         }
 
-        // Add to chart data
-        const chartContainer = card.querySelector('.test-chart');
-        if (chartContainer) {
-            const profileSamples = (type === 'download' ? state.downloadSamples : state.uploadSamples)
-                .filter(s => s.profile === profile)
-                .map(s => s.mbps);
+        // Get profile samples
+        const profileSamples = (type === 'download' ? state.downloadSamples : state.uploadSamples)
+            .filter(s => s.profile === profile)
+            .map(s => s.mbps);
 
+        // Update box plot
+        const boxPlotContainer = card.querySelector('.test-box-plot');
+        if (boxPlotContainer && profileSamples.length >= 2) {
+            const stats = Charts.boxPlot(boxPlotContainer, profileSamples, {
+                width: boxPlotContainer.clientWidth || 280,
+                height: 50,
+                barColor: type === 'download' ? 'var(--color-download)' : 'var(--color-upload)',
+                unit: 'Mbps'
+            });
+
+            // Update stats display
+            const statsContainer = card.querySelector('.test-stats');
+            if (statsContainer && stats) {
+                statsContainer.innerHTML = `
+                    <div class="stats-grid">
+                        <span class="stat"><b>Min:</b> ${stats.min.toFixed(1)} Mbps</span>
+                        <span class="stat"><b>Max:</b> ${stats.max.toFixed(1)} Mbps</span>
+                        <span class="stat"><b>Avg:</b> ${stats.average.toFixed(1)} Mbps</span>
+                        <span class="stat"><b>Median:</b> ${stats.median.toFixed(1)} Mbps</span>
+                    </div>
+                `;
+            }
+        }
+
+        // Add to sparkline chart
+        const chartContainer = card.querySelector('.test-chart');
+        if (chartContainer && profileSamples.length > 0) {
             Charts.sparkline(chartContainer, profileSamples, {
                 width: chartContainer.clientWidth || 150,
                 height: 40,
@@ -884,6 +983,9 @@
                 <span class="accordion-icon"></span>
             </div>
             <div class="accordion-content">
+                <div class="test-box-plot" data-tooltip-target="boxplot"></div>
+                <div class="test-stats"></div>
+                <div class="test-chart-label">Speed over time</div>
                 <div class="test-chart"></div>
                 <table class="test-table">
                     <thead>

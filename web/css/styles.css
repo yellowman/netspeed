@@ -1126,6 +1126,85 @@ button {
     font-variant-numeric: tabular-nums;
 }
 
+.test-card .test-box-plot {
+    margin-bottom: var(--spacing-md);
+    min-height: 50px;
+    position: relative;
+    cursor: help;
+}
+
+.test-card .test-stats {
+    margin-bottom: var(--spacing-md);
+}
+
+.test-card .stats-grid {
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    gap: var(--spacing-xs) var(--spacing-md);
+    font-size: 0.75rem;
+    color: var(--color-text-secondary);
+}
+
+.test-card .stats-grid .stat b {
+    color: var(--color-text-tertiary);
+    font-weight: 500;
+}
+
+.test-card .test-chart-label {
+    font-size: 0.7rem;
+    color: var(--color-text-tertiary);
+    margin-bottom: var(--spacing-xs);
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+}
+
+/* Box Plot Tooltip */
+.boxplot-tooltip {
+    position: fixed;
+    z-index: 1000;
+    background: var(--color-bg-elevated);
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-md);
+    padding: var(--spacing-md);
+    box-shadow: var(--shadow-lg);
+    max-width: 280px;
+    font-size: 0.75rem;
+    pointer-events: none;
+    opacity: 0;
+    transition: opacity 0.15s ease;
+}
+
+.boxplot-tooltip.visible {
+    opacity: 1;
+}
+
+.boxplot-tooltip h4 {
+    margin: 0 0 var(--spacing-sm);
+    font-size: 0.8rem;
+    color: var(--color-text-primary);
+}
+
+.boxplot-tooltip ul {
+    margin: 0;
+    padding: 0 0 0 var(--spacing-md);
+}
+
+.boxplot-tooltip li {
+    margin-bottom: var(--spacing-xs);
+    color: var(--color-text-secondary);
+}
+
+.boxplot-tooltip li strong {
+    color: var(--color-text-primary);
+}
+
+/* Latency Box Plot */
+.latency-box-plot {
+    margin: var(--spacing-md) 0;
+    min-height: 50px;
+    cursor: help;
+}
+
 /* ========================================
    Footer
    ======================================== */
