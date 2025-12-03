@@ -676,6 +676,29 @@ const SpeedTest = (function() {
                 rttSamplesSlice: rttSamples.slice(0, 5)
             });
 
+            // Detect if this looks like a connection failure rather than actual packet loss
+            // If we lost more than 50% of packets, it's likely a WebRTC/browser issue
+            const likelyConnectionIssue = lossPercent > 50;
+
+            if (likelyConnectionIssue) {
+                console.warn('Packet loss test: high loss rate suggests connection issue, not actual packet loss');
+                const unavailableResult = {
+                    sent,
+                    received,
+                    lossPercent: 0,
+                    rttStatsMs: { min: 0, median: 0, p90: 0 },
+                    jitterMs: 0,
+                    unavailable: true,
+                    reason: `Connection unstable - received only ${received}/${sent} responses`
+                };
+                results.packetLoss = unavailableResult;
+
+                // Clean up
+                dc.close();
+                pc.close();
+                return unavailableResult;
+            }
+
             // Calculate RTT stats
             rttSamples.sort((a, b) => a - b);
             const rttMin = rttSamples.length > 0 ? rttSamples[0] : 0;
