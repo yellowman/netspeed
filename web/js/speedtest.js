@@ -58,7 +58,8 @@ const SpeedTest = (function() {
         onLatencyProgress: null,
         onPacketLossProgress: null,
         onComplete: null,
-        onError: null
+        onError: null,
+        onTimingWarning: null
     };
 
     /**
@@ -146,18 +147,24 @@ const SpeedTest = (function() {
 
             // For small/fast downloads, body time may be 0 or near-0.
             // Fall back to requestStart->responseEnd which includes request overhead but avoids Infinity
-            if (bodyTime < 1) {
+            if (bodyTime < 1 && timing.requestStart > 0) {
                 durationMs = timing.responseEnd - timing.requestStart;
                 timingSource = 'resource-timing-full';
-            } else {
+            } else if (bodyTime >= 1) {
                 durationMs = bodyTime;
                 timingSource = 'resource-timing';
             }
-        } else {
+            // If bodyTime < 1 and requestStart is 0, fall through to manual timing
+        }
+
+        if (!durationMs) {
             // Fallback: use manual timing (includes connection overhead)
             durationMs = manualEnd - manualStart;
             timingSource = 'manual';
             console.log('Download timing fallback:', { profile, runIndex, timing, manualMs: durationMs });
+            if (callbacks.onTimingWarning) {
+                callbacks.onTimingWarning('download', 'Resource Timing API unavailable');
+            }
         }
 
         // Final guard against division by zero
@@ -207,6 +214,7 @@ const SpeedTest = (function() {
         // Use Resource Timing API for precise timing
         const timing = await getResourceTiming(url);
         let durationMs;
+        let timingSource;
 
         // For uploads, prefer Server-Timing header if available (most accurate)
         // Server-Timing measures server-side: time from request start to body fully received
@@ -214,17 +222,31 @@ const SpeedTest = (function() {
             const serverDur = timing.serverTiming.find(st => st.name === 'app');
             if (serverDur && serverDur.duration > 0) {
                 durationMs = serverDur.duration;
+                timingSource = 'server-timing';
             }
         }
 
         // Fallback to Resource Timing requestStart -> responseStart
         if (!durationMs && timing && timing.requestStart > 0 && timing.responseStart > 0) {
             durationMs = timing.responseStart - timing.requestStart;
+            timingSource = 'resource-timing';
         }
 
         // Last fallback: manual timing
         if (!durationMs) {
             durationMs = manualEnd - manualStart;
+            timingSource = 'manual';
+            if (callbacks.onTimingWarning) {
+                callbacks.onTimingWarning('upload', 'Resource Timing API unavailable');
+            }
+        }
+
+        // Log first few uploads to verify timing source
+        if (runIndex < 2 && profile !== 'warmup') {
+            console.log(`Upload ${profile}/${runIndex}: ${timingSource}`, {
+                durationMs: durationMs.toFixed(1),
+                serverTiming: timing?.serverTiming?.map(st => ({ name: st.name, duration: st.duration }))
+            });
         }
 
         const mbps = (bytes * 8) / (durationMs / 1000) / 1e6;
@@ -276,6 +298,9 @@ const SpeedTest = (function() {
             // Last resort: manual timing
             rttMs = manualEnd - manualStart;
             timingSource = 'manual';
+            if (callbacks.onTimingWarning) {
+                callbacks.onTimingWarning('latency', 'Resource Timing API unavailable');
+            }
         }
 
         // Log first few probes to debug timing source
@@ -717,12 +742,24 @@ const SpeedTest = (function() {
      * Calculate summary statistics
      */
     function calculateSummary() {
+        // Filter throughput samples by minimum duration for accurate timing.
+        // Samples under 10ms are too short for reliable speed calculation
+        // due to timing resolution limits.
+        const MIN_DURATION_MS = 10;
+
         const dlSamples = results.throughputSamples
-            .filter(s => s.direction === 'download')
+            .filter(s => s.direction === 'download' && s.durationMs >= MIN_DURATION_MS)
             .map(s => s.mbps);
         const ulSamples = results.throughputSamples
-            .filter(s => s.direction === 'upload')
+            .filter(s => s.direction === 'upload' && s.durationMs >= MIN_DURATION_MS)
             .map(s => s.mbps);
+
+        console.log('Throughput filtering:', {
+            dlTotal: results.throughputSamples.filter(s => s.direction === 'download').length,
+            dlAfterFilter: dlSamples.length,
+            ulTotal: results.throughputSamples.filter(s => s.direction === 'upload').length,
+            ulAfterFilter: ulSamples.length
+        });
 
         // Get all unloaded latency samples, then skip the first 2 which often have
         // cold-start overhead (connection setup, TLS, etc) that skews jitter

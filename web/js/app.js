@@ -17,7 +17,8 @@
         downloadSamples: [],
         uploadSamples: [],
         latencySamples: [],
-        testStartTime: null
+        testStartTime: null,
+        timingWarningShown: false
     };
 
     // DOM element cache
@@ -45,8 +46,10 @@
 
         // Hero metrics
         elements.downloadValue = document.getElementById('downloadSpeed');
+        elements.downloadUnit = document.getElementById('downloadUnit');
         elements.downloadSparkline = document.getElementById('downloadSparkline');
         elements.uploadValue = document.getElementById('uploadSpeed');
+        elements.uploadUnit = document.getElementById('uploadUnit');
         elements.uploadSparkline = document.getElementById('uploadSparkline');
         elements.latencyValue = document.getElementById('latencyValue');
         elements.jitterValue = document.getElementById('jitterValue');
@@ -172,6 +175,24 @@
     }
 
     /**
+     * Show a toast notification
+     */
+    function showToast(message, duration = 4000) {
+        if (!elements.toast) return;
+
+        const messageEl = elements.toast.querySelector('.toast-message');
+        if (messageEl) {
+            messageEl.textContent = message;
+        }
+
+        elements.toast.classList.add('show');
+
+        setTimeout(() => {
+            elements.toast.classList.remove('show');
+        }, duration);
+    }
+
+    /**
      * Load initial metadata and locations
      */
     async function loadInitialData() {
@@ -198,6 +219,7 @@
 
         state.isRunning = true;
         state.testStartTime = Date.now();
+        state.timingWarningShown = false;
         resetResults();
         updateUIState('running');
 
@@ -209,7 +231,8 @@
             onLatencyProgress: handleLatencyProgress,
             onPacketLossProgress: handlePacketLossProgress,
             onComplete: handleComplete,
-            onError: handleError
+            onError: handleError,
+            onTimingWarning: handleTimingWarning
         });
 
         try {
@@ -570,6 +593,16 @@
                     card.classList.add('error');
                 }
             }
+        }
+    }
+
+    /**
+     * Handle timing API warnings - show toast once per test run
+     */
+    function handleTimingWarning(type, message) {
+        if (!state.timingWarningShown) {
+            state.timingWarningShown = true;
+            showToast('Resource Timing API unavailable - latency and bandwidth measurements may be less accurate', 5000);
         }
     }
 
