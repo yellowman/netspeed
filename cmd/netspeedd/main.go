@@ -170,7 +170,7 @@ func main() {
 			if publicIP != "" {
 				cfg.TurnServers = []string{
 					fmt.Sprintf("stun:%s:%s", publicIP, port),
-					fmt.Sprintf("turn:%s:%s", publicIP, port),
+					fmt.Sprintf("turn:%s:%s?transport=udp", publicIP, port),
 				}
 				log.Printf("Embedded TURN configured: servers=%v", cfg.TurnServers)
 			} else {
