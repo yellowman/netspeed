@@ -489,24 +489,27 @@
 
     /**
      * Handle packet loss progress
+     * Note: During the test, acks are still arriving so we only show progress counts,
+     * not the loss percentage (which would be misleadingly high)
      */
     function handlePacketLossProgress(sent, total, received) {
-        const lossPercent = ((sent - received) / sent * 100);
-
+        // Show progress as sent/total (not received/sent, which is misleading during test)
         if (elements.packetLossBadge) {
-            elements.packetLossBadge.textContent = `${received}/${sent}`;
+            elements.packetLossBadge.textContent = `${sent}/${total}`;
         }
 
+        // Progress bar shows how far through the test we are (sent packets)
         if (elements.packetLossFill) {
-            elements.packetLossFill.style.width = `${(received / sent) * 100}%`;
+            elements.packetLossFill.style.width = `${(sent / total) * 100}%`;
         }
 
+        // Don't show loss percentage during test - it's misleading since acks are still arriving
         if (elements.packetLossDetail) {
-            elements.packetLossDetail.textContent = `${lossPercent.toFixed(2)}%`;
+            elements.packetLossDetail.textContent = 'Testing...';
         }
 
         if (elements.packetsReceived) {
-            elements.packetsReceived.textContent = `${received} / ${sent} packets`;
+            elements.packetsReceived.textContent = `Sent ${sent} of ${total} packets`;
         }
     }
 
