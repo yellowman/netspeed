@@ -45,8 +45,10 @@
 
         // Hero metrics
         elements.downloadValue = document.getElementById('downloadSpeed');
+        elements.downloadUnit = document.getElementById('downloadUnit');
         elements.downloadSparkline = document.getElementById('downloadSparkline');
         elements.uploadValue = document.getElementById('uploadSpeed');
+        elements.uploadUnit = document.getElementById('uploadUnit');
         elements.uploadSparkline = document.getElementById('uploadSparkline');
         elements.latencyValue = document.getElementById('latencyValue');
         elements.jitterValue = document.getElementById('jitterValue');
