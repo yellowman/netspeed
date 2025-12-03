@@ -4,6 +4,7 @@ package config
 import (
 	"os"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -133,7 +134,7 @@ func FromEnv() *Config {
 	}
 
 	if origins := os.Getenv("NETSPEEDD_ALLOWED_ORIGINS"); origins != "" {
-		cfg.AllowedOrigins = []string{origins}
+		cfg.AllowedOrigins = strings.Split(origins, ",")
 	}
 
 	if locFile := os.Getenv("NETSPEEDD_LOCATIONS_FILE"); locFile != "" {
@@ -165,7 +166,7 @@ func FromEnv() *Config {
 	}
 
 	if turnServers := os.Getenv("NETSPEEDD_TURN_SERVERS"); turnServers != "" {
-		cfg.TurnServers = []string{turnServers}
+		cfg.TurnServers = strings.Split(turnServers, ",")
 	}
 
 	if maxTurnTTL := os.Getenv("NETSPEEDD_MAX_TURN_TTL"); maxTurnTTL != "" {

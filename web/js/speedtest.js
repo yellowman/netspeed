@@ -358,8 +358,6 @@ const SpeedTest = (function() {
                 });
             }
 
-            console.log('ICE servers configured:', iceServers);
-
             const pc = new RTCPeerConnection({
                 iceServers: iceServers,
                 iceTransportPolicy: 'all'

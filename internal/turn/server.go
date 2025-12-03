@@ -10,6 +10,9 @@ import (
 	"fmt"
 	"log"
 	"net"
+	"strconv"
+	"strings"
+	"time"
 
 	"github.com/pion/turn/v2"
 )
@@ -86,9 +89,26 @@ func New(cfg Config) (*Server, error) {
 		Realm: cfg.Realm,
 		AuthHandler: func(username string, realm string, srcAddr net.Addr) ([]byte, bool) {
 			// COTURN-style time-limited credentials
+			// Username format: <expiry_unix_timestamp>:<token>
 			// The credential/password is base64(HMAC-SHA1(secret, username))
-			// This matches what the /api/turn/credentials endpoint generates
 			log.Printf("TURN auth request: user=%s realm=%s from=%s", username, realm, srcAddr)
+
+			// Validate expiry timestamp
+			parts := strings.SplitN(username, ":", 2)
+			if len(parts) != 2 {
+				log.Printf("TURN auth failed: invalid username format")
+				return nil, false
+			}
+			expiry, err := strconv.ParseInt(parts[0], 10, 64)
+			if err != nil {
+				log.Printf("TURN auth failed: invalid expiry timestamp")
+				return nil, false
+			}
+			if time.Now().Unix() > expiry {
+				log.Printf("TURN auth failed: credentials expired")
+				return nil, false
+			}
+
 			mac := hmac.New(sha1.New, []byte(cfg.Secret))
 			mac.Write([]byte(username))
 			password := base64.StdEncoding.EncodeToString(mac.Sum(nil))
