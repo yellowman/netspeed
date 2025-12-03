@@ -448,10 +448,14 @@ const SpeedTest = (function() {
             const rttSamples = [];
             let seq = 0;
 
-            dc.onmessage = (event) => {
+            dc.onmessage = async (event) => {
                 try {
-                    const msg = JSON.parse(event.data);
-                    console.log('Received ack:', msg);
+                    // Handle both string and Blob data (pion sends binary by default)
+                    let data = event.data;
+                    if (data instanceof Blob) {
+                        data = await data.text();
+                    }
+                    const msg = JSON.parse(data);
                     if (typeof msg.ack === 'number' && typeof msg.receivedAt === 'number') {
                         acks.set(msg.ack, msg.receivedAt);
                         // Calculate RTT if we have the send time
