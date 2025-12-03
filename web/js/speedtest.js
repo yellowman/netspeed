@@ -189,6 +189,27 @@ const SpeedTest = (function() {
     }
 
     /**
+     * Run warmup transfers to prime the connection
+     */
+    async function runWarmup() {
+        // Do a few small downloads and uploads to warm up the connection
+        // This gets past TCP slow start and establishes keep-alive
+        try {
+            // Small download warmups
+            for (let i = 0; i < 3; i++) {
+                await runDownload(DOWNLOAD_PROFILES['1M'], 'warmup', i);
+            }
+            // Small upload warmups
+            for (let i = 0; i < 3; i++) {
+                await runUpload(UPLOAD_PROFILES['1M'], 'warmup', i);
+            }
+        } catch (e) {
+            // Warmup failures are non-fatal
+            console.log('Warmup error (non-fatal):', e);
+        }
+    }
+
+    /**
      * Run unloaded latency tests
      */
     async function runUnloadedLatency() {
@@ -701,6 +722,10 @@ const SpeedTest = (function() {
             // Run unloaded latency baseline
             if (callbacks.onProgress) callbacks.onProgress('latency', 0);
             await runUnloadedLatency();
+
+            // Warmup: small transfers to establish connection and get past TCP slow start
+            if (callbacks.onProgress) callbacks.onProgress('warmup', 0);
+            await runWarmup();
 
             // Run download tests
             if (callbacks.onProgress) callbacks.onProgress('download', 0);

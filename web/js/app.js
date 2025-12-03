@@ -345,6 +345,7 @@
         const phaseLabels = {
             'meta': 'Loading metadata...',
             'latency': 'Measuring latency...',
+            'warmup': 'Warming up connection...',
             'download': 'Testing download speed...',
             'upload': 'Testing upload speed...',
             'loaded-latency': 'Measuring loaded latency...',
