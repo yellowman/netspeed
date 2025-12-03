@@ -246,7 +246,7 @@ func (s *Server) handleTurnCredentials(w http.ResponseWriter, r *http.Request) {
 		// Include both STUN and TURN URLs - browsers need STUN for reflexive candidates
 		turnServers = []string{
 			fmt.Sprintf("stun:%s:%s", host, s.cfg.EmbeddedTurnPort),
-			fmt.Sprintf("turn:%s:%s", host, s.cfg.EmbeddedTurnPort),
+			fmt.Sprintf("turn:%s:%s?transport=udp", host, s.cfg.EmbeddedTurnPort),
 		}
 	}
 

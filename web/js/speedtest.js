@@ -342,10 +342,10 @@ const SpeedTest = (function() {
             const turnCreds = await credResponse.json();
 
             // Create RTCPeerConnection
-            // Separate STUN (no credentials) from TURN (with credentials)
+            // Separate STUN (no credentials) from TURN/TURNS (with credentials)
             const iceServers = [];
-            const stunUrls = turnCreds.servers.filter(s => s.startsWith('stun:'));
-            const turnUrls = turnCreds.servers.filter(s => s.startsWith('turn:'));
+            const stunUrls = turnCreds.servers.filter(s => s.startsWith('stun:') || s.startsWith('stuns:'));
+            const turnUrls = turnCreds.servers.filter(s => s.startsWith('turn:') || s.startsWith('turns:'));
 
             if (stunUrls.length > 0) {
                 iceServers.push({ urls: stunUrls });
@@ -371,9 +371,20 @@ const SpeedTest = (function() {
                 maxRetransmits: 0
             });
 
-            // Wait for ICE gathering to complete
+            // Create offer and set local description to start ICE gathering
+            const offer = await pc.createOffer();
+            await pc.setLocalDescription(offer);
+
+            // Now wait for ICE gathering to complete
             await new Promise((resolve, reject) => {
                 const timeout = setTimeout(() => reject(new Error('ICE gathering timeout')), 10000);
+
+                // Check if already complete
+                if (pc.iceGatheringState === 'complete') {
+                    clearTimeout(timeout);
+                    resolve();
+                    return;
+                }
 
                 pc.onicecandidate = (event) => {
                     if (event.candidate === null) {
@@ -389,10 +400,6 @@ const SpeedTest = (function() {
                     }
                 };
             });
-
-            // Create offer
-            const offer = await pc.createOffer();
-            await pc.setLocalDescription(offer);
 
             // Exchange SDP with server
             const offerResponse = await fetch('/api/packet-test/offer', {
