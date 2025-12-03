@@ -677,11 +677,52 @@ const SpeedTest = (function() {
             });
 
             // Detect if this looks like a connection failure rather than actual packet loss
-            // If we lost more than 50% of packets, it's likely a WebRTC/browser issue
-            const likelyConnectionIssue = lossPercent > 50;
+            // Check if responses suddenly stopped (connection died) vs random loss throughout
+            let likelyConnectionIssue = false;
+            let connectionIssueReason = '';
+
+            if (received === 0) {
+                // No responses at all - definitely a connection issue
+                likelyConnectionIssue = true;
+                connectionIssueReason = 'No responses received - connection failed';
+            } else if (lossPercent > 10) {
+                // Check the pattern: did responses stop after some point?
+                // Get the highest sequence number that got an ack
+                const ackedSeqs = Array.from(acks.keys()).sort((a, b) => a - b);
+                const maxAckedSeq = ackedSeqs[ackedSeqs.length - 1];
+                const minAckedSeq = ackedSeqs[0];
+
+                // If we got acks for early packets but not late ones, connection likely died
+                // Check what % of the last 20% of packets got acks
+                const lateThreshold = Math.floor(sent * 0.8);
+                const lateAcks = ackedSeqs.filter(seq => seq >= lateThreshold).length;
+                const expectedLateAcks = sent - lateThreshold;
+                const lateAckPercent = (lateAcks / expectedLateAcks) * 100;
+
+                // If we got less than 50% of the late packets but more than 80% of early ones,
+                // it's likely the connection died partway through
+                const earlyAcks = ackedSeqs.filter(seq => seq < lateThreshold).length;
+                const earlyAckPercent = (earlyAcks / lateThreshold) * 100;
+
+                console.log('Packet loss pattern analysis:', {
+                    earlyAckPercent: earlyAckPercent.toFixed(1) + '%',
+                    lateAckPercent: lateAckPercent.toFixed(1) + '%',
+                    maxAckedSeq,
+                    totalSent: sent
+                });
+
+                if (earlyAckPercent > 80 && lateAckPercent < 50) {
+                    likelyConnectionIssue = true;
+                    connectionIssueReason = `Connection died mid-test - last response at packet ${maxAckedSeq}/${sent}`;
+                } else if (lossPercent > 50) {
+                    // Very high loss throughout - something is wrong
+                    likelyConnectionIssue = true;
+                    connectionIssueReason = `Connection unstable - received only ${received}/${sent} responses`;
+                }
+            }
 
             if (likelyConnectionIssue) {
-                console.warn('Packet loss test: high loss rate suggests connection issue, not actual packet loss');
+                console.warn('Packet loss test:', connectionIssueReason);
                 const unavailableResult = {
                     sent,
                     received,
@@ -689,7 +730,7 @@ const SpeedTest = (function() {
                     rttStatsMs: { min: 0, median: 0, p90: 0 },
                     jitterMs: 0,
                     unavailable: true,
-                    reason: `Connection unstable - received only ${received}/${sent} responses`
+                    reason: connectionIssueReason
                 };
                 results.packetLoss = unavailableResult;
 
