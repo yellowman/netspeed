@@ -103,6 +103,18 @@ const SpeedTest = (function() {
             // Wait increasingly longer for the browser to record the entry
             await new Promise(resolve => setTimeout(resolve, attempt * 5));
         }
+
+        // Debug: Check what entries exist if we couldn't find our URL
+        const allEntries = performance.getEntriesByType('resource');
+        const matching = allEntries.filter(e => e.name.includes('__down') || e.name.includes('__up'));
+        if (matching.length > 0) {
+            console.log('Resource Timing entries exist but URL mismatch.');
+            console.log('Looking for:', url);
+            console.log('Found entries:', matching.slice(-3).map(e => e.name));
+        } else {
+            console.log('No Resource Timing entries for __down/__up at all. Total entries:', allEntries.length);
+        }
+
         return null;
     }
 
@@ -261,7 +273,8 @@ const SpeedTest = (function() {
 
         // Log first few probes to debug timing source
         if (seq < 3) {
-            console.log(`Latency probe ${seq}: ${rttMs.toFixed(2)}ms (${timingSource})`, timing);
+            console.warn(`LATENCY PROBE ${seq}: ${rttMs.toFixed(2)}ms source=${timingSource}`,
+                timing ? { requestStart: timing.requestStart, responseStart: timing.responseStart } : 'no timing');
         }
 
         return {
@@ -696,9 +709,16 @@ const SpeedTest = (function() {
             .filter(s => s.direction === 'upload')
             .map(s => s.mbps);
 
-        const latUnloaded = results.latencySamples
+        // Get all unloaded latency samples, then skip the first 2 which often have
+        // cold-start overhead (connection setup, TLS, etc) that skews jitter
+        const allLatUnloaded = results.latencySamples
             .filter(s => s.phase === 'unloaded')
             .map(s => s.rttMs);
+        const latUnloadedRaw = allLatUnloaded.slice(2); // Skip first 2 probes
+
+        // Filter outliers using IQR method to remove browser timing artifacts
+        const latUnloaded = filterOutliers(latUnloadedRaw);
+
         const latDownload = results.latencySamples
             .filter(s => s.phase === 'download')
             .map(s => s.rttMs);
@@ -800,6 +820,45 @@ const SpeedTest = (function() {
         const sorted = [...arr].sort((a, b) => a - b);
         const idx = Math.ceil((p / 100) * sorted.length) - 1;
         return sorted[Math.max(0, idx)];
+    }
+
+    /**
+     * Helper: Filter outliers using IQR method
+     * Removes values that are more than 1.5*IQR below Q1 or above Q3
+     * This helps remove browser timing artifacts from latency measurements
+     */
+    function filterOutliers(arr) {
+        if (arr.length < 4) return arr; // Need enough samples for IQR
+
+        const sorted = [...arr].sort((a, b) => a - b);
+        const q1 = sorted[Math.floor(sorted.length * 0.25)];
+        const q3 = sorted[Math.floor(sorted.length * 0.75)];
+        const iqr = q3 - q1;
+
+        const lower = q1 - 1.5 * iqr;
+        const upper = q3 + 1.5 * iqr;
+
+        const filtered = arr.filter(v => v >= lower && v <= upper);
+
+        // If we filtered too much, return original to avoid empty/skewed results
+        if (filtered.length < arr.length * 0.5) {
+            console.log('Outlier filter removed too many samples, using original', {
+                original: arr.length,
+                filtered: filtered.length,
+                q1, q3, iqr, lower, upper
+            });
+            return arr;
+        }
+
+        if (filtered.length < arr.length) {
+            console.log('Filtered outliers from latency samples:', {
+                original: arr.length,
+                filtered: filtered.length,
+                removed: arr.filter(v => v < lower || v > upper)
+            });
+        }
+
+        return filtered;
     }
 
     /**
