@@ -827,7 +827,6 @@
         }
 
         // Calculate and display distance to server
-        const serverLocation = state.locations.find(l => l.iata === state.meta.colo);
         if (elements.serverDistance && serverLocation && state.meta.latitude && state.meta.longitude) {
             const distance = haversineDistance(
                 state.meta.latitude, state.meta.longitude,

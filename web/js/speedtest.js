@@ -335,7 +335,7 @@ const SpeedTest = (function() {
             const downloadPromises = [];
             for (let i = 0; i < 6; i++) {
                 downloadPromises.push(
-                    runDownload(DOWNLOAD_PROFILES['100k'], 'warmup', i)
+                    runDownload(DOWNLOAD_PROFILES['100kB'].bytes, 'warmup', i)
                         .catch(() => {}) // Ignore individual failures
                 );
             }
@@ -345,7 +345,7 @@ const SpeedTest = (function() {
             const uploadPromises = [];
             for (let i = 0; i < 6; i++) {
                 uploadPromises.push(
-                    runUpload(UPLOAD_PROFILES['100k'], 'warmup', i)
+                    runUpload(UPLOAD_PROFILES['100kB'].bytes, 'warmup', i)
                         .catch(() => {})
                 );
             }
@@ -443,7 +443,7 @@ const SpeedTest = (function() {
      */
     async function runLatencyDuringDownload() {
         // Start a medium download in background
-        const downloadPromise = runDownload(DOWNLOAD_PROFILES['10M'], '10M', 0, 'download');
+        const downloadPromise = runDownload(DOWNLOAD_PROFILES['10MB'].bytes, '10MB', 0, 'download');
 
         // Run latency probes concurrently
         const probePromises = [];
@@ -467,7 +467,7 @@ const SpeedTest = (function() {
      */
     async function runLatencyDuringUpload() {
         // Start a medium upload in background
-        const uploadPromise = runUpload(UPLOAD_PROFILES['10M'], '10M', 0, 'upload');
+        const uploadPromise = runUpload(UPLOAD_PROFILES['10MB'].bytes, '10MB', 0, 'upload');
 
         // Run latency probes concurrently
         const probePromises = [];
@@ -1023,9 +1023,20 @@ const SpeedTest = (function() {
      * Analyze loss pattern from packet loss test
      */
     function analyzeLossPattern(sent, acks) {
+        // Single pass: collect losses and compute distribution/early count
+        const bucketSize = sent / 10;
+        const midpoint = sent / 2;
+        const distribution = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
         const losses = [];
+        let earlyCount = 0;
+
         for (let i = 0; i < sent; i++) {
-            if (!acks.has(i)) losses.push(i);
+            if (!acks.has(i)) {
+                losses.push(i);
+                const bucket = Math.min(9, Math.floor(i / bucketSize));
+                distribution[bucket]++;
+                if (i < midpoint) earlyCount++;
+            }
         }
 
         if (losses.length === 0) {
@@ -1034,39 +1045,35 @@ const SpeedTest = (function() {
                 burstCount: 0,
                 maxBurstLength: 0,
                 avgBurstLength: 0,
-                lossDistribution: new Array(10).fill(0),
+                lossDistribution: distribution,
                 earlyLossPercent: 0,
                 lateLossPercent: 0
             };
         }
 
-        // Detect bursts (consecutive losses)
-        const bursts = [];
+        // Single pass for burst detection with inline max/sum
+        let burstCount = 0;
+        let maxBurstLength = 1;
+        let totalBurstLength = 0;
         let currentBurst = 1;
+
         for (let i = 1; i < losses.length; i++) {
             if (losses[i] === losses[i - 1] + 1) {
                 currentBurst++;
             } else {
-                bursts.push(currentBurst);
+                burstCount++;
+                totalBurstLength += currentBurst;
+                if (currentBurst > maxBurstLength) maxBurstLength = currentBurst;
                 currentBurst = 1;
             }
         }
-        bursts.push(currentBurst);
+        // Don't forget the last burst
+        burstCount++;
+        totalBurstLength += currentBurst;
+        if (currentBurst > maxBurstLength) maxBurstLength = currentBurst;
 
-        const maxBurstLength = Math.max(...bursts);
-        const avgBurstLength = bursts.reduce((a, b) => a + b, 0) / bursts.length;
-
-        // Calculate distribution across test duration
-        const bucketSize = sent / 10;
-        const distribution = new Array(10).fill(0);
-        losses.forEach(seq => {
-            const bucket = Math.min(9, Math.floor(seq / bucketSize));
-            distribution[bucket]++;
-        });
-
-        const midpoint = sent / 2;
-        const earlyLosses = losses.filter(s => s < midpoint).length;
-        const earlyLossPercent = (earlyLosses / losses.length) * 100;
+        const avgBurstLength = totalBurstLength / burstCount;
+        const earlyLossPercent = (earlyCount / losses.length) * 100;
         const lateLossPercent = 100 - earlyLossPercent;
 
         // Classify pattern
@@ -1081,7 +1088,7 @@ const SpeedTest = (function() {
 
         return {
             type,
-            burstCount: bursts.length,
+            burstCount,
             maxBurstLength,
             avgBurstLength,
             lossDistribution: distribution,
@@ -1094,27 +1101,55 @@ const SpeedTest = (function() {
      * Estimate bandwidth from samples
      */
     function estimateBandwidth(samples) {
-        const dlSamples = samples.filter(s => s.direction === 'download').map(s => s.mbps);
-        const ulSamples = samples.filter(s => s.direction === 'upload').map(s => s.mbps);
+        // Single pass to separate download/upload samples
+        const dlSamples = [];
+        const ulSamples = [];
+        for (let i = 0; i < samples.length; i++) {
+            const s = samples[i];
+            if (s.direction === 'download') dlSamples.push(s.mbps);
+            else if (s.direction === 'upload') ulSamples.push(s.mbps);
+        }
 
         function stats(arr) {
             if (arr.length === 0) return { peak: 0, sustained: 0, variability: 0, trend: 'stable' };
 
-            const sorted = [...arr].sort((a, b) => a - b);
-            const peak = Math.max(...arr);
-            const sustained = sorted[Math.floor(sorted.length * 0.75)] || peak;
+            // Single pass for peak, sum, and partial sums for trend
+            const n = arr.length;
+            const third = Math.floor(n / 3);
+            let peak = arr[0];
+            let sum = 0;
+            let firstThirdSum = 0;
+            let lastThirdSum = 0;
 
-            const mean = arr.reduce((a, b) => a + b, 0) / arr.length;
-            const std = Math.sqrt(arr.reduce((sum, x) => sum + (x - mean) ** 2, 0) / arr.length);
+            for (let i = 0; i < n; i++) {
+                const v = arr[i];
+                if (v > peak) peak = v;
+                sum += v;
+                if (i < third) firstThirdSum += v;
+                if (i >= n - third) lastThirdSum += v;
+            }
+
+            const mean = sum / n;
+
+            // Second pass for std (unavoidable - need mean first)
+            let sumSqDiff = 0;
+            for (let i = 0; i < n; i++) {
+                const diff = arr[i] - mean;
+                sumSqDiff += diff * diff;
+            }
+            const std = Math.sqrt(sumSqDiff / n);
             const variability = mean > 0 ? std / mean : 0;
 
-            // Trend: compare first third to last third
-            const third = Math.floor(arr.length / 3);
+            // Get p75 for sustained (requires sort)
+            const sorted = [...arr].sort((a, b) => a - b);
+            const sustained = sorted[Math.floor(n * 0.75)] || peak;
+
+            // Trend calculation
             let trend = 'stable';
             if (third > 0) {
-                const firstThird = arr.slice(0, third).reduce((a, b) => a + b, 0) / third;
-                const lastThird = arr.slice(-third).reduce((a, b) => a + b, 0) / third;
-                const change = firstThird > 0 ? (lastThird - firstThird) / firstThird : 0;
+                const firstThirdAvg = firstThirdSum / third;
+                const lastThirdAvg = lastThirdSum / third;
+                const change = firstThirdAvg > 0 ? (lastThirdAvg - firstThirdAvg) / firstThirdAvg : 0;
                 if (change > 0.1) trend = 'improving';
                 else if (change < -0.1) trend = 'degrading';
             }
@@ -1199,24 +1234,46 @@ const SpeedTest = (function() {
     function assessTestConfidence(samples, latency, packetLoss, timingStats) {
         const warnings = [];
 
-        // Sample counts
-        const dlCount = samples.filter(s => s.direction === 'download').length;
-        const ulCount = samples.filter(s => s.direction === 'upload').length;
-        const latCount = latency.filter(s => s.phase === 'unloaded').length;
+        // Single pass to collect samples by direction
+        const dlMbps = [];
+        const ulMbps = [];
+        for (let i = 0; i < samples.length; i++) {
+            const s = samples[i];
+            if (s.direction === 'download') dlMbps.push(s.mbps);
+            else if (s.direction === 'upload') ulMbps.push(s.mbps);
+        }
+
+        // Single pass for latency
+        const latRtt = [];
+        for (let i = 0; i < latency.length; i++) {
+            if (latency[i].phase === 'unloaded') latRtt.push(latency[i].rttMs);
+        }
+
+        const dlCount = dlMbps.length;
+        const ulCount = ulMbps.length;
+        const latCount = latRtt.length;
         const sampleAdequate = dlCount >= 20 && ulCount >= 15 && latCount >= 10;
         if (!sampleAdequate) warnings.push('Insufficient samples for high confidence');
 
-        // Coefficient of variation
+        // Coefficient of variation with single pass
         function cv(arr) {
-            if (arr.length < 2) return 0;
-            const mean = arr.reduce((a, b) => a + b, 0) / arr.length;
-            const std = Math.sqrt(arr.reduce((sum, x) => sum + (x - mean) ** 2, 0) / arr.length);
-            return (std / mean) * 100;
+            const n = arr.length;
+            if (n < 2) return 0;
+            let sum = 0;
+            for (let i = 0; i < n; i++) sum += arr[i];
+            const mean = sum / n;
+            let sumSqDiff = 0;
+            for (let i = 0; i < n; i++) {
+                const diff = arr[i] - mean;
+                sumSqDiff += diff * diff;
+            }
+            const std = Math.sqrt(sumSqDiff / n);
+            return mean > 0 ? (std / mean) * 100 : 0;
         }
 
-        const dlCV = cv(samples.filter(s => s.direction === 'download').map(s => s.mbps));
-        const ulCV = cv(samples.filter(s => s.direction === 'upload').map(s => s.mbps));
-        const latCV = cv(latency.filter(s => s.phase === 'unloaded').map(s => s.rttMs));
+        const dlCV = cv(dlMbps);
+        const ulCV = cv(ulMbps);
+        const latCV = cv(latRtt);
         const cvAcceptable = dlCV < 30 && ulCV < 30 && latCV < 50;
         if (!cvAcceptable) warnings.push('High variability in measurements');
 
