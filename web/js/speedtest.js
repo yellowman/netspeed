@@ -91,9 +91,12 @@ const SpeedTest = (function() {
      * Waits briefly for the entry to be recorded if not immediately available
      */
     async function getResourceTiming(url) {
+        // Resource Timing API stores absolute URLs, so convert relative to absolute
+        const absoluteUrl = new URL(url, window.location.origin).href;
+
         // Try multiple times with increasing delays
         for (let attempt = 0; attempt < 5; attempt++) {
-            const entries = performance.getEntriesByName(url, 'resource');
+            const entries = performance.getEntriesByName(absoluteUrl, 'resource');
             if (entries.length > 0) {
                 const entry = entries[entries.length - 1];
                 if (entry.responseStart > 0 && entry.responseEnd > 0) {
@@ -102,17 +105,6 @@ const SpeedTest = (function() {
             }
             // Wait increasingly longer for the browser to record the entry
             await new Promise(resolve => setTimeout(resolve, attempt * 5));
-        }
-
-        // Debug: Check what entries exist if we couldn't find our URL
-        const allEntries = performance.getEntriesByType('resource');
-        const matching = allEntries.filter(e => e.name.includes('__down') || e.name.includes('__up'));
-        if (matching.length > 0) {
-            console.log('Resource Timing entries exist but URL mismatch.');
-            console.log('Looking for:', url);
-            console.log('Found entries:', matching.slice(-3).map(e => e.name));
-        } else {
-            console.log('No Resource Timing entries for __down/__up at all. Total entries:', allEntries.length);
         }
 
         return null;
