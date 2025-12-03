@@ -138,11 +138,39 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 
 	// Health check
 	mux.HandleFunc("/health", s.handleHealth)
+
+	// Static file serving for the web UI
+	if s.cfg.WebDir != "" {
+		fs := http.FileServer(http.Dir(s.cfg.WebDir))
+		mux.Handle("/", s.staticFileHandler(fs))
+	}
+}
+
+// staticFileHandler wraps the file server to handle SPA routing
+func (s *Server) staticFileHandler(fs http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Skip API and measurement endpoints
+		path := r.URL.Path
+		if path == "/meta" || path == "/__down" || path == "/__up" ||
+			path == "/locations" || path == "/health" ||
+			strings.HasPrefix(path, "/api/") ||
+			strings.HasPrefix(path, "/cdn-cgi/") {
+			http.NotFound(w, r)
+			return
+		}
+
+		// Try to serve the file directly
+		fs.ServeHTTP(w, r)
+	})
 }
 
 // Run starts the HTTP server.
 func (s *Server) Run() error {
 	log.Printf("Starting netspeedd on %s", s.cfg.ListenAddr)
+
+	if s.cfg.WebDir != "" {
+		log.Printf("Serving static files from %s", s.cfg.WebDir)
+	}
 
 	if s.cfg.TLSEnabled() {
 		log.Printf("TLS enabled with cert=%s key=%s", s.cfg.TLSCertFile, s.cfg.TLSKeyFile)

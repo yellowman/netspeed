@@ -40,6 +40,7 @@ func main() {
 		turnSecret     = flag.String("turn-secret", "", "TURN server shared secret")
 		turnServers    = flag.String("turn-servers", "", "TURN servers (comma-separated)")
 		turnRealm      = flag.String("turn-realm", "", "TURN realm")
+		webDir         = flag.String("web-dir", "", "Directory containing static web files")
 		showVersion    = flag.Bool("version", false, "Show version information")
 	)
 
@@ -63,6 +64,7 @@ func main() {
 		fmt.Fprintf(os.Stderr, "  NETSPEEDD_TURN_SECRET     TURN shared secret\n")
 		fmt.Fprintf(os.Stderr, "  NETSPEEDD_TURN_SERVERS    TURN servers\n")
 		fmt.Fprintf(os.Stderr, "  NETSPEEDD_TURN_REALM      TURN realm\n")
+		fmt.Fprintf(os.Stderr, "  NETSPEEDD_WEB_DIR         Static web files directory\n")
 	}
 
 	flag.Parse()
@@ -111,6 +113,9 @@ func main() {
 	}
 	if *turnRealm != "" {
 		cfg.TurnRealm = *turnRealm
+	}
+	if *webDir != "" {
+		cfg.WebDir = *webDir
 	}
 
 	// Create server

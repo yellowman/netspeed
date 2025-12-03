@@ -49,6 +49,10 @@ type Config struct {
 	TurnServers   []string
 	TurnRealm     string
 	MaxTurnTTL    int64
+
+	// WebDir is the path to the directory containing static web files
+	// If set, the server will serve static files from this directory
+	WebDir string
 }
 
 // Default returns a Config with sensible defaults.
@@ -156,6 +160,10 @@ func FromEnv() *Config {
 		if v, err := strconv.ParseInt(maxTurnTTL, 10, 64); err == nil && v > 0 {
 			cfg.MaxTurnTTL = v
 		}
+	}
+
+	if webDir := os.Getenv("NETSPEEDD_WEB_DIR"); webDir != "" {
+		cfg.WebDir = webDir
 	}
 
 	return cfg
