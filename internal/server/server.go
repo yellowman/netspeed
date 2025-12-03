@@ -10,18 +10,21 @@ import (
 	"strings"
 	"time"
 
+	pionwebrtc "github.com/pion/webrtc/v3"
 	"github.com/yellowman/netspeed/internal/config"
 	"github.com/yellowman/netspeed/internal/locations"
 	"github.com/yellowman/netspeed/internal/meta"
+	"github.com/yellowman/netspeed/internal/webrtc"
 )
 
 // Server is the main netspeedd HTTP server.
 type Server struct {
-	cfg          *config.Config
-	httpServer   *http.Server
-	metaProvider meta.Provider
-	locations    locations.Store
-	payloadBuf   []byte
+	cfg            *config.Config
+	httpServer     *http.Server
+	metaProvider   meta.Provider
+	locations      locations.Store
+	payloadBuf     []byte
+	webrtcManager  *webrtc.Manager
 }
 
 // New creates a new Server with the given configuration.
@@ -63,11 +66,29 @@ func New(cfg *config.Config) (*Server, error) {
 		log.Printf("Warning: failed to fill payload buffer with random data: %v", err)
 	}
 
+	// Build WebRTC manager
+	webrtcCfg := webrtc.DefaultConfig()
+	if len(cfg.TurnServers) > 0 && cfg.TurnSecret != "" {
+		// ICE servers will be set dynamically per-request with fresh credentials
+		// For now, just set up STUN servers if available
+		var iceServers []pionwebrtc.ICEServer
+		for _, server := range cfg.TurnServers {
+			if strings.HasPrefix(server, "stun:") {
+				iceServers = append(iceServers, pionwebrtc.ICEServer{
+					URLs: []string{server},
+				})
+			}
+		}
+		webrtcCfg.ICEServers = iceServers
+	}
+	webrtcMgr := webrtc.NewManager(webrtcCfg)
+
 	s := &Server{
-		cfg:          cfg,
-		metaProvider: metaProvider,
-		locations:    locationStore,
-		payloadBuf:   payloadBuf,
+		cfg:           cfg,
+		metaProvider:  metaProvider,
+		locations:     locationStore,
+		payloadBuf:    payloadBuf,
+		webrtcManager: webrtcMgr,
 	}
 
 	// Set up HTTP mux and routes
@@ -133,6 +154,10 @@ func (s *Server) Run() error {
 
 // Shutdown gracefully shuts down the server.
 func (s *Server) Shutdown(ctx context.Context) error {
+	// Shutdown WebRTC manager first
+	if s.webrtcManager != nil {
+		s.webrtcManager.Shutdown()
+	}
 	return s.httpServer.Shutdown(ctx)
 }
 

@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"strconv"
 	"time"
@@ -246,11 +247,16 @@ type PacketTestOfferResponse struct {
 }
 
 // handlePacketTestOffer handles POST /api/packet-test/offer.
-// Note: Full WebRTC implementation requires pion/webrtc dependency.
-// This is a placeholder that returns a service unavailable response.
+// This endpoint performs WebRTC signaling for packet loss testing.
 func (s *Server) handlePacketTestOffer(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	// Check if WebRTC manager is available
+	if s.webrtcManager == nil {
+		http.Error(w, "WebRTC not available", http.StatusServiceUnavailable)
 		return
 	}
 
@@ -266,17 +272,28 @@ func (s *Server) handlePacketTestOffer(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Note: Full implementation would:
-	// 1. Create PeerConnection with ice servers
-	// 2. Set remote description to offer SDP
-	// 3. Create answer
-	// 4. Set local description
-	// 5. Register OnDataChannel handler for "packet-loss" channel
-	// 6. Respond with answer SDP + testId
-	// 7. Keep peer connection alive for test duration
+	if req.SDP == "" {
+		http.Error(w, "sdp is required", http.StatusBadRequest)
+		return
+	}
 
-	// For now, return service unavailable as WebRTC requires pion dependency
-	http.Error(w, "WebRTC packet test not implemented - requires pion/webrtc", http.StatusServiceUnavailable)
+	// Handle the offer and get an answer
+	answerSDP, testID, err := s.webrtcManager.HandleOffer(req.SDP, req.TestProfile)
+	if err != nil {
+		http.Error(w, fmt.Sprintf("failed to process offer: %v", err), http.StatusInternalServerError)
+		return
+	}
+
+	resp := PacketTestOfferResponse{
+		SDP:    answerSDP,
+		Type:   "answer",
+		TestID: testID,
+	}
+
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-store")
+
+	json.NewEncoder(w).Encode(resp)
 }
 
 // PacketTestReportRequest is the request body for /api/packet-test/report.
@@ -307,8 +324,16 @@ func (s *Server) handlePacketTestReport(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	// Log the report (in production, store to database/metrics system)
-	// For now, just acknowledge receipt
+	// Log the report
+	clientIP := meta.ClientIPFromRequest(r, s.cfg.TrustProxyHeaders)
+	log.Printf("Packet test report: testId=%s client=%s sent=%d received=%d loss=%.2f%% rtt=[%.2f/%.2f/%.2f]ms jitter=%.2fms",
+		req.TestID, clientIP, req.Sent, req.Received, req.LossPercent,
+		req.RTTMin, req.RTTMedian, req.RTTP90, req.JitterMs)
+
+	// Clean up the session if it exists
+	if s.webrtcManager != nil && req.TestID != "" {
+		s.webrtcManager.CloseSession(req.TestID)
+	}
 
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.WriteHeader(http.StatusOK)
