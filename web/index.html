@@ -1,0 +1,480 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="description" content="Network Speed Test - Measure your download, upload, latency, and packet loss">
+    <title>NetSpeed - Network Speed Test</title>
+    <link rel="stylesheet" href="css/styles.css">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+</head>
+<body>
+    <!-- Top Navigation Bar -->
+    <header class="top-bar">
+        <div class="top-bar-content">
+            <div class="logo">
+                <svg class="logo-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/>
+                </svg>
+                <span class="logo-text">NetSpeed</span>
+            </div>
+            <div class="top-bar-right">
+                <a href="https://github.com/yellowman/netspeed" target="_blank" rel="noopener" class="github-link">
+                    <svg viewBox="0 0 24 24" fill="currentColor" width="20" height="20">
+                        <path d="M12 0C5.37 0 0 5.37 0 12c0 5.31 3.435 9.795 8.205 11.385.6.105.825-.255.825-.57 0-.285-.015-1.23-.015-2.235-3.015.555-3.795-.735-4.035-1.41-.135-.345-.72-1.41-1.23-1.695-.42-.225-1.02-.78-.015-.795.945-.015 1.62.87 1.845 1.23 1.08 1.815 2.805 1.305 3.495.99.105-.78.42-1.305.765-1.605-2.67-.3-5.46-1.335-5.46-5.925 0-1.305.465-2.385 1.23-3.225-.12-.3-.54-1.53.12-3.18 0 0 1.005-.315 3.3 1.23.96-.27 1.98-.405 3-.405s2.04.135 3 .405c2.295-1.56 3.3-1.23 3.3-1.23.66 1.65.24 2.88.12 3.18.765.84 1.23 1.905 1.23 3.225 0 4.605-2.805 5.625-5.475 5.925.435.375.81 1.095.81 2.22 0 1.605-.015 2.895-.015 3.3 0 .315.225.69.825.57A12.02 12.02 0 0024 12c0-6.63-5.37-12-12-12z"/>
+                    </svg>
+                    <span>View on GitHub</span>
+                </a>
+                <button class="theme-toggle" id="themeToggle" aria-label="Toggle dark/light mode">
+                    <svg class="sun-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <circle cx="12" cy="12" r="5"/>
+                        <path d="M12 1v2M12 21v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M1 12h2M21 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42"/>
+                    </svg>
+                    <svg class="moon-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M21 12.79A9 9 0 1111.21 3 7 7 0 0021 12.79z"/>
+                    </svg>
+                </button>
+            </div>
+        </div>
+    </header>
+
+    <main class="main-content">
+        <!-- Hero Section with Main Metrics -->
+        <section class="hero-section">
+            <div class="hero-metrics">
+                <!-- Download Metric -->
+                <div class="metric-card metric-download">
+                    <div class="metric-header">
+                        <span class="metric-label">Download</span>
+                        <button class="info-btn" data-tooltip="Download speed measures how fast data is transferred to your device">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                <circle cx="12" cy="12" r="10"/>
+                                <path d="M12 16v-4M12 8h.01"/>
+                            </svg>
+                        </button>
+                    </div>
+                    <div class="metric-value-container">
+                        <span class="metric-value" id="downloadSpeed">--</span>
+                        <span class="metric-unit">Mbps</span>
+                    </div>
+                    <div class="metric-chart">
+                        <canvas id="downloadChart" height="60"></canvas>
+                    </div>
+                </div>
+
+                <!-- Upload Metric -->
+                <div class="metric-card metric-upload">
+                    <div class="metric-header">
+                        <span class="metric-label">Upload</span>
+                        <button class="info-btn" data-tooltip="Upload speed measures how fast data is sent from your device">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                <circle cx="12" cy="12" r="10"/>
+                                <path d="M12 16v-4M12 8h.01"/>
+                            </svg>
+                        </button>
+                    </div>
+                    <div class="metric-value-container">
+                        <span class="metric-value" id="uploadSpeed">--</span>
+                        <span class="metric-unit">Mbps</span>
+                    </div>
+                    <div class="metric-chart">
+                        <canvas id="uploadChart" height="60"></canvas>
+                    </div>
+                </div>
+
+                <!-- Latency Metric -->
+                <div class="metric-card metric-latency">
+                    <div class="metric-header">
+                        <span class="metric-label">Latency</span>
+                        <button class="info-btn" data-tooltip="Latency measures the time for data to travel between your device and the server">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                <circle cx="12" cy="12" r="10"/>
+                                <path d="M12 16v-4M12 8h.01"/>
+                            </svg>
+                        </button>
+                    </div>
+                    <div class="metric-value-container">
+                        <span class="metric-value" id="latencyValue">--</span>
+                        <span class="metric-unit">ms</span>
+                    </div>
+                    <div class="metric-secondary">
+                        <div class="metric-secondary-item">
+                            <span class="secondary-label">Jitter</span>
+                            <span class="secondary-value" id="jitterValue">-- ms</span>
+                        </div>
+                        <div class="metric-secondary-item">
+                            <span class="secondary-label">Packet Loss</span>
+                            <span class="secondary-value" id="packetLossValue">--%</span>
+                        </div>
+                    </div>
+                    <div class="metric-timestamp" id="testTimestamp">--</div>
+                </div>
+            </div>
+
+            <!-- Action Buttons -->
+            <div class="hero-actions">
+                <button class="btn btn-primary btn-large" id="startTestBtn">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <polygon points="5 3 19 12 5 21 5 3"/>
+                    </svg>
+                    <span>Start Test</span>
+                </button>
+                <button class="btn btn-secondary" id="pauseTestBtn" disabled>
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <rect x="6" y="4" width="4" height="16"/>
+                        <rect x="14" y="4" width="4" height="16"/>
+                    </svg>
+                    <span>Pause</span>
+                </button>
+                <div class="action-divider"></div>
+                <button class="btn btn-icon" id="shareBtn" data-tooltip="Copy share link" disabled>
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <circle cx="18" cy="5" r="3"/>
+                        <circle cx="6" cy="12" r="3"/>
+                        <circle cx="18" cy="19" r="3"/>
+                        <path d="M8.59 13.51l6.83 3.98M15.41 6.51l-6.82 3.98"/>
+                    </svg>
+                </button>
+                <button class="btn btn-icon" id="downloadResultsBtn" data-tooltip="Download results as JSON" disabled>
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4M7 10l5 5 5-5M12 15V3"/>
+                    </svg>
+                </button>
+            </div>
+
+            <!-- Progress Bar -->
+            <div class="progress-container" id="progressContainer">
+                <div class="progress-bar">
+                    <div class="progress-fill" id="progressFill"></div>
+                </div>
+                <div class="progress-status" id="progressStatus">Ready to test</div>
+            </div>
+        </section>
+
+        <!-- Network Quality Score -->
+        <section class="section quality-section">
+            <div class="section-header">
+                <h2 class="section-title">Network Quality Score</h2>
+                <button class="learn-more-btn" id="learnMoreBtn">Learn more</button>
+            </div>
+            <div class="quality-grid">
+                <div class="quality-card">
+                    <div class="quality-icon">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <rect x="2" y="7" width="20" height="15" rx="2" ry="2"/>
+                            <polyline points="17 2 12 7 7 2"/>
+                        </svg>
+                    </div>
+                    <div class="quality-label">Video Streaming</div>
+                    <div class="quality-grade" id="streamingGrade">
+                        <span class="grade-dot"></span>
+                        <span class="grade-text">--</span>
+                    </div>
+                </div>
+                <div class="quality-card">
+                    <div class="quality-icon">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <rect x="2" y="6" width="20" height="12" rx="2"/>
+                            <path d="M12 12h.01"/>
+                            <path d="M17 12h.01"/>
+                            <path d="M7 12h.01"/>
+                        </svg>
+                    </div>
+                    <div class="quality-label">Online Gaming</div>
+                    <div class="quality-grade" id="gamingGrade">
+                        <span class="grade-dot"></span>
+                        <span class="grade-text">--</span>
+                    </div>
+                </div>
+                <div class="quality-card">
+                    <div class="quality-icon">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <path d="M15.05 5A5 5 0 0119 8.95M15.05 1A9 9 0 0123 8.94M22 16.92v3a2 2 0 01-2.18 2 19.79 19.79 0 01-8.63-3.07 19.5 19.5 0 01-6-6 19.79 19.79 0 01-3.07-8.67A2 2 0 014.11 2h3a2 2 0 012 1.72 12.84 12.84 0 00.7 2.81 2 2 0 01-.45 2.11L8.09 9.91a16 16 0 006 6l1.27-1.27a2 2 0 012.11-.45 12.84 12.84 0 002.81.7A2 2 0 0122 16.92z"/>
+                        </svg>
+                    </div>
+                    <div class="quality-label">Video Chatting</div>
+                    <div class="quality-grade" id="videoChatGrade">
+                        <span class="grade-dot"></span>
+                        <span class="grade-text">--</span>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- Server Location & Latency Details -->
+        <section class="section details-section">
+            <div class="details-grid">
+                <!-- Server Location Card -->
+                <div class="card server-card">
+                    <div class="card-header">
+                        <h3 class="card-title">Server Location</h3>
+                    </div>
+                    <div class="card-body">
+                        <div class="map-container" id="mapContainer">
+                            <div class="map-placeholder">
+                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+                                    <circle cx="12" cy="10" r="3"/>
+                                    <path d="M12 21.7C17.3 17 20 13 20 10a8 8 0 10-16 0c0 3 2.7 7 8 11.7z"/>
+                                </svg>
+                                <span>Loading map...</span>
+                            </div>
+                        </div>
+                        <div class="server-info">
+                            <div class="info-row">
+                                <span class="info-label">Connected via</span>
+                                <span class="info-value" id="connectionType">--</span>
+                            </div>
+                            <div class="info-row">
+                                <span class="info-label">Server location</span>
+                                <span class="info-value" id="serverLocation">--</span>
+                            </div>
+                            <div class="info-row">
+                                <span class="info-label">Your network</span>
+                                <span class="info-value" id="networkInfo">--</span>
+                            </div>
+                            <div class="info-row">
+                                <span class="info-label">Your IP address</span>
+                                <span class="info-value mono" id="ipAddress">--</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Latency Details Card -->
+                <div class="card latency-card">
+                    <div class="card-header">
+                        <h3 class="card-title">Latency Measurements</h3>
+                    </div>
+                    <div class="card-body">
+                        <!-- Unloaded Latency -->
+                        <div class="accordion" id="unloadedLatencyAccordion">
+                            <button class="accordion-header" aria-expanded="false">
+                                <span class="accordion-title">Unloaded latency</span>
+                                <span class="accordion-badge" id="unloadedLatencyCount">0/20</span>
+                                <span class="accordion-summary" id="unloadedLatencySummary">--</span>
+                                <svg class="accordion-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                    <polyline points="6 9 12 15 18 9"/>
+                                </svg>
+                            </button>
+                            <div class="accordion-content">
+                                <div class="latency-chart-container">
+                                    <canvas id="unloadedLatencyChart" height="80"></canvas>
+                                </div>
+                                <div class="latency-stats">
+                                    <div class="stat-item">
+                                        <span class="stat-label">Min</span>
+                                        <span class="stat-value" id="unloadedMin">--</span>
+                                    </div>
+                                    <div class="stat-item">
+                                        <span class="stat-label">Median</span>
+                                        <span class="stat-value" id="unloadedMedian">--</span>
+                                    </div>
+                                    <div class="stat-item">
+                                        <span class="stat-label">Max</span>
+                                        <span class="stat-value" id="unloadedMax">--</span>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Latency During Download -->
+                        <div class="accordion" id="downloadLatencyAccordion">
+                            <button class="accordion-header" aria-expanded="false">
+                                <span class="accordion-title">Latency during download</span>
+                                <span class="accordion-badge" id="downloadLatencyCount">0/5</span>
+                                <span class="accordion-summary" id="downloadLatencySummary">--</span>
+                                <svg class="accordion-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                    <polyline points="6 9 12 15 18 9"/>
+                                </svg>
+                            </button>
+                            <div class="accordion-content">
+                                <div class="latency-chart-container">
+                                    <canvas id="downloadLatencyChart" height="80"></canvas>
+                                </div>
+                                <table class="latency-table">
+                                    <thead>
+                                        <tr><th>#</th><th>Ping</th></tr>
+                                    </thead>
+                                    <tbody id="downloadLatencyTable"></tbody>
+                                </table>
+                            </div>
+                        </div>
+
+                        <!-- Latency During Upload -->
+                        <div class="accordion" id="uploadLatencyAccordion">
+                            <button class="accordion-header" aria-expanded="false">
+                                <span class="accordion-title">Latency during upload</span>
+                                <span class="accordion-badge" id="uploadLatencyCount">0/5</span>
+                                <span class="accordion-summary" id="uploadLatencySummary">--</span>
+                                <svg class="accordion-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                    <polyline points="6 9 12 15 18 9"/>
+                                </svg>
+                            </button>
+                            <div class="accordion-content">
+                                <div class="latency-chart-container">
+                                    <canvas id="uploadLatencyChart" height="80"></canvas>
+                                </div>
+                                <table class="latency-table">
+                                    <thead>
+                                        <tr><th>#</th><th>Ping</th></tr>
+                                    </thead>
+                                    <tbody id="uploadLatencyTable"></tbody>
+                                </table>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- Packet Loss Section -->
+        <section class="section packet-loss-section">
+            <div class="card">
+                <div class="card-header">
+                    <h3 class="card-title">Packet Loss Test</h3>
+                    <span class="packet-loss-badge" id="packetLossBadge">--/--</span>
+                </div>
+                <div class="card-body">
+                    <div class="packet-loss-bar">
+                        <div class="packet-loss-fill" id="packetLossFill"></div>
+                    </div>
+                    <div class="packet-loss-details">
+                        <div class="detail-row">
+                            <span class="detail-label">Packet Loss</span>
+                            <span class="detail-value" id="packetLossDetail">--%</span>
+                        </div>
+                        <div class="detail-row">
+                            <span class="detail-label">Received</span>
+                            <span class="detail-value" id="packetsReceived">-- / -- packets</span>
+                        </div>
+                        <div class="detail-row">
+                            <span class="detail-label">Method</span>
+                            <span class="detail-value">WebRTC DataChannel</span>
+                        </div>
+                    </div>
+                    <div class="packet-loss-stats" id="packetLossStats">
+                        <div class="stat-item">
+                            <span class="stat-label">RTT Min</span>
+                            <span class="stat-value" id="rttMin">--</span>
+                        </div>
+                        <div class="stat-item">
+                            <span class="stat-label">RTT Median</span>
+                            <span class="stat-value" id="rttMedian">--</span>
+                        </div>
+                        <div class="stat-item">
+                            <span class="stat-label">RTT P90</span>
+                            <span class="stat-value" id="rttP90">--</span>
+                        </div>
+                        <div class="stat-item">
+                            <span class="stat-label">Jitter</span>
+                            <span class="stat-value" id="rttJitter">--</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- Download Tests Section -->
+        <section class="section tests-section">
+            <h2 class="section-title">Download Tests</h2>
+            <div class="tests-grid" id="downloadTestsGrid">
+                <!-- Cards will be generated dynamically -->
+            </div>
+        </section>
+
+        <!-- Upload Tests Section -->
+        <section class="section tests-section">
+            <h2 class="section-title">Upload Tests</h2>
+            <div class="tests-grid" id="uploadTestsGrid">
+                <!-- Cards will be generated dynamically -->
+            </div>
+        </section>
+    </main>
+
+    <!-- Footer -->
+    <footer class="footer">
+        <div class="footer-content">
+            <div class="footer-links">
+                <a href="#">Home</a>
+                <a href="#">About</a>
+                <a href="#">Privacy Policy</a>
+                <a href="#">Terms of Use</a>
+            </div>
+            <div class="footer-brand">
+                <span>Powered by</span>
+                <span class="footer-logo">NetSpeed</span>
+            </div>
+        </div>
+    </footer>
+
+    <!-- Learn More Modal -->
+    <div class="modal" id="learnMoreModal">
+        <div class="modal-backdrop"></div>
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3>Network Quality Grading</h3>
+                <button class="modal-close" id="modalClose">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M18 6L6 18M6 6l12 12"/>
+                    </svg>
+                </button>
+            </div>
+            <div class="modal-body">
+                <p>Network quality grades are calculated based on download speed, latency, jitter, and packet loss.</p>
+                <table class="grade-table">
+                    <thead>
+                        <tr>
+                            <th>Grade</th>
+                            <th>Download</th>
+                            <th>Latency</th>
+                            <th>Jitter</th>
+                            <th>Packet Loss</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <tr class="grade-great">
+                            <td><span class="grade-dot"></span> Great</td>
+                            <td>&ge; 50 Mbps</td>
+                            <td>&le; 25 ms</td>
+                            <td>&le; 5 ms</td>
+                            <td>&le; 0.5%</td>
+                        </tr>
+                        <tr class="grade-good">
+                            <td><span class="grade-dot"></span> Good</td>
+                            <td>&ge; 20 Mbps</td>
+                            <td>&le; 50 ms</td>
+                            <td>&le; 15 ms</td>
+                            <td>&le; 1.5%</td>
+                        </tr>
+                        <tr class="grade-okay">
+                            <td><span class="grade-dot"></span> Okay</td>
+                            <td>&ge; 10 Mbps</td>
+                            <td>&le; 80 ms</td>
+                            <td>&le; 30 ms</td>
+                            <td>&le; 3%</td>
+                        </tr>
+                        <tr class="grade-poor">
+                            <td><span class="grade-dot"></span> Poor</td>
+                            <td>&lt; 10 Mbps</td>
+                            <td>&gt; 80 ms</td>
+                            <td>&gt; 30 ms</td>
+                            <td>&gt; 3%</td>
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+
+    <!-- Toast Notification -->
+    <div class="toast" id="toast">
+        <span class="toast-message"></span>
+    </div>
+
+    <script src="js/charts.js"></script>
+    <script src="js/speedtest.js"></script>
+    <script src="js/app.js"></script>
+</body>
+</html>

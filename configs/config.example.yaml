@@ -1,0 +1,59 @@
+# netspeedd configuration example
+#
+# This file shows all available configuration options.
+# Copy to config.yaml and modify as needed.
+
+# Server listen address
+listen_addr: ":8080"
+
+# TLS configuration (optional)
+# Leave empty for HTTP-only mode
+tls_cert_file: ""
+tls_key_file: ""
+
+# Maximum bytes allowed for download (__down) and upload (__up)
+# Default: 1073741824 (1 GiB)
+max_bytes: 1073741824
+
+# HTTP server timeouts
+read_timeout: "15s"
+write_timeout: "60s"
+idle_timeout: "120s"
+
+# Enable Server-Timing header in responses
+enable_server_timing: true
+
+# CORS configuration
+enable_cors: true
+allowed_origins:
+  - "*"
+  # Or specify specific origins:
+  # - "https://example.com"
+  # - "https://www.example.com"
+
+# Path to locations JSON file
+# If not specified, default locations are used
+locations_file: "configs/locations.example.json"
+
+# Hostname returned in /meta response
+hostname: "speed.example.com"
+
+# Server colo/datacenter IATA code (e.g., JFK, LHR, NRT)
+colo: "JFK"
+
+# GeoIP database path (optional, for geo lookups)
+# Supports MaxMind GeoIP2/GeoLite2 databases
+geoip_database_path: ""
+
+# Trust proxy headers (X-Forwarded-For, CF-Connecting-IP, etc.)
+trust_proxy_headers: false
+
+# TURN server configuration (for WebRTC packet loss testing)
+turn_secret: ""  # Shared HMAC secret
+turn_servers:
+  - "stun:turn.example.com:3478"
+  - "turn:turn.example.com:3478?transport=udp"
+  - "turn:turn.example.com:3478?transport=tcp"
+  - "turns:turn.example.com:5349?transport=tcp"
+turn_realm: "speed.example.com"
+max_turn_ttl: 600  # Maximum TTL for TURN credentials in seconds
