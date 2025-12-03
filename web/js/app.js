@@ -18,7 +18,8 @@
         uploadSamples: [],
         latencySamples: [],
         testStartTime: null,
-        timingWarningShown: false
+        timingWarningShown: false,
+        mapRendered: false
     };
 
     // DOM element cache
@@ -625,7 +626,14 @@
         }
 
         if (elements.clientNetwork) {
-            elements.clientNetwork.textContent = `${state.meta.asOrganization} (AS${state.meta.asn})`;
+            // Handle unknown/local network gracefully
+            if (state.meta.asOrganization && state.meta.asOrganization !== 'Unknown' && state.meta.asn > 0) {
+                elements.clientNetwork.textContent = `${state.meta.asOrganization} (AS${state.meta.asn})`;
+            } else if (state.meta.asn > 0) {
+                elements.clientNetwork.textContent = `AS${state.meta.asn}`;
+            } else {
+                elements.clientNetwork.textContent = 'Local Network';
+            }
         }
 
         if (elements.clientIp) {
@@ -637,21 +645,32 @@
             elements.connectionType.textContent = isIPv6 ? 'IPv6' : 'IPv4';
         }
 
-        // Update map with server location
-        if (elements.mapContainer && serverLocation && serverLocation.lat && serverLocation.lon) {
-            renderMap(serverLocation.lat, serverLocation.lon, serverLocation.city);
+        // Only render map once (don't reset on each test start)
+        if (elements.mapContainer && serverLocation && serverLocation.lat && serverLocation.lon && !state.mapRendered) {
+            const clientLat = state.meta.latitude;
+            const clientLon = state.meta.longitude;
+            const hasClientLocation = clientLat && clientLon && (clientLat !== 0 || clientLon !== 0);
+
+            if (hasClientLocation) {
+                renderMapWithBothLocations(
+                    serverLocation.lat, serverLocation.lon, serverLocation.city,
+                    clientLat, clientLon
+                );
+            } else {
+                renderMap(serverLocation.lat, serverLocation.lon, serverLocation.city);
+            }
+            state.mapRendered = true;
         }
     }
 
     /**
-     * Render map showing server location
+     * Render map showing server location only
      */
     function renderMap(lat, lon, label) {
-        // Use OpenStreetMap embed iframe
-        const zoom = 6;
+        // Use OpenStreetMap embed iframe with tighter zoom
+        const zoom = 8;
         const bbox = calculateBbox(lat, lon, zoom);
 
-        // Create marker layer URL
         const markerUrl = `https://www.openstreetmap.org/export/embed.html?bbox=${bbox}&layer=mapnik&marker=${lat},${lon}`;
 
         elements.mapContainer.innerHTML = `
@@ -662,6 +681,38 @@
                 scrolling="no"
                 loading="lazy"
                 title="Server location: ${label}"
+            ></iframe>
+        `;
+    }
+
+    /**
+     * Render map showing both server and client locations
+     */
+    function renderMapWithBothLocations(serverLat, serverLon, serverLabel, clientLat, clientLon) {
+        // Calculate bounding box that includes both points with padding
+        const minLat = Math.min(serverLat, clientLat);
+        const maxLat = Math.max(serverLat, clientLat);
+        const minLon = Math.min(serverLon, clientLon);
+        const maxLon = Math.max(serverLon, clientLon);
+
+        // Add padding (20% on each side)
+        const latPadding = Math.max((maxLat - minLat) * 0.2, 0.5);
+        const lonPadding = Math.max((maxLon - minLon) * 0.2, 0.5);
+
+        const bbox = `${minLon - lonPadding},${minLat - latPadding},${maxLon + lonPadding},${maxLat + latPadding}`;
+
+        // OSM embed only supports one marker, so we show the server location marker
+        // The client can see their approximate position from the map extent
+        const markerUrl = `https://www.openstreetmap.org/export/embed.html?bbox=${bbox}&layer=mapnik&marker=${serverLat},${serverLon}`;
+
+        elements.mapContainer.innerHTML = `
+            <iframe
+                class="map-iframe"
+                src="${markerUrl}"
+                frameborder="0"
+                scrolling="no"
+                loading="lazy"
+                title="Server: ${serverLabel}"
             ></iframe>
         `;
     }
