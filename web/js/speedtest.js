@@ -91,21 +91,17 @@ const SpeedTest = (function() {
      * Waits briefly for the entry to be recorded if not immediately available
      */
     async function getResourceTiming(url) {
-        // Try immediately first
-        let entries = performance.getEntriesByName(url, 'resource');
-        if (entries.length > 0) {
-            const entry = entries[entries.length - 1];
-            if (entry.responseStart > 0 && entry.responseEnd > 0) {
-                return entry;
+        // Try multiple times with increasing delays
+        for (let attempt = 0; attempt < 5; attempt++) {
+            const entries = performance.getEntriesByName(url, 'resource');
+            if (entries.length > 0) {
+                const entry = entries[entries.length - 1];
+                if (entry.responseStart > 0 && entry.responseEnd > 0) {
+                    return entry;
+                }
             }
-        }
-
-        // Wait a tick for the browser to record the entry
-        await new Promise(resolve => setTimeout(resolve, 0));
-
-        entries = performance.getEntriesByName(url, 'resource');
-        if (entries.length > 0) {
-            return entries[entries.length - 1];
+            // Wait increasingly longer for the browser to record the entry
+            await new Promise(resolve => setTimeout(resolve, attempt * 5));
         }
         return null;
     }
@@ -138,13 +134,17 @@ const SpeedTest = (function() {
         // responseStart = first byte received, responseEnd = last byte received
         const timing = await getResourceTiming(url);
         let durationMs;
+        let timingSource;
 
         if (timing && timing.responseStart > 0 && timing.responseEnd > 0) {
             // Precise: just the body transfer time (excludes connection, TLS, headers)
             durationMs = timing.responseEnd - timing.responseStart;
+            timingSource = 'resource-timing';
         } else {
             // Fallback: use manual timing (includes connection overhead)
             durationMs = manualEnd - manualStart;
+            timingSource = 'manual';
+            console.log('Download timing fallback:', { profile, runIndex, timing, manualMs: durationMs });
         }
 
         const mbps = (received * 8) / (durationMs / 1000) / 1e6;
@@ -186,15 +186,25 @@ const SpeedTest = (function() {
         const manualEnd = performance.now();
 
         // Use Resource Timing API for precise timing
-        // For uploads: requestStart to responseStart = time to send body + server processing
         const timing = await getResourceTiming(url);
         let durationMs;
 
-        if (timing && timing.requestStart > 0 && timing.responseStart > 0) {
-            // Precise: request send time (excludes connection setup, includes minimal server processing)
+        // For uploads, prefer Server-Timing header if available (most accurate)
+        // Server-Timing measures server-side: time from request start to body fully received
+        if (timing && timing.serverTiming && timing.serverTiming.length > 0) {
+            const serverDur = timing.serverTiming.find(st => st.name === 'app');
+            if (serverDur && serverDur.duration > 0) {
+                durationMs = serverDur.duration;
+            }
+        }
+
+        // Fallback to Resource Timing requestStart -> responseStart
+        if (!durationMs && timing && timing.requestStart > 0 && timing.responseStart > 0) {
             durationMs = timing.responseStart - timing.requestStart;
-        } else {
-            // Fallback: use manual timing (includes connection overhead)
+        }
+
+        // Last fallback: manual timing
+        if (!durationMs) {
             durationMs = manualEnd - manualStart;
         }
 
@@ -233,16 +243,25 @@ const SpeedTest = (function() {
         // requestStart to responseStart is closest to actual network RTT
         const timing = await getResourceTiming(url);
         let rttMs;
+        let timingSource;
 
         if (timing && timing.requestStart > 0 && timing.responseStart > 0) {
             // Network time: from request sent to first byte received
             rttMs = timing.responseStart - timing.requestStart;
+            timingSource = 'resource-timing';
         } else if (timing && timing.fetchStart > 0 && timing.responseEnd > 0) {
             // Fallback: total fetch time (includes more overhead but still from timing API)
             rttMs = timing.responseEnd - timing.fetchStart;
+            timingSource = 'fetch-timing';
         } else {
             // Last resort: manual timing
             rttMs = manualEnd - manualStart;
+            timingSource = 'manual';
+        }
+
+        // Log first few probes to debug timing source
+        if (seq < 3) {
+            console.log(`Latency probe ${seq}: ${rttMs.toFixed(2)}ms (${timingSource})`, timing);
         }
 
         return {
