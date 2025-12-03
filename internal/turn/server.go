@@ -64,15 +64,21 @@ func New(cfg Config) (*Server, error) {
 		return nil, fmt.Errorf("failed to listen on UDP: %w", err)
 	}
 
-	// Determine relay address
-	var relayAddressGenerator turn.RelayAddressGenerator
-	if cfg.PublicIP != "" {
-		relayAddressGenerator = &turn.RelayAddressGeneratorStatic{
-			RelayAddress: net.ParseIP(cfg.PublicIP),
-			Address:      "0.0.0.0",
+	// Determine relay address - TURN requires a valid relay IP to function
+	relayIP := cfg.PublicIP
+	if relayIP == "" {
+		// Auto-detect local IP for relay
+		relayIP = getLocalIP()
+		if relayIP == "" {
+			// Fallback to localhost - will only work for local testing
+			relayIP = "127.0.0.1"
+			log.Printf("Warning: No public IP configured for TURN, using localhost (only works locally)")
 		}
-	} else {
-		relayAddressGenerator = &turn.RelayAddressGeneratorNone{}
+	}
+
+	relayAddressGenerator := &turn.RelayAddressGeneratorStatic{
+		RelayAddress: net.ParseIP(relayIP),
+		Address:      "0.0.0.0",
 	}
 
 	// Create TURN server with COTURN-style time-limited credentials
@@ -133,4 +139,21 @@ func (s *Server) Close() error {
 // Start logs that the server is running (it starts automatically in New).
 func (s *Server) Start() {
 	log.Printf("Embedded TURN server listening on %s (realm: %s)", s.listenAddr, s.realm)
+}
+
+// getLocalIP returns the first non-loopback IPv4 address.
+func getLocalIP() string {
+	addrs, err := net.InterfaceAddrs()
+	if err != nil {
+		return ""
+	}
+
+	for _, addr := range addrs {
+		if ipNet, ok := addr.(*net.IPNet); ok && !ipNet.IP.IsLoopback() {
+			if ipNet.IP.To4() != nil {
+				return ipNet.IP.String()
+			}
+		}
+	}
+	return ""
 }
