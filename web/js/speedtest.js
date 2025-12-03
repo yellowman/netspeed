@@ -451,6 +451,7 @@ const SpeedTest = (function() {
             dc.onmessage = (event) => {
                 try {
                     const msg = JSON.parse(event.data);
+                    console.log('Received ack:', msg);
                     if (typeof msg.ack === 'number' && typeof msg.receivedAt === 'number') {
                         acks.set(msg.ack, msg.receivedAt);
                         // Calculate RTT if we have the send time
@@ -460,7 +461,7 @@ const SpeedTest = (function() {
                         }
                     }
                 } catch (e) {
-                    // Ignore malformed messages
+                    console.log('Failed to parse ack:', event.data, e);
                 }
             };
 

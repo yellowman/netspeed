@@ -229,6 +229,8 @@ func (m *Manager) setupPacketLossChannel(session *Session, dc *webrtc.DataChanne
 			return
 		}
 
+		log.Printf("Session %s: received packet seq=%d", session.ID, pkt.Seq)
+
 		// Update stats
 		session.Stats.mu.Lock()
 		session.Stats.TotalRecv++
@@ -248,6 +250,7 @@ func (m *Manager) setupPacketLossChannel(session *Session, dc *webrtc.DataChanne
 			return
 		}
 
+		log.Printf("Session %s: sending ack for seq=%d", session.ID, pkt.Seq)
 		if err := dc.Send(ackData); err != nil {
 			log.Printf("Session %s: failed to send ack: %v", session.ID, err)
 		}
