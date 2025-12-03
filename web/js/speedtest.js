@@ -51,8 +51,7 @@ const SpeedTest = (function() {
         dataChannelStats: null,
         bandwidthEstimate: null,
         networkQualityScore: null,
-        testConfidence: null,
-        timingStats: { resourceTiming: 0, serverTiming: 0, fallback: 0 }
+        testConfidence: null
     };
 
     // Event callbacks
@@ -1245,7 +1244,7 @@ const SpeedTest = (function() {
     /**
      * Assess test confidence
      */
-    function assessTestConfidence(samples, latency, packetLoss, timingStats) {
+    function assessTestConfidence(samples, latency, packetLoss) {
         const warnings = [];
 
         // Single pass to collect samples by direction
@@ -1291,24 +1290,15 @@ const SpeedTest = (function() {
         const cvAcceptable = dlCV < 30 && ulCV < 30 && latCV < 50;
         if (!cvAcceptable) warnings.push('High variability in measurements');
 
-        // Timing accuracy
-        const totalRequests = timingStats.resourceTiming + timingStats.serverTiming + timingStats.fallback;
-        const accurateTimingPercent = totalRequests > 0
-            ? ((timingStats.resourceTiming + timingStats.serverTiming) / totalRequests) * 100
-            : 0;
-        const timingAccurate = accurateTimingPercent > 80;
-        if (!timingAccurate && totalRequests > 0) warnings.push('Timing API fallbacks may reduce accuracy');
-
         // Connection stability
         const connectionStable = packetLoss !== null && !packetLoss.unavailable;
         if (!connectionStable) warnings.push('Packet loss test incomplete');
 
-        // Overall score
+        // Overall score (3 factors: sample count, variability, connection stability)
         let score = 100;
-        if (!sampleAdequate) score -= 20;
-        if (!cvAcceptable) score -= 25;
-        if (!timingAccurate) score -= 15;
-        if (!connectionStable) score -= 15;
+        if (!sampleAdequate) score -= 25;
+        if (!cvAcceptable) score -= 35;
+        if (!connectionStable) score -= 20;
 
         let overall;
         if (score >= 80) overall = 'high';
@@ -1321,12 +1311,6 @@ const SpeedTest = (function() {
             metrics: {
                 sampleCount: { download: dlCount, upload: ulCount, latency: latCount, adequate: sampleAdequate },
                 coefficientOfVariation: { download: dlCV, upload: ulCV, latency: latCV, acceptable: cvAcceptable },
-                timingAccuracy: {
-                    resourceTimingUsed: timingStats.resourceTiming > 0,
-                    serverTimingUsed: timingStats.serverTiming > 0,
-                    fallbackCount: timingStats.fallback,
-                    accurate: timingAccurate
-                },
                 connectionStability: {
                     packetTestCompleted: connectionStable,
                     stable: connectionStable
@@ -1439,8 +1423,7 @@ const SpeedTest = (function() {
             dataChannelStats: null,
             bandwidthEstimate: null,
             networkQualityScore: null,
-            testConfidence: null,
-            timingStats: { resourceTiming: 0, serverTiming: 0, fallback: 0 }
+            testConfidence: null
         };
 
         try {
@@ -1496,8 +1479,7 @@ const SpeedTest = (function() {
             results.testConfidence = assessTestConfidence(
                 results.throughputSamples,
                 results.latencySamples,
-                results.packetLoss,
-                results.timingStats
+                results.packetLoss
             );
 
             if (callbacks.onComplete) {

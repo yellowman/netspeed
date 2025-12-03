@@ -110,14 +110,10 @@
         elements.maxBurst = document.getElementById('maxBurst');
         elements.avgBurst = document.getElementById('avgBurst');
 
-        // Data channel stats
+        // Data channel stats (simplified)
         elements.webrtcConnectionBadge = document.getElementById('webrtcConnectionBadge');
         elements.connectionPath = document.getElementById('connectionPath');
         elements.webrtcProtocol = document.getElementById('webrtcProtocol');
-        elements.dataSent = document.getElementById('dataSent');
-        elements.dataReceived = document.getElementById('dataReceived');
-        elements.iceGatheringTime = document.getElementById('iceGatheringTime');
-        elements.connectionSetupTime = document.getElementById('connectionSetupTime');
         elements.iceRtt = document.getElementById('iceRtt');
 
         // Bandwidth estimation
@@ -811,7 +807,9 @@
         }
 
         // Calculate and display distance to server
-        if (elements.serverDistance && serverLocation && state.meta.latitude && state.meta.longitude) {
+        if (elements.serverDistance && serverLocation &&
+            serverLocation.lat != null && serverLocation.lon != null &&
+            state.meta.latitude && state.meta.longitude) {
             const distance = haversineDistance(
                 state.meta.latitude, state.meta.longitude,
                 serverLocation.lat, serverLocation.lon
@@ -1471,16 +1469,14 @@
      * Update data channel stats display
      */
     function updateDataChannelStatsDisplay(stats) {
+        console.log('Updating WebRTC stats:', stats);
+
         if (!stats) {
             // Set placeholders for unavailable stats
             const ph = '<span class="placeholder"></span>';
             if (elements.webrtcConnectionBadge) elements.webrtcConnectionBadge.innerHTML = ph;
             if (elements.connectionPath) elements.connectionPath.innerHTML = ph;
             if (elements.webrtcProtocol) elements.webrtcProtocol.innerHTML = ph;
-            if (elements.dataSent) elements.dataSent.innerHTML = ph;
-            if (elements.dataReceived) elements.dataReceived.innerHTML = ph;
-            if (elements.iceGatheringTime) elements.iceGatheringTime.innerHTML = ph;
-            if (elements.connectionSetupTime) elements.connectionSetupTime.innerHTML = ph;
             if (elements.iceRtt) elements.iceRtt.innerHTML = ph;
             return;
         }
@@ -1490,46 +1486,30 @@
             const typeLabels = {
                 'host': 'Direct',
                 'srflx': 'STUN',
-                'prflx': 'Peer Reflexive',
-                'relay': 'TURN Relay',
-                'unknown': 'Unknown'
+                'prflx': 'Peer',
+                'relay': 'Relay',
+                'unknown': '-'
             };
-            elements.webrtcConnectionBadge.textContent = typeLabels[stats.connectionType] || 'Unknown';
+            elements.webrtcConnectionBadge.textContent = typeLabels[stats.connectionType] || '-';
             elements.webrtcConnectionBadge.className = 'connection-type-badge';
             if (stats.connectionType === 'host') elements.webrtcConnectionBadge.classList.add('direct');
             else if (stats.connectionType === 'srflx' || stats.connectionType === 'prflx') elements.webrtcConnectionBadge.classList.add('stun');
             else if (stats.connectionType === 'relay') elements.webrtcConnectionBadge.classList.add('relay');
         }
 
-        // Connection path
+        // Connection path (shorter labels)
         if (elements.connectionPath) {
             const pathLabels = {
-                'host': 'Direct connection (no NAT traversal)',
-                'srflx': 'Via STUN (NAT traversal)',
-                'prflx': 'Peer reflexive (discovered path)',
-                'relay': 'Via TURN relay server'
+                'host': 'Direct',
+                'srflx': 'STUN NAT',
+                'prflx': 'Peer reflexive',
+                'relay': 'TURN relay'
             };
-            elements.connectionPath.textContent = pathLabels[stats.connectionType] || 'Unknown';
+            elements.connectionPath.textContent = pathLabels[stats.connectionType] || '-';
         }
 
         if (elements.webrtcProtocol) {
             elements.webrtcProtocol.textContent = stats.protocol?.toUpperCase() || 'UDP';
-        }
-
-        if (elements.dataSent) {
-            elements.dataSent.textContent = formatBytes(stats.bytesSent);
-        }
-
-        if (elements.dataReceived) {
-            elements.dataReceived.textContent = formatBytes(stats.bytesReceived);
-        }
-
-        if (elements.iceGatheringTime) {
-            elements.iceGatheringTime.textContent = stats.iceGatheringMs ? `${stats.iceGatheringMs.toFixed(0)} ms` : '-';
-        }
-
-        if (elements.connectionSetupTime) {
-            elements.connectionSetupTime.textContent = stats.connectionSetupMs ? `${stats.connectionSetupMs.toFixed(0)} ms` : '-';
         }
 
         if (elements.iceRtt) {
