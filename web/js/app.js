@@ -646,10 +646,10 @@
         }
 
         // Only render map once (don't reset on each test start)
-        if (elements.mapContainer && serverLocation && serverLocation.lat && serverLocation.lon && !state.mapRendered) {
+        if (elements.mapContainer && serverLocation && (serverLocation.lat != null && serverLocation.lon != null) && !state.mapRendered) {
             const clientLat = state.meta.latitude;
             const clientLon = state.meta.longitude;
-            const hasClientLocation = clientLat && clientLon && (clientLat !== 0 || clientLon !== 0);
+            const hasClientLocation = (clientLat != null && clientLon != null) && (clientLat !== 0 || clientLon !== 0);
 
             if (hasClientLocation) {
                 renderMapWithBothLocations(
@@ -741,7 +741,8 @@
             [serverLat, serverLon],
             [clientLat, clientLon]
         ]);
-        map.fitBounds(bounds, { padding: [30, 30] });
+        // maxZoom 10 keeps view at ~250+ sq miles minimum
+        map.fitBounds(bounds, { padding: [30, 30], maxZoom: 10 });
 
         // Draw a line between them
         L.polyline([[clientLat, clientLon], [serverLat, serverLon]], {
