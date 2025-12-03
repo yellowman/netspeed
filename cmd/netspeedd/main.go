@@ -168,7 +168,10 @@ func main() {
 			cfg.EmbeddedTurnPort = port
 			// If public IP is set, use static URL; otherwise handler uses request host
 			if publicIP != "" {
-				cfg.TurnServers = []string{fmt.Sprintf("turn:%s:%s", publicIP, port)}
+				cfg.TurnServers = []string{
+					fmt.Sprintf("stun:%s:%s", publicIP, port),
+					fmt.Sprintf("turn:%s:%s", publicIP, port),
+				}
 				log.Printf("Embedded TURN configured: servers=%v", cfg.TurnServers)
 			} else {
 				log.Printf("Embedded TURN configured on port %s (URL derived from request host)", port)
