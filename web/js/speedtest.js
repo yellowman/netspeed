@@ -207,6 +207,7 @@ const SpeedTest = (function() {
         // Use Resource Timing API for precise timing
         const timing = await getResourceTiming(url);
         let durationMs;
+        let timingSource;
 
         // For uploads, prefer Server-Timing header if available (most accurate)
         // Server-Timing measures server-side: time from request start to body fully received
@@ -214,17 +215,28 @@ const SpeedTest = (function() {
             const serverDur = timing.serverTiming.find(st => st.name === 'app');
             if (serverDur && serverDur.duration > 0) {
                 durationMs = serverDur.duration;
+                timingSource = 'server-timing';
             }
         }
 
         // Fallback to Resource Timing requestStart -> responseStart
         if (!durationMs && timing && timing.requestStart > 0 && timing.responseStart > 0) {
             durationMs = timing.responseStart - timing.requestStart;
+            timingSource = 'resource-timing';
         }
 
         // Last fallback: manual timing
         if (!durationMs) {
             durationMs = manualEnd - manualStart;
+            timingSource = 'manual';
+        }
+
+        // Log first few uploads to verify timing source
+        if (runIndex < 2 && profile !== 'warmup') {
+            console.log(`Upload ${profile}/${runIndex}: ${timingSource}`, {
+                durationMs: durationMs.toFixed(1),
+                serverTiming: timing?.serverTiming?.map(st => ({ name: st.name, duration: st.duration }))
+            });
         }
 
         const mbps = (bytes * 8) / (durationMs / 1000) / 1e6;
