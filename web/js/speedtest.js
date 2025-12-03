@@ -342,12 +342,26 @@ const SpeedTest = (function() {
             const turnCreds = await credResponse.json();
 
             // Create RTCPeerConnection
-            const pc = new RTCPeerConnection({
-                iceServers: [{
-                    urls: turnCreds.servers,
+            // Separate STUN (no credentials) from TURN (with credentials)
+            const iceServers = [];
+            const stunUrls = turnCreds.servers.filter(s => s.startsWith('stun:'));
+            const turnUrls = turnCreds.servers.filter(s => s.startsWith('turn:'));
+
+            if (stunUrls.length > 0) {
+                iceServers.push({ urls: stunUrls });
+            }
+            if (turnUrls.length > 0) {
+                iceServers.push({
+                    urls: turnUrls,
                     username: turnCreds.username,
                     credential: turnCreds.credential
-                }],
+                });
+            }
+
+            console.log('ICE servers configured:', iceServers);
+
+            const pc = new RTCPeerConnection({
+                iceServers: iceServers,
                 iceTransportPolicy: 'all'
             });
 
