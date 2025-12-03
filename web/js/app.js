@@ -912,6 +912,27 @@
      * Update packet loss details
      */
     function updatePacketLossDetails(packetLoss) {
+        // Handle unavailable state (WebRTC failed)
+        if (packetLoss.unavailable) {
+            if (elements.packetLossBadge) {
+                elements.packetLossBadge.textContent = 'N/A';
+            }
+            if (elements.packetLossFill) {
+                elements.packetLossFill.style.width = '0%';
+            }
+            if (elements.packetLossDetail) {
+                elements.packetLossDetail.textContent = 'Unavailable';
+            }
+            if (elements.packetsReceived) {
+                elements.packetsReceived.textContent = packetLoss.reason || 'Test unavailable';
+            }
+            if (elements.rttMin) elements.rttMin.textContent = '--';
+            if (elements.rttMedian) elements.rttMedian.textContent = '--';
+            if (elements.rttP90) elements.rttP90.textContent = '--';
+            if (elements.rttJitter) elements.rttJitter.textContent = '--';
+            return;
+        }
+
         // Update badge
         if (elements.packetLossBadge) {
             elements.packetLossBadge.textContent = `${packetLoss.received}/${packetLoss.sent}`;

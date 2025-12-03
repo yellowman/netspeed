@@ -731,10 +731,32 @@ const SpeedTest = (function() {
             return result;
         } catch (err) {
             console.error('Packet loss test failed:', err);
+
+            // Determine reason for failure
+            let reason = 'WebRTC connection failed';
+            if (err.message?.includes('ICE gathering timeout')) {
+                reason = 'ICE gathering timeout - check TURN server configuration';
+            } else if (err.message?.includes('Data channel timeout')) {
+                reason = 'Data channel timeout - connection may be blocked by firewall';
+            } else if (err.message?.includes('offer failed')) {
+                reason = 'Server rejected connection - WebRTC may not be configured';
+            }
+
+            const unavailableResult = {
+                sent: 0,
+                received: 0,
+                lossPercent: 0,
+                rttStatsMs: { min: 0, median: 0, p90: 0 },
+                jitterMs: 0,
+                unavailable: true,
+                reason: reason
+            };
+            results.packetLoss = unavailableResult;
+
             if (callbacks.onError) {
                 callbacks.onError('packetLoss', null, null, err);
             }
-            return null;
+            return unavailableResult;
         }
     }
 
