@@ -87,6 +87,17 @@ const SpeedTest = (function() {
     }
 
     /**
+     * Get Resource Timing entry for a URL (for precise timing)
+     */
+    function getResourceTiming(url) {
+        const entries = performance.getEntriesByName(url, 'resource');
+        if (entries.length > 0) {
+            return entries[entries.length - 1]; // Get most recent
+        }
+        return null;
+    }
+
+    /**
      * Run a single download test
      */
     async function runDownload(bytes, profile, runIndex, phase = null) {
@@ -94,7 +105,9 @@ const SpeedTest = (function() {
         let url = `/__down?bytes=${bytes}&measId=${measId}&profile=${profile}&run=${runIndex}`;
         if (phase) url += `&during=${phase}`;
 
-        const start = performance.now();
+        // Clear any existing entries for this URL pattern
+        performance.clearResourceTimings();
+
         const response = await fetch(url, {
             cache: 'no-store',
             signal: abortController?.signal
@@ -111,8 +124,19 @@ const SpeedTest = (function() {
             received += value.byteLength;
         }
 
-        const end = performance.now();
-        const durationMs = end - start;
+        // Use Resource Timing API to get precise body transfer time
+        // responseStart = first byte received, responseEnd = last byte received
+        const timing = getResourceTiming(url);
+        let durationMs;
+
+        if (timing && timing.responseStart > 0 && timing.responseEnd > 0) {
+            // Precise: just the body transfer time (excludes connection, TLS, headers)
+            durationMs = timing.responseEnd - timing.responseStart;
+        } else {
+            // Fallback to our manual timing
+            durationMs = performance.now() - (timing?.startTime || 0);
+        }
+
         const mbps = (received * 8) / (durationMs / 1000) / 1e6;
 
         return {
@@ -136,7 +160,9 @@ const SpeedTest = (function() {
 
         const payload = new Uint8Array(bytes);
 
-        const start = performance.now();
+        // Clear any existing entries
+        performance.clearResourceTimings();
+
         const response = await fetch(url, {
             method: 'POST',
             body: payload,
@@ -147,8 +173,19 @@ const SpeedTest = (function() {
         if (!response.ok) throw new Error(`Upload failed: ${response.status}`);
         await response.arrayBuffer();
 
-        const end = performance.now();
-        const durationMs = end - start;
+        // Use Resource Timing API for precise timing
+        // For uploads: requestStart to responseStart = time to send body + server processing
+        const timing = getResourceTiming(url);
+        let durationMs;
+
+        if (timing && timing.requestStart > 0 && timing.responseStart > 0) {
+            // Precise: request send time (excludes connection setup, includes minimal server processing)
+            durationMs = timing.responseStart - timing.requestStart;
+        } else {
+            // Fallback
+            durationMs = performance.now() - (timing?.startTime || 0);
+        }
+
         const mbps = (bytes * 8) / (durationMs / 1000) / 1e6;
 
         return {
