@@ -916,76 +916,168 @@ button {
 }
 
 /* ========================================
-   Tests Grid
+   Tests Columns (Side by Side)
    ======================================== */
 
-.tests-grid {
+.tests-columns {
     display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
-    gap: var(--spacing-md);
+    grid-template-columns: 1fr 1fr;
+    gap: var(--spacing-xl);
+}
+
+@media (max-width: 900px) {
+    .tests-columns {
+        grid-template-columns: 1fr;
+    }
+}
+
+.tests-column {
+    display: flex;
+    flex-direction: column;
+}
+
+.column-title {
+    font-size: 1rem;
+    font-weight: 600;
+    margin-bottom: var(--spacing-md);
+    padding-bottom: var(--spacing-sm);
+    border-bottom: 2px solid var(--color-border);
+}
+
+.column-title.download-title {
+    color: var(--color-download);
+    border-bottom-color: var(--color-download);
+}
+
+.column-title.upload-title {
+    color: var(--color-upload);
+    border-bottom-color: var(--color-upload);
+}
+
+.tests-list {
+    display: flex;
+    flex-direction: column;
 }
 
 .test-card {
     background: var(--color-bg-card);
     border: 1px solid var(--color-border);
-    border-radius: var(--radius-lg);
-    overflow: hidden;
+    border-bottom: none;
     transition: all var(--transition-base);
 }
 
-.test-card:hover {
-    box-shadow: var(--shadow-md);
+.test-card:first-child {
+    border-radius: var(--radius-lg) var(--radius-lg) 0 0;
 }
 
-.test-card-header {
+.test-card:last-child {
+    border-bottom: 1px solid var(--color-border);
+    border-radius: 0 0 var(--radius-lg) var(--radius-lg);
+}
+
+.test-card:only-child {
+    border-radius: var(--radius-lg);
+    border-bottom: 1px solid var(--color-border);
+}
+
+.test-card:hover {
+    background: var(--color-bg-secondary);
+}
+
+.test-card .accordion-header {
     display: flex;
     align-items: center;
-    justify-content: space-between;
+    gap: var(--spacing-md);
     padding: var(--spacing-md) var(--spacing-lg);
+    width: 100%;
+    text-align: left;
     cursor: pointer;
 }
 
-.test-card-title {
+.test-card .accordion-title {
+    flex: 1;
+    display: flex;
+    align-items: center;
+    gap: var(--spacing-sm);
+}
+
+.test-card .accordion-title span:first-child {
     font-size: 0.875rem;
     font-weight: 500;
     color: var(--color-text-primary);
 }
 
-.test-card-badge {
+.test-card .run-count {
     font-size: 0.75rem;
-    font-weight: 500;
-    padding: var(--spacing-xs) var(--spacing-sm);
-    border-radius: var(--radius-full);
+    color: var(--color-text-tertiary);
+}
+
+.test-card .test-speed {
+    font-size: 0.875rem;
+    font-weight: 600;
+    color: var(--color-text-primary);
     font-variant-numeric: tabular-nums;
+    min-width: 100px;
+    text-align: right;
 }
 
-.test-card-badge.pending {
-    background: var(--color-bg-tertiary);
+.test-card .accordion-icon {
+    width: 16px;
+    height: 16px;
     color: var(--color-text-tertiary);
+    transition: transform var(--transition-fast);
 }
 
-.test-card-badge.running {
-    background: var(--color-warning-bg);
-    color: var(--color-warning);
+.test-card .accordion-icon::before {
+    content: '';
+    display: block;
+    width: 8px;
+    height: 8px;
+    border-right: 2px solid currentColor;
+    border-bottom: 2px solid currentColor;
+    transform: rotate(45deg);
+    margin: 2px auto;
 }
 
-.test-card-badge.complete {
-    background: var(--color-success-bg);
-    color: var(--color-success);
+.test-card.expanded .accordion-icon::before {
+    transform: rotate(-135deg);
+    margin-top: 6px;
 }
 
-.test-card-body {
+.test-card .accordion-content {
+    display: none;
     padding: 0 var(--spacing-lg) var(--spacing-lg);
+    border-top: 1px solid var(--color-border-subtle);
 }
 
-.test-card-chart {
+.test-card.expanded .accordion-content {
+    display: block;
+}
+
+.test-card .test-chart {
     height: 40px;
-    margin-bottom: var(--spacing-sm);
+    margin-bottom: var(--spacing-md);
 }
 
-.test-card-stats {
+.test-card .test-table {
+    width: 100%;
     font-size: 0.75rem;
+}
+
+.test-card .test-table th,
+.test-card .test-table td {
+    padding: var(--spacing-xs) var(--spacing-sm);
+    text-align: left;
+}
+
+.test-card .test-table th {
     color: var(--color-text-tertiary);
+    font-weight: 500;
+    border-bottom: 1px solid var(--color-border-subtle);
+}
+
+.test-card .test-table td {
+    color: var(--color-text-primary);
     font-variant-numeric: tabular-nums;
 }
 

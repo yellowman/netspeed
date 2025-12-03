@@ -508,11 +508,11 @@
         }
 
         if (elements.jitterValue) {
-            elements.jitterValue.textContent = summary.jitterMs.toFixed(1);
+            elements.jitterValue.textContent = `${summary.jitterMs.toFixed(1)} ms`;
         }
 
         if (elements.packetLossValue) {
-            elements.packetLossValue.textContent = summary.packetLossPercent.toFixed(2);
+            elements.packetLossValue.textContent = `${summary.packetLossPercent.toFixed(2)}%`;
         }
 
         // Update measure time
@@ -763,7 +763,7 @@
      * Update quality scores display
      */
     function updateQualityScores(quality) {
-        const gradeColors = {
+        const gradeClass = {
             'Great': 'great',
             'Good': 'good',
             'Okay': 'okay',
@@ -773,28 +773,26 @@
         // Video Streaming
         if (elements.streamingScore) {
             const grade = quality.videoStreaming;
+            elements.streamingScore.className = `quality-grade ${gradeClass[grade] || ''}`;
             const dot = elements.streamingScore.querySelector('.grade-dot');
             const text = elements.streamingScore.querySelector('.grade-text');
-            if (dot) dot.className = `grade-dot grade-${gradeColors[grade]}`;
-            if (text) text.textContent = grade;
+            if (text) text.textContent = grade || '--';
         }
 
         // Gaming
         if (elements.gamingScore) {
             const grade = quality.gaming;
-            const dot = elements.gamingScore.querySelector('.grade-dot');
+            elements.gamingScore.className = `quality-grade ${gradeClass[grade] || ''}`;
             const text = elements.gamingScore.querySelector('.grade-text');
-            if (dot) dot.className = `grade-dot grade-${gradeColors[grade]}`;
-            if (text) text.textContent = grade;
+            if (text) text.textContent = grade || '--';
         }
 
         // Video Chatting
         if (elements.videoChatScore) {
             const grade = quality.videoChatting;
-            const dot = elements.videoChatScore.querySelector('.grade-dot');
+            elements.videoChatScore.className = `quality-grade ${gradeClass[grade] || ''}`;
             const text = elements.videoChatScore.querySelector('.grade-text');
-            if (dot) dot.className = `grade-dot grade-${gradeColors[grade]}`;
-            if (text) text.textContent = grade;
+            if (text) text.textContent = grade || '--';
         }
     }
 
@@ -975,7 +973,7 @@
     function openModal(modalId) {
         const modal = document.getElementById(modalId);
         if (modal) {
-            modal.classList.add('open');
+            modal.classList.add('active');
         }
     }
 
@@ -983,8 +981,8 @@
      * Close all modals
      */
     function closeModals() {
-        document.querySelectorAll('.modal.open').forEach(modal => {
-            modal.classList.remove('open');
+        document.querySelectorAll('.modal.active').forEach(modal => {
+            modal.classList.remove('active');
         });
     }
 
