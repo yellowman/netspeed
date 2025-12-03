@@ -70,9 +70,12 @@ func (s *Server) handleDown(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Length", strconv.FormatInt(nBytes, 10))
 	s.setMetaHeaders(w, clientMeta, start)
 
+	// Set Server-Timing header before body starts (measures server-side latency)
+	// Note: For streaming responses, this reflects setup time, not total transfer time
+	s.setServerTiming(w, start)
+
 	// If bytes == 0, just return (latency-only test)
 	if nBytes == 0 {
-		s.setServerTiming(w, start)
 		w.WriteHeader(http.StatusOK)
 		return
 	}
@@ -92,8 +95,6 @@ func (s *Server) handleDown(w http.ResponseWriter, r *http.Request) {
 		}
 		remaining -= int64(n)
 	}
-
-	s.setServerTiming(w, start)
 }
 
 // handleUp handles POST /__up - upload sink endpoint.
@@ -108,15 +109,14 @@ func (s *Server) handleUp(w http.ResponseWriter, r *http.Request) {
 	// Read and discard body safely with limit
 	n, err := io.Copy(io.Discard, io.LimitReader(r.Body, s.cfg.MaxBytes))
 	if err != nil && err != io.EOF {
-		// Log error but continue to respond
+		log.Printf("Upload read error: %v", err)
 	}
 
-	// Optional: log measId, client IP, bytes received, duration
+	// Log upload details as per spec
+	duration := time.Since(start)
 	measId := r.URL.Query().Get("measId")
 	clientIP := meta.ClientIPFromRequest(r, s.cfg.TrustProxyHeaders)
-	_ = measId  // Available for logging
-	_ = clientIP // Available for logging
-	_ = n        // Bytes received
+	log.Printf("Upload: client=%s measId=%s bytes=%d duration=%s", clientIP, measId, n, duration)
 
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	s.setServerTiming(w, start)

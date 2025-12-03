@@ -132,7 +132,7 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 	// TURN credentials endpoint
 	mux.HandleFunc("/api/turn/credentials", s.handleTurnCredentials)
 
-	// WebRTC packet-test signaling (placeholder - requires pion/webrtc)
+	// WebRTC packet-test signaling
 	mux.HandleFunc("/api/packet-test/offer", s.handlePacketTestOffer)
 	mux.HandleFunc("/api/packet-test/report", s.handlePacketTestReport)
 

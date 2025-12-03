@@ -4,6 +4,7 @@ package meta
 import (
 	"net"
 	"net/http"
+	"strconv"
 	"strings"
 )
 
@@ -140,55 +141,9 @@ func (p *HeaderProvider) MetaFor(r *http.Request) ClientMeta {
 }
 
 func parseFloat(s string) float64 {
-	var f float64
-	_, _ = strings.NewReader(s).Read([]byte{})
-	// Simple parsing - in production, use strconv.ParseFloat
-	var val float64
-	for i := 0; i < len(s); i++ {
-		c := s[i]
-		if c == '-' || c == '.' || (c >= '0' && c <= '9') {
-			continue
-		}
-		break
-	}
-	// Use proper parsing
-	if _, err := parseFloatImpl(s, &val); err == nil {
-		f = val
+	f, err := strconv.ParseFloat(strings.TrimSpace(s), 64)
+	if err != nil {
+		return 0
 	}
 	return f
-}
-
-func parseFloatImpl(s string, val *float64) (bool, error) {
-	// Simple implementation - defer to strconv in real usage
-	*val = 0
-	negative := false
-	i := 0
-	if len(s) > 0 && s[0] == '-' {
-		negative = true
-		i++
-	}
-	var intPart, fracPart float64
-	var fracDiv float64 = 1
-	inFrac := false
-	for ; i < len(s); i++ {
-		c := s[i]
-		if c == '.' {
-			inFrac = true
-			continue
-		}
-		if c < '0' || c > '9' {
-			break
-		}
-		if inFrac {
-			fracDiv *= 10
-			fracPart = fracPart*10 + float64(c-'0')
-		} else {
-			intPart = intPart*10 + float64(c-'0')
-		}
-	}
-	*val = intPart + fracPart/fracDiv
-	if negative {
-		*val = -*val
-	}
-	return true, nil
 }
