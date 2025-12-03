@@ -47,7 +47,6 @@ const SpeedTest = (function() {
         startTime: null,
         endTime: null,
         // New enhanced fields
-        timingBreakdown: [],
         lossPattern: null,
         dataChannelStats: null,
         bandwidthEstimate: null,
@@ -1338,24 +1337,6 @@ const SpeedTest = (function() {
     }
 
     /**
-     * Extract timing breakdown from a request
-     */
-    function extractTimingBreakdown(entry) {
-        if (!entry) return null;
-
-        return {
-            dnsMs: entry.domainLookupEnd - entry.domainLookupStart,
-            tcpMs: entry.connectEnd - entry.connectStart,
-            tlsMs: entry.secureConnectionStart > 0
-                ? entry.connectEnd - entry.secureConnectionStart
-                : 0,
-            ttfbMs: entry.responseStart - entry.requestStart,
-            transferMs: entry.responseEnd - entry.responseStart,
-            totalMs: entry.responseEnd - entry.fetchStart
-        };
-    }
-
-    /**
      * Collect data channel stats from WebRTC peer connection
      */
     async function collectDataChannelStats(pc) {
@@ -1454,7 +1435,6 @@ const SpeedTest = (function() {
             packetLoss: null,
             startTime: Date.now(),
             endTime: null,
-            timingBreakdown: [],
             lossPattern: null,
             dataChannelStats: null,
             bandwidthEstimate: null,
@@ -1519,17 +1499,6 @@ const SpeedTest = (function() {
                 results.packetLoss,
                 results.timingStats
             );
-
-            // Collect timing breakdown from Resource Timing API
-            try {
-                const entries = performance.getEntriesByType('resource')
-                    .filter(e => e.name.includes('/__down') || e.name.includes('/__up'));
-                results.timingBreakdown = entries
-                    .map(e => extractTimingBreakdown(e))
-                    .filter(t => t !== null);
-            } catch (e) {
-                console.log('Could not collect timing breakdown:', e);
-            }
 
             if (callbacks.onComplete) {
                 callbacks.onComplete(results, summary, quality);

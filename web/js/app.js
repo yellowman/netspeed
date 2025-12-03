@@ -130,18 +130,6 @@
         elements.uploadSustained = document.getElementById('uploadSustained');
         elements.uploadVariability = document.getElementById('uploadVariability');
 
-        // Timing breakdown
-        elements.timingDns = document.getElementById('timingDns');
-        elements.timingDnsValue = document.getElementById('timingDnsValue');
-        elements.timingTcp = document.getElementById('timingTcp');
-        elements.timingTcpValue = document.getElementById('timingTcpValue');
-        elements.timingTls = document.getElementById('timingTls');
-        elements.timingTlsValue = document.getElementById('timingTlsValue');
-        elements.timingTtfb = document.getElementById('timingTtfb');
-        elements.timingTtfbValue = document.getElementById('timingTtfbValue');
-        elements.timingTransfer = document.getElementById('timingTransfer');
-        elements.timingTransferValue = document.getElementById('timingTransferValue');
-
         // Network quality score
         elements.gaugeFill = document.getElementById('gaugeFill');
         elements.overallScore = document.getElementById('overallScore');
@@ -730,10 +718,6 @@
 
         if (results.bandwidthEstimate) {
             updateBandwidthEstimationDisplay(results.bandwidthEstimate);
-        }
-
-        if (results.timingBreakdown) {
-            updateTimingBreakdownDisplay(results.timingBreakdown);
         }
 
         if (results.networkQualityScore) {
@@ -1594,53 +1578,6 @@
         if (elements.uploadVariability) {
             elements.uploadVariability.textContent = `±${(bandwidth.uploadVariability * 100).toFixed(0)}%`;
         }
-    }
-
-    /**
-     * Update timing breakdown display
-     */
-    function updateTimingBreakdownDisplay(timingBreakdown) {
-        if (!timingBreakdown || timingBreakdown.length === 0) return;
-
-        // Calculate averages
-        const avg = {
-            dns: 0, tcp: 0, tls: 0, ttfb: 0, transfer: 0
-        };
-        let count = 0;
-        timingBreakdown.forEach(t => {
-            if (t.dnsMs >= 0) avg.dns += t.dnsMs;
-            if (t.tcpMs >= 0) avg.tcp += t.tcpMs;
-            if (t.tlsMs >= 0) avg.tls += t.tlsMs;
-            if (t.ttfbMs >= 0) avg.ttfb += t.ttfbMs;
-            if (t.transferMs >= 0) avg.transfer += t.transferMs;
-            count++;
-        });
-        if (count > 0) {
-            avg.dns /= count;
-            avg.tcp /= count;
-            avg.tls /= count;
-            avg.ttfb /= count;
-            avg.transfer /= count;
-        }
-
-        // Find max for bar scaling
-        const maxTime = Math.max(avg.dns, avg.tcp, avg.tls, avg.ttfb, avg.transfer, 1);
-
-        // Update bars and values
-        if (elements.timingDns) elements.timingDns.style.width = `${(avg.dns / maxTime) * 100}%`;
-        if (elements.timingDnsValue) elements.timingDnsValue.textContent = `${avg.dns.toFixed(1)} ms`;
-
-        if (elements.timingTcp) elements.timingTcp.style.width = `${(avg.tcp / maxTime) * 100}%`;
-        if (elements.timingTcpValue) elements.timingTcpValue.textContent = `${avg.tcp.toFixed(1)} ms`;
-
-        if (elements.timingTls) elements.timingTls.style.width = `${(avg.tls / maxTime) * 100}%`;
-        if (elements.timingTlsValue) elements.timingTlsValue.textContent = `${avg.tls.toFixed(1)} ms`;
-
-        if (elements.timingTtfb) elements.timingTtfb.style.width = `${(avg.ttfb / maxTime) * 100}%`;
-        if (elements.timingTtfbValue) elements.timingTtfbValue.textContent = `${avg.ttfb.toFixed(1)} ms`;
-
-        if (elements.timingTransfer) elements.timingTransfer.style.width = `${(avg.transfer / maxTime) * 100}%`;
-        if (elements.timingTransferValue) elements.timingTransferValue.textContent = `${avg.transfer.toFixed(1)} ms`;
     }
 
     /**

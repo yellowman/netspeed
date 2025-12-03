@@ -1691,62 +1691,6 @@ button {
 }
 
 /* ========================================
-   Timing Breakdown
-   ======================================== */
-
-.timing-breakdown {
-    display: flex;
-    flex-direction: column;
-    gap: var(--spacing-md);
-}
-
-.timing-row {
-    display: grid;
-    grid-template-columns: 120px 1fr 80px;
-    gap: var(--spacing-md);
-    align-items: center;
-}
-
-@media (max-width: 500px) {
-    .timing-row {
-        grid-template-columns: 100px 1fr 60px;
-    }
-}
-
-.timing-label {
-    font-size: 0.875rem;
-    color: var(--color-text-secondary);
-}
-
-.timing-bar-container {
-    height: 20px;
-    background: var(--color-bg-tertiary);
-    border-radius: var(--radius-sm);
-    overflow: hidden;
-}
-
-.timing-bar {
-    height: 100%;
-    border-radius: var(--radius-sm);
-    transition: width var(--transition-base);
-    min-width: 2px;
-}
-
-.timing-bar.dns { background: #06b6d4; }
-.timing-bar.tcp { background: #8b5cf6; }
-.timing-bar.tls { background: #f59e0b; }
-.timing-bar.ttfb { background: #3b82f6; }
-.timing-bar.transfer { background: #10b981; }
-
-.timing-value {
-    font-size: 0.875rem;
-    font-weight: 500;
-    color: var(--color-text-primary);
-    text-align: right;
-    font-variant-numeric: tabular-nums;
-}
-
-/* ========================================
    Network Quality Score
    ======================================== */
 
