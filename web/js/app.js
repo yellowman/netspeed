@@ -1347,7 +1347,7 @@
 
     /**
      * Encode results into a compact URL-safe string
-     * Format: {base}-{dl}-{ul}-{latU}-{latD}-{latL}[-{server}]
+     * Format: {base}-{pkt}-{geo}-{dl}-{ul}-{latU}-{latD}-{latL}[-{server}]
      * All values base36, sections separated by - (URL-safe)
      */
     function encodeResultsForURL() {
@@ -1361,18 +1361,37 @@
                 encodeGrade(state.quality.videoChatting);
         }
 
-        // Base data: d.u.l.j.p.rtt.ns.t.q (all *10 except ns, t, q)
+        // Base data: d.u.l.j.p.ns.t.q
         const base = [
             Math.round(state.summary.downloadMbps * 10),
             Math.round(state.summary.uploadMbps * 10),
             Math.round(state.summary.latencyUnloadedMs * 10),
             Math.round(state.summary.jitterMs * 10),
             Math.round(state.summary.packetLossPercent * 100),
-            Math.round((state.packetLoss?.rttStatsMs?.median || 0) * 10),
             state.networkScore?.overall || 0,
             Math.floor(Date.now() / 1000),
             q
         ].map(v => v.toString(36)).join('.');
+
+        // Packet loss stats: sent.recv.rttMin.rttMed.rttP90.rttJitter
+        const pl = state.packetLoss;
+        const pkt = [
+            pl?.sent || 0,
+            pl?.received || 0,
+            Math.round((pl?.rttStatsMs?.min || 0) * 10),
+            Math.round((pl?.rttStatsMs?.median || 0) * 10),
+            Math.round((pl?.rttStatsMs?.p90 || 0) * 10),
+            Math.round((pl?.jitterMs || 0) * 10)
+        ].map(v => v.toString(36)).join('.');
+
+        // Geo coords: clientLat.clientLon.serverLat.serverLon (scaled by 1000 for precision)
+        const serverLoc = state.locations?.find(l => l.iata === state.meta?.colo);
+        const geo = [
+            Math.round((state.meta?.latitude || 0) * 1000),
+            Math.round((state.meta?.longitude || 0) * 1000),
+            Math.round((serverLoc?.lat || 0) * 1000),
+            Math.round((serverLoc?.lon || 0) * 1000)
+        ].map(v => encodeSignedInt(v)).join('.');
 
         // Sample arrays (max 15 points each for compact URLs)
         const dl = encodeSamples(state.downloadSamples.map(s => s.mbps), 15);
@@ -1382,7 +1401,7 @@
         const latL = encodeSamples(state.latencySamples.filter(s => s.phase === 'upload').map(s => s.rttMs), 5);
 
         // Build with - separator (URL-safe, no encoding needed)
-        const parts = [base, dl, ul, latU, latD, latL];
+        const parts = [base, pkt, geo, dl, ul, latU, latD, latL];
 
         // Add server city if available
         if (state.meta?.server?.city) {
@@ -1390,6 +1409,22 @@
         }
 
         return parts.join('-');
+    }
+
+    /**
+     * Encode signed integer to base36 (prefix 'n' for negative)
+     */
+    function encodeSignedInt(v) {
+        if (v < 0) return 'n' + Math.abs(v).toString(36);
+        return v.toString(36);
+    }
+
+    /**
+     * Decode signed integer from base36
+     */
+    function decodeSignedInt(s) {
+        if (s.startsWith('n')) return -parseInt(s.slice(1), 36);
+        return parseInt(s, 36);
     }
 
     /**
@@ -1472,45 +1507,67 @@
 
     /**
      * Decode results from URL parameter
-     * Format: {base}-{dl}-{ul}-{latU}-{latD}-{latL}[-{server}]
+     * Format: {base}-{pkt}-{geo}-{dl}-{ul}-{latU}-{latD}-{latL}[-{server}]
      */
     function decodeResultsFromURL(encoded) {
         try {
             const sections = encoded.split('-');
-            if (sections.length < 6) return null;
+            if (sections.length < 8) return null;
 
-            // Parse base data: d.u.l.j.p.rtt.ns.t.q
-            const parts = sections[0].split('.');
-            if (parts.length < 9) return null;
+            // Parse base data: d.u.l.j.p.ns.t.q
+            const base = sections[0].split('.');
+            if (base.length < 8) return null;
 
-            const d = parseInt(parts[0], 36) / 10;
-            const u = parseInt(parts[1], 36) / 10;
-            const l = parseInt(parts[2], 36) / 10;
-            const j = parseInt(parts[3], 36) / 10;
-            const p = parseInt(parts[4], 36) / 100;
-            const rtt = parseInt(parts[5], 36) / 10;
-            const ns = parseInt(parts[6], 36);
-            const t = parseInt(parts[7], 36) * 1000;
-            const q = parseInt(parts[8], 36);
+            const d = parseInt(base[0], 36) / 10;
+            const u = parseInt(base[1], 36) / 10;
+            const l = parseInt(base[2], 36) / 10;
+            const j = parseInt(base[3], 36) / 10;
+            const p = parseInt(base[4], 36) / 100;
+            const ns = parseInt(base[5], 36);
+            const t = parseInt(base[6], 36) * 1000;
+            const q = parseInt(base[7], 36);
 
             const qs = Math.floor(q / 25);
             const qg = Math.floor((q % 25) / 5);
             const qv = q % 5;
 
+            // Parse packet loss stats: sent.recv.rttMin.rttMed.rttP90.rttJitter
+            const pkt = sections[1].split('.');
+            const packetLoss = {
+                sent: parseInt(pkt[0] || '0', 36),
+                received: parseInt(pkt[1] || '0', 36),
+                rttMin: parseInt(pkt[2] || '0', 36) / 10,
+                rttMedian: parseInt(pkt[3] || '0', 36) / 10,
+                rttP90: parseInt(pkt[4] || '0', 36) / 10,
+                rttJitter: parseInt(pkt[5] || '0', 36) / 10
+            };
+            packetLoss.lossPercent = packetLoss.sent > 0
+                ? ((packetLoss.sent - packetLoss.received) / packetLoss.sent) * 100
+                : 0;
+
+            // Parse geo coords: clientLat.clientLon.serverLat.serverLon
+            const geo = sections[2].split('.');
+            const coords = {
+                clientLat: decodeSignedInt(geo[0] || '0') / 1000,
+                clientLon: decodeSignedInt(geo[1] || '0') / 1000,
+                serverLat: decodeSignedInt(geo[2] || '0') / 1000,
+                serverLon: decodeSignedInt(geo[3] || '0') / 1000
+            };
+
             // Decode sample arrays
-            const downloadSamples = decodeSamples(sections[1]);
-            const uploadSamples = decodeSamples(sections[2]);
-            const latencyUnloaded = decodeSamples(sections[3]);
-            const latencyDownload = decodeSamples(sections[4]);
-            const latencyUpload = decodeSamples(sections[5]);
+            const downloadSamples = decodeSamples(sections[3]);
+            const uploadSamples = decodeSamples(sections[4]);
+            const latencyUnloaded = decodeSamples(sections[5]);
+            const latencyDownload = decodeSamples(sections[6]);
+            const latencyUpload = decodeSamples(sections[7]);
 
             // Server city (if present)
             let server = null;
-            if (sections.length > 6) {
+            if (sections.length > 8) {
                 try {
-                    server = decodeURIComponent(sections.slice(6).join('-'));
+                    server = decodeURIComponent(sections.slice(8).join('-'));
                 } catch (e) {
-                    server = sections.slice(6).join('-');
+                    server = sections.slice(8).join('-');
                 }
             }
 
@@ -1526,10 +1583,11 @@
                 latencyUploadMs: latencyUploadMs,
                 jitterMs: j,
                 packetLossPercent: p,
-                rttMs: rtt,
                 networkScore: ns,
                 timestamp: t,
                 server: server,
+                packetLoss: packetLoss,
+                coords: coords,
                 quality: {
                     streaming: decodeGrade(qs),
                     gaming: decodeGrade(qg),
@@ -1681,12 +1739,33 @@
             }
         }
 
-        // Update packet loss display
-        if (elements.packetLossDetail) {
+        // Update packet loss card
+        const pl = results.packetLoss;
+        if (pl && pl.sent > 0) {
+            if (elements.packetLossBadge) elements.packetLossBadge.textContent = `${pl.received}/${pl.sent}`;
+            if (elements.packetLossFill) {
+                const successPercent = (pl.received / pl.sent) * 100;
+                elements.packetLossFill.style.width = `${successPercent}%`;
+            }
+            if (elements.packetLossDetail) elements.packetLossDetail.textContent = `${pl.lossPercent.toFixed(2)}%`;
+            if (elements.packetsReceived) elements.packetsReceived.textContent = `${pl.received} / ${pl.sent} packets`;
+            if (elements.rttMin) elements.rttMin.textContent = `${pl.rttMin.toFixed(1)} ms`;
+            if (elements.rttMedian) elements.rttMedian.textContent = `${pl.rttMedian.toFixed(1)} ms`;
+            if (elements.rttP90) elements.rttP90.textContent = `${pl.rttP90.toFixed(1)} ms`;
+            if (elements.rttJitter) elements.rttJitter.textContent = `${pl.rttJitter.toFixed(1)} ms`;
+        } else if (elements.packetLossDetail) {
             elements.packetLossDetail.textContent = `${results.packetLossPercent.toFixed(2)}%`;
         }
-        if (results.rttMs > 0 && elements.rttMedian) {
-            elements.rttMedian.textContent = `${results.rttMs.toFixed(1)} ms`;
+
+        // Render map if coordinates available
+        const c = results.coords;
+        if (c && elements.mapContainer && (c.serverLat !== 0 || c.serverLon !== 0)) {
+            if (c.clientLat !== 0 || c.clientLon !== 0) {
+                renderMapWithBothLocations(c.serverLat, c.serverLon, results.server || 'Server',
+                                           c.clientLat, c.clientLon);
+            } else {
+                renderMap(c.serverLat, c.serverLon, results.server || 'Server');
+            }
         }
 
         // Update network quality score
