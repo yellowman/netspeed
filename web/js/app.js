@@ -30,17 +30,20 @@
      * Initialize the application
      */
     function init() {
+        console.log('App init started');
         cacheElements();
         setupEventListeners();
         setupTheme();
 
         // Check if viewing shared results
         const isSharedView = checkForSharedResults();
+        console.log('isSharedView:', isSharedView);
 
         // Load server info (unless viewing shared results)
         if (!isSharedView) {
             loadInitialData();
         }
+        console.log('App init complete');
     }
 
     /**
@@ -1204,8 +1207,9 @@
         // Video Streaming
         if (elements.streamingScore) {
             const grade = quality.videoStreaming;
-            elements.streamingScore.className = `quality-grade ${gradeClass[grade] || ''}`;
-            const dot = elements.streamingScore.querySelector('.grade-dot');
+            // Remove old grade classes and add new one
+            elements.streamingScore.classList.remove('great', 'good', 'okay', 'poor');
+            if (gradeClass[grade]) elements.streamingScore.classList.add(gradeClass[grade]);
             const text = elements.streamingScore.querySelector('.grade-text');
             if (text) text.innerHTML = grade || ph;
         }
@@ -1213,7 +1217,8 @@
         // Gaming
         if (elements.gamingScore) {
             const grade = quality.gaming;
-            elements.gamingScore.className = `quality-grade ${gradeClass[grade] || ''}`;
+            elements.gamingScore.classList.remove('great', 'good', 'okay', 'poor');
+            if (gradeClass[grade]) elements.gamingScore.classList.add(gradeClass[grade]);
             const text = elements.gamingScore.querySelector('.grade-text');
             if (text) text.innerHTML = grade || ph;
         }
@@ -1221,7 +1226,8 @@
         // Video Chatting
         if (elements.videoChatScore) {
             const grade = quality.videoChatting;
-            elements.videoChatScore.className = `quality-grade ${gradeClass[grade] || ''}`;
+            elements.videoChatScore.classList.remove('great', 'good', 'okay', 'poor');
+            if (gradeClass[grade]) elements.videoChatScore.classList.add(gradeClass[grade]);
             const text = elements.videoChatScore.querySelector('.grade-text');
             if (text) text.innerHTML = grade || ph;
         }
@@ -1340,53 +1346,67 @@
 
     /**
      * Encode results into a compact URL-safe string
+     * Format: v.d.u.l.j.p.t.q[.s]
+     * - All numbers in base36 for compactness
+     * - d,u,l,j multiplied by 10, p by 100 to avoid decimals
+     * - q = packed quality grades (qs*25 + qg*5 + qv)
+     * - s = server city (optional, URL-encoded)
      */
     function encodeResultsForURL() {
         if (!state.summary) return null;
 
-        // Compact result object with short keys
-        const data = {
-            d: Math.round(state.summary.downloadMbps * 10) / 10,  // download
-            u: Math.round(state.summary.uploadMbps * 10) / 10,    // upload
-            l: Math.round(state.summary.latencyUnloadedMs * 10) / 10,  // latency
-            j: Math.round(state.summary.jitterMs * 10) / 10,      // jitter
-            p: Math.round(state.summary.packetLossPercent * 100) / 100,  // packet loss
-            t: Math.floor(Date.now() / 1000),  // timestamp (seconds)
-            v: 1  // version for future compatibility
-        };
+        const v = 2;  // version 2 = compact format
+        const d = Math.round(state.summary.downloadMbps * 10);
+        const u = Math.round(state.summary.uploadMbps * 10);
+        const l = Math.round(state.summary.latencyUnloadedMs * 10);
+        const j = Math.round(state.summary.jitterMs * 10);
+        const p = Math.round(state.summary.packetLossPercent * 100);
+        const t = Math.floor(Date.now() / 1000);
 
-        // Add quality grades if available
+        // Pack quality grades into single number (each 0-4, so max 4*25+4*5+4=124)
+        let q = 0;
         if (state.quality) {
-            data.qs = state.quality.streaming?.charAt(0) || '';  // first letter of grade
-            data.qg = state.quality.gaming?.charAt(0) || '';
-            data.qv = state.quality.videoChatting?.charAt(0) || '';
+            const qs = encodeGrade(state.quality.videoStreaming);
+            const qg = encodeGrade(state.quality.gaming);
+            const qv = encodeGrade(state.quality.videoChatting);
+            q = qs * 25 + qg * 5 + qv;
         }
 
-        // Add server info if available
+        // Build compact string with base36 numbers
+        const parts = [
+            v.toString(36),
+            d.toString(36),
+            u.toString(36),
+            l.toString(36),
+            j.toString(36),
+            p.toString(36),
+            t.toString(36),
+            q.toString(36)
+        ];
+
+        // Add server city if available (URL-encode for Unicode support)
         if (state.meta?.server?.city) {
-            data.s = state.meta.server.city;
+            parts.push(encodeURIComponent(state.meta.server.city));
         }
 
-        // Encode as base64url (URL-safe base64)
-        const json = JSON.stringify(data);
-        const base64 = btoa(json)
-            .replace(/\+/g, '-')
-            .replace(/\//g, '_')
-            .replace(/=+$/, '');
-
-        return base64;
+        return parts.join('.');
     }
 
     /**
      * Decode results from URL parameter
+     * Supports both v1 (base64 JSON) and v2 (compact dot-separated)
      */
     function decodeResultsFromURL(encoded) {
         try {
-            // Restore base64 padding and characters
+            // Check if it's v2 compact format (starts with "2.")
+            if (encoded.startsWith('2.')) {
+                return decodeCompactFormat(encoded);
+            }
+
+            // Fall back to v1 base64 JSON format
             let base64 = encoded
                 .replace(/-/g, '+')
                 .replace(/_/g, '/');
-            // Add padding if needed
             while (base64.length % 4) {
                 base64 += '=';
             }
@@ -1394,7 +1414,6 @@
             const json = atob(base64);
             const data = JSON.parse(json);
 
-            // Validate version and required fields
             if (!data.v || !data.d || !data.u) {
                 return null;
             }
@@ -1408,9 +1427,9 @@
                 timestamp: data.t ? data.t * 1000 : Date.now(),
                 server: data.s || null,
                 quality: {
-                    streaming: expandGrade(data.qs),
-                    gaming: expandGrade(data.qg),
-                    videoChatting: expandGrade(data.qv)
+                    streaming: decodeGrade(data.qs),
+                    gaming: decodeGrade(data.qg),
+                    videoChatting: decodeGrade(data.qv)
                 }
             };
         } catch (e) {
@@ -1420,24 +1439,90 @@
     }
 
     /**
-     * Expand single-letter grade to full word
+     * Decode v2 compact format
      */
-    function expandGrade(letter) {
-        const grades = { G: 'Great', O: 'OK', P: 'Poor', N: 'N/A' };
-        return grades[letter] || 'N/A';
+    function decodeCompactFormat(encoded) {
+        const parts = encoded.split('.');
+        if (parts.length < 8) return null;
+
+        const v = parseInt(parts[0], 36);
+        if (v !== 2) return null;
+
+        const d = parseInt(parts[1], 36) / 10;
+        const u = parseInt(parts[2], 36) / 10;
+        const l = parseInt(parts[3], 36) / 10;
+        const j = parseInt(parts[4], 36) / 10;
+        const p = parseInt(parts[5], 36) / 100;
+        const t = parseInt(parts[6], 36) * 1000;
+        const q = parseInt(parts[7], 36);
+
+        // Unpack quality grades
+        const qs = Math.floor(q / 25);
+        const qg = Math.floor((q % 25) / 5);
+        const qv = q % 5;
+
+        // Server city (optional, URL-decoded)
+        let server = null;
+        if (parts.length > 8) {
+            try {
+                server = decodeURIComponent(parts.slice(8).join('.'));
+            } catch (e) {
+                server = parts.slice(8).join('.');
+            }
+        }
+
+        return {
+            downloadMbps: d,
+            uploadMbps: u,
+            latencyMs: l,
+            jitterMs: j,
+            packetLossPercent: p,
+            timestamp: t,
+            server: server,
+            quality: {
+                streaming: decodeGrade(qs),
+                gaming: decodeGrade(qg),
+                videoChatting: decodeGrade(qv)
+            }
+        };
+    }
+
+    /**
+     * Encode grade to numeric code (4=Great, 3=Good, 2=Okay, 1=Poor)
+     */
+    function encodeGrade(grade) {
+        const codes = { 'Great': 4, 'Good': 3, 'Okay': 2, 'Poor': 1 };
+        return codes[grade] || 0;
+    }
+
+    /**
+     * Decode numeric grade code to full word
+     */
+    function decodeGrade(code) {
+        const grades = { 4: 'Great', 3: 'Good', 2: 'Okay', 1: 'Poor' };
+        return grades[code] || 'N/A';
     }
 
     /**
      * Check URL for shared results and display them
      */
     function checkForSharedResults() {
+        console.log('checkForSharedResults called, URL:', window.location.href);
         const params = new URLSearchParams(window.location.search);
         const encoded = params.get('r');
+        console.log('Encoded param:', encoded);
 
-        if (!encoded) return false;
+        if (!encoded) {
+            console.log('No r parameter found');
+            return false;
+        }
 
         const results = decodeResultsFromURL(encoded);
-        if (!results) return false;
+        console.log('Decoded results:', results);
+        if (!results) {
+            console.log('Failed to decode results');
+            return false;
+        }
 
         // Display shared results
         displaySharedResults(results);
@@ -1448,9 +1533,19 @@
      * Display shared results in read-only mode
      */
     function displaySharedResults(results) {
+        console.log('Displaying shared results:', results);
+        console.log('Elements available:', {
+            downloadValue: !!elements.downloadValue,
+            uploadValue: !!elements.uploadValue,
+            latencyValue: !!elements.latencyValue,
+            jitterValue: !!elements.jitterValue,
+            packetLossValue: !!elements.packetLossValue
+        });
+
         // Update hero values
         if (elements.downloadValue) {
             elements.downloadValue.textContent = results.downloadMbps.toFixed(1);
+            console.log('Set download to:', results.downloadMbps.toFixed(1));
         }
         if (elements.uploadValue) {
             elements.uploadValue.textContent = results.uploadMbps.toFixed(1);
