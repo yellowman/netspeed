@@ -1363,7 +1363,7 @@
 
         // Add quality grades if available
         if (state.quality) {
-            data.qs = state.quality.streaming?.charAt(0) || '';  // first letter of grade
+            data.qs = state.quality.videoStreaming?.charAt(0) || '';  // first letter of grade
             data.qg = state.quality.gaming?.charAt(0) || '';
             data.qv = state.quality.videoChatting?.charAt(0) || '';
         }
