@@ -184,7 +184,7 @@ const Charts = (function() {
                     y: y - 5,
                     'text-anchor': 'middle',
                     'font-size': '10',
-                    fill: 'var(--text-secondary)',
+                    fill: 'var(--color-text-secondary)',
                     class: 'bar-value'
                 });
                 valueLabel.textContent = formatNumber(item.value);
@@ -198,7 +198,7 @@ const Charts = (function() {
                     y: height - 8,
                     'text-anchor': 'middle',
                     'font-size': '10',
-                    fill: 'var(--text-secondary)',
+                    fill: 'var(--color-text-secondary)',
                     class: 'bar-label'
                 });
                 label.textContent = item.label;
@@ -293,7 +293,7 @@ const Charts = (function() {
             height = 100,
             dotRadius = 4,
             dotColor = 'var(--accent-primary)',
-            lineColor = 'var(--text-tertiary)',
+            lineColor = 'var(--color-text-tertiary)',
             showStats = true
         } = options;
 
@@ -327,7 +327,7 @@ const Charts = (function() {
                 y: y + 4,
                 'text-anchor': 'end',
                 'font-size': '9',
-                fill: 'var(--text-tertiary)'
+                fill: 'var(--color-text-tertiary)'
             });
             label.textContent = `${Math.round(val)}`;
             svg.appendChild(label);
@@ -394,7 +394,7 @@ const Charts = (function() {
         const {
             height = 24,
             successColor = 'var(--success)',
-            lossColor = 'var(--text-tertiary)',
+            lossColor = 'var(--color-text-tertiary)',
             radius = 6
         } = options;
 
@@ -497,7 +497,7 @@ const Charts = (function() {
                 'text-anchor': 'middle',
                 'font-size': '18',
                 'font-weight': '600',
-                fill: 'var(--text-primary)'
+                fill: 'var(--color-text-primary)'
             });
             text.textContent = formatNumber(value) + unit;
             svg.appendChild(text);
@@ -520,9 +520,9 @@ const Charts = (function() {
             width = 300,
             height = 60,
             barColor = 'var(--accent-primary)',
-            whiskerColor = 'var(--text-tertiary)',
-            medianColor = 'var(--text-primary)',
-            avgColor = 'var(--text-secondary)',
+            whiskerColor = 'var(--color-text-tertiary)',
+            medianColor = 'var(--color-text-primary)',
+            avgColor = 'var(--color-text-secondary)',
             barHeight = 24,
             showLabels = true,
             unit = 'Mbps'
@@ -780,7 +780,7 @@ const Charts = (function() {
             justify-content: space-between;
             margin-top: 8px;
             font-size: 11px;
-            color: var(--text-secondary);
+            color: var(--color-text-secondary);
         }
 
         .packet-loss-label {
@@ -791,17 +791,17 @@ const Charts = (function() {
         }
 
         .packet-loss-label .received {
-            color: var(--text-secondary);
+            color: var(--color-text-secondary);
         }
 
         .packet-loss-label .loss {
-            color: var(--warning);
+            color: var(--color-warning);
         }
 
         .no-data {
             display: block;
             text-align: center;
-            color: var(--text-tertiary);
+            color: var(--color-text-tertiary);
             font-size: 12px;
             padding: 20px;
         }

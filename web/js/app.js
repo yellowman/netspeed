@@ -400,8 +400,8 @@
         if (elements.downloadUnit) elements.downloadUnit.textContent = 'Mbps';
         if (elements.uploadUnit) elements.uploadUnit.textContent = 'Mbps';
         if (elements.latencyValue) elements.latencyValue.innerHTML = ph;
-        if (elements.jitterValue) elements.jitterValue.innerHTML = ph + ' ms';
-        if (elements.packetLossValue) elements.packetLossValue.innerHTML = ph + '%';
+        if (elements.jitterValue) elements.jitterValue.innerHTML = ph;
+        if (elements.packetLossValue) elements.packetLossValue.innerHTML = ph;
 
         // Clear sparklines
         if (elements.downloadSparkline) elements.downloadSparkline.innerHTML = '';
@@ -712,11 +712,11 @@
         }
 
         if (elements.jitterValue) {
-            elements.jitterValue.textContent = `${summary.jitterMs.toFixed(1)} ms`;
+            elements.jitterValue.textContent = summary.jitterMs.toFixed(1);
         }
 
         if (elements.packetLossValue) {
-            elements.packetLossValue.textContent = `${summary.packetLossPercent.toFixed(2)}%`;
+            elements.packetLossValue.textContent = summary.packetLossPercent.toFixed(2);
         }
 
         // Update measure time

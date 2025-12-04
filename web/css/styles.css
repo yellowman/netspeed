@@ -2356,22 +2356,25 @@ button {
 
 .details-row-grid {
     display: grid;
-    grid-template-columns: 2fr 1fr 150px;
+    grid-template-columns: 1fr 1fr 280px;
     gap: var(--spacing-md);
 }
 
-@media (max-width: 900px) {
+@media (max-width: 1000px) {
     .details-row-grid {
         grid-template-columns: 1fr 1fr;
     }
     .map-compact {
-        display: none;
+        grid-column: span 2;
     }
 }
 
 @media (max-width: 600px) {
     .details-row-grid {
         grid-template-columns: 1fr;
+    }
+    .map-compact {
+        grid-column: auto;
     }
 }
 
@@ -2439,11 +2442,12 @@ button {
 .map-compact {
     padding: 0;
     overflow: hidden;
+    min-height: 160px;
 }
 
 .map-container-compact {
     height: 100%;
-    min-height: 100px;
+    min-height: 160px;
     background: var(--color-bg-tertiary);
     display: flex;
     align-items: center;
@@ -2451,7 +2455,7 @@ button {
 }
 
 .map-container-compact .map-placeholder {
-    transform: scale(0.6);
+    /* Normal size placeholder */
 }
 
 /* Extras Section - Collapsible */
@@ -2500,8 +2504,27 @@ button {
 
 .extras-grid {
     display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+    grid-template-columns: repeat(5, 1fr);
     gap: var(--spacing-md);
+    align-items: start;
+}
+
+@media (max-width: 1200px) {
+    .extras-grid {
+        grid-template-columns: repeat(3, 1fr);
+    }
+}
+
+@media (max-width: 800px) {
+    .extras-grid {
+        grid-template-columns: repeat(2, 1fr);
+    }
+}
+
+@media (max-width: 500px) {
+    .extras-grid {
+        grid-template-columns: 1fr;
+    }
 }
 
 /* Bandwidth Mini */
@@ -2530,8 +2553,8 @@ button {
 
 .bandwidth-mini-stats {
     display: flex;
-    flex-wrap: wrap;
-    gap: var(--spacing-sm);
+    flex-direction: column;
+    gap: 2px;
     font-size: 0.75rem;
     color: var(--color-text-secondary);
 }
@@ -2626,8 +2649,8 @@ button {
 
 .confidence-mini-details {
     display: flex;
-    flex-wrap: wrap;
-    gap: var(--spacing-xs) var(--spacing-md);
+    flex-direction: column;
+    gap: 2px;
     font-size: 0.7rem;
     color: var(--color-text-secondary);
     margin-top: var(--spacing-xs);
