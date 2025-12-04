@@ -1204,8 +1204,9 @@
         // Video Streaming
         if (elements.streamingScore) {
             const grade = quality.videoStreaming;
-            elements.streamingScore.className = `quality-grade ${gradeClass[grade] || ''}`;
-            const dot = elements.streamingScore.querySelector('.grade-dot');
+            // Remove old grade classes and add new one
+            elements.streamingScore.classList.remove('great', 'good', 'okay', 'poor');
+            if (gradeClass[grade]) elements.streamingScore.classList.add(gradeClass[grade]);
             const text = elements.streamingScore.querySelector('.grade-text');
             if (text) text.innerHTML = grade || ph;
         }
@@ -1213,7 +1214,8 @@
         // Gaming
         if (elements.gamingScore) {
             const grade = quality.gaming;
-            elements.gamingScore.className = `quality-grade ${gradeClass[grade] || ''}`;
+            elements.gamingScore.classList.remove('great', 'good', 'okay', 'poor');
+            if (gradeClass[grade]) elements.gamingScore.classList.add(gradeClass[grade]);
             const text = elements.gamingScore.querySelector('.grade-text');
             if (text) text.innerHTML = grade || ph;
         }
@@ -1221,7 +1223,8 @@
         // Video Chatting
         if (elements.videoChatScore) {
             const grade = quality.videoChatting;
-            elements.videoChatScore.className = `quality-grade ${gradeClass[grade] || ''}`;
+            elements.videoChatScore.classList.remove('great', 'good', 'okay', 'poor');
+            if (gradeClass[grade]) elements.videoChatScore.classList.add(gradeClass[grade]);
             const text = elements.videoChatScore.querySelector('.grade-text');
             if (text) text.innerHTML = grade || ph;
         }
