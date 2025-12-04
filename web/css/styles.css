@@ -695,6 +695,22 @@ button {
     justify-content: center;
     overflow: hidden;
     border-radius: var(--radius-sm);
+    position: relative;
+    z-index: 1;
+}
+
+/* Ensure Leaflet map elements stay below help tooltips and modals */
+.map-container .leaflet-container {
+    z-index: 1;
+}
+
+.map-container .leaflet-pane {
+    z-index: 1;
+}
+
+.map-container .leaflet-top,
+.map-container .leaflet-bottom {
+    z-index: 10;
 }
 
 .map-iframe {
@@ -1025,28 +1041,21 @@ button {
     border-bottom: 1px solid var(--color-border);
 }
 
-.test-card:hover {
-    background: var(--color-bg-secondary);
-}
-
-.test-card .accordion-header {
+/* Test card header - always visible */
+.test-card .test-card-header {
     display: flex;
     align-items: center;
-    gap: var(--spacing-md);
+    justify-content: space-between;
     padding: var(--spacing-md) var(--spacing-lg);
-    width: 100%;
-    text-align: left;
-    cursor: pointer;
 }
 
-.test-card .accordion-title {
-    flex: 1;
+.test-card .test-card-info {
     display: flex;
     align-items: center;
     gap: var(--spacing-sm);
 }
 
-.test-card .accordion-title span:first-child {
+.test-card .test-card-title {
     font-size: 0.875rem;
     font-weight: 500;
     color: var(--color-text-primary);
@@ -1058,12 +1067,43 @@ button {
 }
 
 .test-card .test-speed {
-    font-size: 0.875rem;
+    font-size: 1rem;
     font-weight: 600;
     color: var(--color-text-primary);
     font-variant-numeric: tabular-nums;
-    min-width: 100px;
-    text-align: right;
+}
+
+/* Test card chart - always visible */
+.test-card .test-card-chart {
+    padding: 0 var(--spacing-lg) var(--spacing-md);
+}
+
+.test-card .test-box-plot {
+    min-height: 60px;
+    position: relative;
+    cursor: help;
+}
+
+/* Accordion for details */
+.test-card .accordion-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: var(--spacing-sm) var(--spacing-lg);
+    cursor: pointer;
+    border-top: 1px solid var(--color-border-subtle);
+    background: var(--color-bg-tertiary);
+}
+
+.test-card .accordion-header:hover {
+    background: var(--color-bg-secondary);
+}
+
+.test-card .accordion-label {
+    font-size: 0.75rem;
+    color: var(--color-text-tertiary);
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
 }
 
 .test-card .accordion-icon {
@@ -1091,8 +1131,7 @@ button {
 
 .test-card .accordion-content {
     display: none;
-    padding: 0 var(--spacing-lg) var(--spacing-lg);
-    border-top: 1px solid var(--color-border-subtle);
+    padding: var(--spacing-md) var(--spacing-lg) var(--spacing-lg);
 }
 
 .test-card.expanded .accordion-content {
@@ -1124,13 +1163,6 @@ button {
 .test-card .test-table td {
     color: var(--color-text-primary);
     font-variant-numeric: tabular-nums;
-}
-
-.test-card .test-box-plot {
-    margin-bottom: var(--spacing-md);
-    min-height: 50px;
-    position: relative;
-    cursor: help;
 }
 
 .test-card .test-stats {
@@ -1578,7 +1610,7 @@ button {
 .timeline-segment {
     flex: 1;
     border-right: 1px solid var(--color-bg-secondary);
-    background: var(--color-success);
+    background: transparent;
     transition: background var(--transition-base);
 }
 
@@ -1586,8 +1618,8 @@ button {
     border-right: none;
 }
 
-.timeline-segment.loss-low {
-    background: var(--color-success);
+.timeline-segment.loss-none {
+    background: transparent;
 }
 
 .timeline-segment.loss-medium {
