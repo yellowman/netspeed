@@ -402,6 +402,10 @@
         state.quality = null;
         state.packetLoss = null;
         state.networkScore = null;
+        state.lossPattern = null;
+        state.dataChannelStats = null;
+        state.bandwidthEstimate = null;
+        state.testConfidence = null;
 
         // Reset hero values with shimmer placeholders
         const ph = '<span class="placeholder"></span>';
@@ -714,6 +718,10 @@
         state.quality = quality;
         state.packetLoss = results.packetLoss;
         state.networkScore = results.networkQualityScore;
+        state.lossPattern = results.lossPattern;
+        state.dataChannelStats = results.dataChannelStats;
+        state.bandwidthEstimate = results.bandwidthEstimate;
+        state.testConfidence = results.testConfidence;
 
         // Update final hero values
         updateHeroValue('download', summary.downloadMbps);
@@ -1347,7 +1355,7 @@
 
     /**
      * Encode results into a compact URL-safe string
-     * Format: {base}-{pkt}-{geo}-{dl}-{ul}-{latU}-{latD}-{latL}[-{server}]
+     * Format: {base}-{pkt}-{geo}-{ext}-{dl}-{ul}-{latU}-{latD}-{latL}-{lossDist}[-{server}]
      * All values base36, sections separated by - (URL-safe)
      */
     function encodeResultsForURL() {
@@ -1393,6 +1401,58 @@
             Math.round((serverLoc?.lon || 0) * 1000)
         ].map(v => encodeSignedInt(v)).join('.');
 
+        // Extended data: conn.proto.iceRtt.lossType.burstCnt.maxBurst.avgBurst.conf.bwComp.dlTrend.ulTrend.dlPeak.ulPeak.dlSust.ulSust.dlVar.ulVar
+        const dc = state.dataChannelStats;
+        const lp = state.lossPattern;
+        const bw = state.bandwidthEstimate;
+        const tc = state.testConfidence;
+        const ns = state.networkScore;
+
+        // Encode connection type: 0=host, 1=srflx, 2=prflx, 3=relay, 4=unknown
+        const connTypes = { 'host': 0, 'srflx': 1, 'prflx': 2, 'relay': 3, 'unknown': 4 };
+        const connType = connTypes[dc?.connectionType] ?? 4;
+
+        // Encode protocol: 0=udp, 1=tcp
+        const proto = dc?.protocol?.toLowerCase() === 'tcp' ? 1 : 0;
+
+        // Encode loss type: 0=none, 1=random, 2=burst, 3=tail
+        const lossTypes = { 'none': 0, 'random': 1, 'burst': 2, 'tail': 3 };
+        const lossType = lossTypes[lp?.type] ?? 0;
+
+        // Encode confidence: 0=high, 1=medium, 2=low
+        const confLevels = { 'high': 0, 'medium': 1, 'low': 2 };
+        const conf = confLevels[tc?.overall] ?? 2;
+
+        // Encode trend: 0=stable, 1=improving, 2=degrading
+        const trendMap = { 'stable': 0, 'improving': 1, 'degrading': 2 };
+
+        // Pack network score components: bandwidth.latency.stability.reliability
+        const bwComp = ns?.components ? [
+            ns.components.bandwidth || 0,
+            ns.components.latency || 0,
+            ns.components.stability || 0,
+            ns.components.reliability || 0
+        ].map(v => v.toString(36)).join('.') : '0.0.0.0';
+
+        const ext = [
+            connType,
+            proto,
+            Math.round((dc?.currentRoundTripTime || 0) * 10),
+            lossType,
+            lp?.burstCount || 0,
+            Math.round((lp?.maxBurstLength || 0) * 10),
+            Math.round((lp?.avgBurstLength || 0) * 10),
+            conf,
+            trendMap[bw?.downloadTrend] ?? 0,
+            trendMap[bw?.uploadTrend] ?? 0,
+            Math.round((bw?.downloadPeakMbps || 0) * 10),
+            Math.round((bw?.uploadPeakMbps || 0) * 10),
+            Math.round((bw?.downloadSustainedMbps || 0) * 10),
+            Math.round((bw?.uploadSustainedMbps || 0) * 10),
+            Math.round((bw?.downloadVariability || 0) * 100),
+            Math.round((bw?.uploadVariability || 0) * 100)
+        ].map(v => v.toString(36)).join('.') + '.' + bwComp;
+
         // Sample arrays with delta encoding (all samples)
         const dl = encodeSamplesDelta(state.downloadSamples.map(s => s.mbps));
         const ul = encodeSamplesDelta(state.uploadSamples.map(s => s.mbps));
@@ -1400,8 +1460,11 @@
         const latD = encodeSamplesDelta(state.latencySamples.filter(s => s.phase === 'download').map(s => s.rttMs));
         const latL = encodeSamplesDelta(state.latencySamples.filter(s => s.phase === 'upload').map(s => s.rttMs));
 
+        // Loss distribution (10 segments) with delta encoding
+        const lossDist = encodeSamplesDelta(lp?.lossDistribution || []);
+
         // Build with - separator (URL-safe, no encoding needed)
-        const parts = [base, pkt, geo, dl, ul, latU, latD, latL];
+        const parts = [base, pkt, geo, ext, dl, ul, latU, latD, latL, lossDist];
 
         // Add server city if available
         if (state.meta?.server?.city) {
@@ -1528,12 +1591,12 @@
 
     /**
      * Decode results from URL parameter
-     * Format: {base}-{pkt}-{geo}-{dl}-{ul}-{latU}-{latD}-{latL}[-{server}]
+     * Format: {base}-{pkt}-{geo}-{ext}-{dl}-{ul}-{latU}-{latD}-{latL}-{lossDist}[-{server}]
      */
     function decodeResultsFromURL(encoded) {
         try {
             const sections = encoded.split('-');
-            if (sections.length < 8) return null;
+            if (sections.length < 10) return null;
 
             // Parse base data: d.u.l.j.p.ns.t.q
             const base = sections[0].split('.');
@@ -1575,20 +1638,67 @@
                 serverLon: decodeSignedInt(geo[3] || '0') / 1000
             };
 
+            // Parse extended data
+            const ext = sections[3].split('.');
+            const connTypes = ['host', 'srflx', 'prflx', 'relay', 'unknown'];
+            const lossTypes = ['none', 'random', 'burst', 'tail'];
+            const confLevels = ['high', 'medium', 'low'];
+            const trends = ['stable', 'improving', 'degrading'];
+
+            const dataChannelStats = {
+                connectionType: connTypes[parseInt(ext[0] || '4', 36)] || 'unknown',
+                protocol: parseInt(ext[1] || '0', 36) === 1 ? 'tcp' : 'udp',
+                currentRoundTripTime: parseInt(ext[2] || '0', 36) / 10
+            };
+
+            const lossPattern = {
+                type: lossTypes[parseInt(ext[3] || '0', 36)] || 'none',
+                burstCount: parseInt(ext[4] || '0', 36),
+                maxBurstLength: parseInt(ext[5] || '0', 36) / 10,
+                avgBurstLength: parseInt(ext[6] || '0', 36) / 10,
+                lossDistribution: []  // Will be filled from lossDist section
+            };
+
+            const testConfidence = {
+                overall: confLevels[parseInt(ext[7] || '2', 36)] || 'low'
+            };
+
+            const bandwidthEstimate = {
+                downloadTrend: trends[parseInt(ext[8] || '0', 36)] || 'stable',
+                uploadTrend: trends[parseInt(ext[9] || '0', 36)] || 'stable',
+                downloadPeakMbps: parseInt(ext[10] || '0', 36) / 10,
+                uploadPeakMbps: parseInt(ext[11] || '0', 36) / 10,
+                downloadSustainedMbps: parseInt(ext[12] || '0', 36) / 10,
+                uploadSustainedMbps: parseInt(ext[13] || '0', 36) / 10,
+                downloadVariability: parseInt(ext[14] || '0', 36) / 100,
+                uploadVariability: parseInt(ext[15] || '0', 36) / 100
+            };
+
+            // Network score components (positions 16-19)
+            const networkScoreComponents = {
+                bandwidth: parseInt(ext[16] || '0', 36),
+                latency: parseInt(ext[17] || '0', 36),
+                stability: parseInt(ext[18] || '0', 36),
+                reliability: parseInt(ext[19] || '0', 36)
+            };
+
             // Decode delta-encoded sample arrays
-            const downloadSamples = decodeSamplesDelta(sections[3]);
-            const uploadSamples = decodeSamplesDelta(sections[4]);
-            const latencyUnloaded = decodeSamplesDelta(sections[5]);
-            const latencyDownload = decodeSamplesDelta(sections[6]);
-            const latencyUpload = decodeSamplesDelta(sections[7]);
+            const downloadSamples = decodeSamplesDelta(sections[4]);
+            const uploadSamples = decodeSamplesDelta(sections[5]);
+            const latencyUnloaded = decodeSamplesDelta(sections[6]);
+            const latencyDownload = decodeSamplesDelta(sections[7]);
+            const latencyUpload = decodeSamplesDelta(sections[8]);
+
+            // Loss distribution
+            lossPattern.lossDistribution = decodeSamplesDelta(sections[9]);
 
             // Server city (if present)
             let server = null;
-            if (sections.length > 8) {
+            if (sections.length > 10) {
                 try {
-                    server = decodeURIComponent(sections.slice(8).join('-'));
+                    server = decodeURIComponent(sections.slice(10).join('-'));
                 } catch (e) {
-                    server = sections.slice(8).join('-');
+                    server = sections.slice(10).join('-');
                 }
             }
 
@@ -1605,6 +1715,7 @@
                 jitterMs: j,
                 packetLossPercent: p,
                 networkScore: ns,
+                networkScoreComponents: networkScoreComponents,
                 timestamp: t,
                 server: server,
                 packetLoss: packetLoss,
@@ -1618,7 +1729,11 @@
                 uploadSamples: uploadSamples,
                 latencyUnloaded: latencyUnloaded,
                 latencyDownload: latencyDownload,
-                latencyUpload: latencyUpload
+                latencyUpload: latencyUpload,
+                dataChannelStats: dataChannelStats,
+                lossPattern: lossPattern,
+                bandwidthEstimate: bandwidthEstimate,
+                testConfidence: testConfidence
             };
         } catch (e) {
             console.error('Failed to decode shared results:', e);
@@ -1799,6 +1914,18 @@
                 else if (results.networkScore >= 50) grade = 'Fair';
                 elements.scoreGrade.textContent = grade;
             }
+            // Network score components
+            const comp = results.networkScoreComponents;
+            if (comp) {
+                if (elements.bandwidthBar) elements.bandwidthBar.style.width = `${comp.bandwidth}%`;
+                if (elements.bandwidthScore) elements.bandwidthScore.textContent = comp.bandwidth;
+                if (elements.latencyBar) elements.latencyBar.style.width = `${comp.latency}%`;
+                if (elements.latencyScore) elements.latencyScore.textContent = comp.latency;
+                if (elements.stabilityBar) elements.stabilityBar.style.width = `${comp.stability}%`;
+                if (elements.stabilityScore) elements.stabilityScore.textContent = comp.stability;
+                if (elements.reliabilityBar) elements.reliabilityBar.style.width = `${comp.reliability}%`;
+                if (elements.reliabilityScore) elements.reliabilityScore.textContent = comp.reliability;
+            }
         }
 
         // Update quality grades
@@ -1808,6 +1935,78 @@
                 gaming: results.quality.gaming,
                 videoChatting: results.quality.videoChatting
             });
+        }
+
+        // Update data channel stats
+        const dc = results.dataChannelStats;
+        if (dc) {
+            const typeLabels = { 'host': 'Direct', 'srflx': 'STUN', 'prflx': 'Peer', 'relay': 'Relay', 'unknown': '-' };
+            if (elements.webrtcConnectionBadge) {
+                elements.webrtcConnectionBadge.textContent = typeLabels[dc.connectionType] || '-';
+                elements.webrtcConnectionBadge.className = 'connection-type-badge';
+                if (dc.connectionType === 'host') elements.webrtcConnectionBadge.classList.add('direct');
+                else if (dc.connectionType === 'srflx' || dc.connectionType === 'prflx') elements.webrtcConnectionBadge.classList.add('stun');
+                else if (dc.connectionType === 'relay') elements.webrtcConnectionBadge.classList.add('relay');
+            }
+            const pathLabels = { 'host': 'Direct', 'srflx': 'STUN NAT', 'prflx': 'Peer reflexive', 'relay': 'TURN relay' };
+            if (elements.connectionPath) elements.connectionPath.textContent = pathLabels[dc.connectionType] || '-';
+            if (elements.webrtcProtocol) elements.webrtcProtocol.textContent = dc.protocol?.toUpperCase() || 'UDP';
+            if (elements.iceRtt) elements.iceRtt.textContent = dc.currentRoundTripTime ? `${dc.currentRoundTripTime.toFixed(1)} ms` : '-';
+        }
+
+        // Update loss pattern display
+        const lp = results.lossPattern;
+        if (lp) {
+            if (elements.lossTypeBadge) {
+                const typeLabels = { 'none': 'No Loss', 'random': 'Random', 'burst': 'Burst', 'tail': 'Tail' };
+                elements.lossTypeBadge.textContent = typeLabels[lp.type] || 'Unknown';
+                elements.lossTypeBadge.className = `loss-type-badge ${lp.type}`;
+            }
+            if (elements.lossTimeline && lp.lossDistribution?.length > 0) {
+                const segments = elements.lossTimeline.querySelectorAll('.timeline-segment');
+                const maxLoss = Math.max(...lp.lossDistribution, 1);
+                segments.forEach((seg, i) => {
+                    const loss = lp.lossDistribution[i] || 0;
+                    const ratio = loss / maxLoss;
+                    seg.className = 'timeline-segment';
+                    if (loss === 0) seg.classList.add('loss-none');
+                    else if (ratio < 0.5) seg.classList.add('loss-low');
+                    else seg.classList.add('loss-high');
+                });
+            }
+            if (elements.burstCount) elements.burstCount.textContent = lp.burstCount > 0 ? lp.burstCount : '-';
+            if (elements.maxBurst) elements.maxBurst.textContent = lp.maxBurstLength > 0 ? `${lp.maxBurstLength} pkts` : '-';
+            if (elements.avgBurst) elements.avgBurst.textContent = lp.avgBurstLength > 0 ? `${lp.avgBurstLength.toFixed(1)} pkts` : '-';
+        }
+
+        // Update bandwidth estimation display
+        const bw = results.bandwidthEstimate;
+        if (bw) {
+            const trendArrows = { 'stable': '→', 'improving': '↑', 'degrading': '↓' };
+            if (elements.downloadTrend) {
+                elements.downloadTrend.textContent = `${trendArrows[bw.downloadTrend] || '→'} ${bw.downloadTrend}`;
+                elements.downloadTrend.className = `bandwidth-trend ${bw.downloadTrend}`;
+            }
+            if (elements.downloadPeak) elements.downloadPeak.textContent = `${bw.downloadPeakMbps.toFixed(1)} Mbps`;
+            if (elements.downloadSustained) elements.downloadSustained.textContent = `${bw.downloadSustainedMbps.toFixed(1)} Mbps`;
+            if (elements.downloadVariability) elements.downloadVariability.textContent = `±${(bw.downloadVariability * 100).toFixed(0)}%`;
+            if (elements.uploadTrend) {
+                elements.uploadTrend.textContent = `${trendArrows[bw.uploadTrend] || '→'} ${bw.uploadTrend}`;
+                elements.uploadTrend.className = `bandwidth-trend ${bw.uploadTrend}`;
+            }
+            if (elements.uploadPeak) elements.uploadPeak.textContent = `${bw.uploadPeakMbps.toFixed(1)} Mbps`;
+            if (elements.uploadSustained) elements.uploadSustained.textContent = `${bw.uploadSustainedMbps.toFixed(1)} Mbps`;
+            if (elements.uploadVariability) elements.uploadVariability.textContent = `±${(bw.uploadVariability * 100).toFixed(0)}%`;
+        }
+
+        // Update test confidence display
+        const tc = results.testConfidence;
+        if (tc) {
+            if (elements.confidenceBadge) {
+                const labels = { 'high': 'High Confidence', 'medium': 'Medium Confidence', 'low': 'Low Confidence' };
+                elements.confidenceBadge.textContent = labels[tc.overall] || 'Unknown';
+                elements.confidenceBadge.className = `confidence-badge ${tc.overall}`;
+            }
         }
 
         // Update timestamp
