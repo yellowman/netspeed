@@ -128,7 +128,6 @@
         elements.uploadVariability = document.getElementById('uploadVariability');
 
         // Network quality score
-        elements.gaugeFill = document.getElementById('gaugeFill');
         elements.overallScore = document.getElementById('overallScore');
         elements.scoreGrade = document.getElementById('scoreGrade');
         elements.scoreDescription = document.getElementById('scoreDescription');
@@ -1633,22 +1632,6 @@
         }
 
         console.log('Updating network quality display:', score);
-
-        // Update gauge - use setAttribute for SVG attributes
-        if (elements.gaugeFill) {
-            // Circle circumference is 2*PI*50 = 314
-            const circumference = 314;
-            const offset = circumference - (score.overall / 100) * circumference;
-            // Use setAttribute for SVG elements - more reliable than style property
-            elements.gaugeFill.setAttribute('stroke-dashoffset', offset);
-
-            // Set grade class for color
-            elements.gaugeFill.setAttribute('class', 'gauge-fill');
-            const gradeClass = score.grade.toLowerCase().replace('+', '-plus');
-            elements.gaugeFill.classList.add(`grade-${gradeClass}`);
-        } else {
-            console.warn('gaugeFill element not found');
-        }
 
         if (elements.overallScore) {
             elements.overallScore.textContent = score.overall;
