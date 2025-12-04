@@ -188,6 +188,14 @@
             });
         });
 
+        // Latency details toggles
+        document.querySelectorAll('.latency-details-toggle').forEach(toggle => {
+            toggle.addEventListener('click', () => {
+                const isExpanded = toggle.getAttribute('aria-expanded') === 'true';
+                toggle.setAttribute('aria-expanded', !isExpanded);
+            });
+        });
+
         // Learn more modal
         elements.learnMoreBtn?.addEventListener('click', () => openModal('learnMoreModal'));
         elements.modalClose?.addEventListener('click', closeModals);
@@ -478,11 +486,21 @@
             'download': 'Testing download speed...',
             'upload': 'Testing upload speed...',
             'loaded-latency': 'Measuring loaded latency...',
-            'packet-loss': 'Testing packet loss...'
+            'packet-loss': 'Packet Loss Test (0/1000)'
         };
 
         if (elements.progressText) {
             elements.progressText.textContent = phaseLabels[phase] || 'Running tests...';
+        }
+
+        // Update main status bar for phase changes
+        if (elements.progressStatus) {
+            elements.progressStatus.textContent = phaseLabels[phase] || 'Running tests...';
+        }
+
+        // Reset progress bar at start of new phase
+        if (elements.progressFill && phase === 'packet-loss') {
+            elements.progressFill.style.width = '0%';
         }
     }
 
@@ -572,11 +590,12 @@
                 if (elements.unloadedMedian) elements.unloadedMedian.textContent = `${median.toFixed(1)} ms`;
                 if (elements.unloadedMax) elements.unloadedMax.textContent = `${max.toFixed(1)} ms`;
 
-                // Update box plot
+                // Update box plot - use parent width for reliability
                 if (elements.unloadedLatencyBoxPlot && values.length >= 2) {
+                    const parentWidth = elements.unloadedLatencyBoxPlot.parentElement?.offsetWidth || 300;
                     Charts.boxPlot(elements.unloadedLatencyBoxPlot, values, {
-                        width: elements.unloadedLatencyBoxPlot.clientWidth || 280,
-                        height: 50,
+                        width: Math.max(200, parentWidth - 16),
+                        height: 60,
                         barColor: 'var(--color-latency)',
                         unit: 'ms'
                     });
@@ -602,11 +621,12 @@
                 elements.downloadLatencyTable.appendChild(row);
             }
 
-            // Update box plot
+            // Update box plot - use parent width for reliability
             if (elements.downloadLatencyBoxPlot && values.length >= 2) {
+                const parentWidth = elements.downloadLatencyBoxPlot.parentElement?.offsetWidth || 300;
                 Charts.boxPlot(elements.downloadLatencyBoxPlot, values, {
-                    width: elements.downloadLatencyBoxPlot.clientWidth || 280,
-                    height: 50,
+                    width: Math.max(200, parentWidth - 16),
+                    height: 60,
                     barColor: 'var(--color-download)',
                     unit: 'ms'
                 });
@@ -631,11 +651,12 @@
                 elements.uploadLatencyTable.appendChild(row);
             }
 
-            // Update box plot
+            // Update box plot - use parent width for reliability
             if (elements.uploadLatencyBoxPlot && values.length >= 2) {
+                const parentWidth = elements.uploadLatencyBoxPlot.parentElement?.offsetWidth || 300;
                 Charts.boxPlot(elements.uploadLatencyBoxPlot, values, {
-                    width: elements.uploadLatencyBoxPlot.clientWidth || 280,
-                    height: 50,
+                    width: Math.max(200, parentWidth - 16),
+                    height: 60,
                     barColor: 'var(--color-upload)',
                     unit: 'ms'
                 });
@@ -649,14 +670,20 @@
      * not the loss percentage (which would be misleadingly high)
      */
     function handlePacketLossProgress(sent, total, received) {
-        // Show progress as sent/total (not received/sent, which is misleading during test)
-        if (elements.packetLossBadge) {
-            elements.packetLossBadge.textContent = `${sent}/${total}`;
+        // Use main progress bar for packet loss test
+        if (elements.progressFill) {
+            const percent = (sent / total) * 100;
+            elements.progressFill.style.width = `${percent}%`;
         }
 
-        // Progress bar shows how far through the test we are (sent packets)
-        if (elements.packetLossFill) {
-            elements.packetLossFill.style.width = `${(sent / total) * 100}%`;
+        // Update main status text with packet loss progress
+        if (elements.progressStatus) {
+            elements.progressStatus.textContent = `Packet Loss Test (${sent}/${total})`;
+        }
+
+        // Show progress as sent/total in badge
+        if (elements.packetLossBadge) {
+            elements.packetLossBadge.textContent = `${sent}/${total}`;
         }
 
         // Don't show loss percentage during test - it's misleading since acks are still arriving
