@@ -36,6 +36,8 @@ const SpeedTest = (function() {
     let abortController = null;
     let isRunning = false;
     let isPaused = false;
+    let timingFallbackCount = 0;
+    let resourceTimingUsed = false;
 
     // Results storage
     let results = {
@@ -155,9 +157,11 @@ const SpeedTest = (function() {
             if (bodyTime < 1 && timing.requestStart > 0) {
                 durationMs = timing.responseEnd - timing.requestStart;
                 timingSource = 'resource-timing-full';
+                resourceTimingUsed = true;
             } else if (bodyTime >= 1) {
                 durationMs = bodyTime;
                 timingSource = 'resource-timing';
+                resourceTimingUsed = true;
             }
             // If bodyTime < 1 and requestStart is 0, fall through to manual timing
         }
@@ -166,6 +170,7 @@ const SpeedTest = (function() {
             // Fallback: use manual timing (includes connection overhead)
             durationMs = manualEnd - manualStart;
             timingSource = 'manual';
+            timingFallbackCount++;
             console.log('Download timing fallback:', { profile, runIndex, timing, manualMs: durationMs });
             if (callbacks.onTimingWarning) {
                 callbacks.onTimingWarning('download', 'Resource Timing API unavailable');
@@ -228,6 +233,7 @@ const SpeedTest = (function() {
             if (serverDur && serverDur.duration > 0) {
                 durationMs = serverDur.duration;
                 timingSource = 'server-timing';
+                resourceTimingUsed = true;
             }
         }
 
@@ -235,12 +241,14 @@ const SpeedTest = (function() {
         if (!durationMs && timing && timing.requestStart > 0 && timing.responseStart > 0) {
             durationMs = timing.responseStart - timing.requestStart;
             timingSource = 'resource-timing';
+            resourceTimingUsed = true;
         }
 
         // Last fallback: manual timing
         if (!durationMs) {
             durationMs = manualEnd - manualStart;
             timingSource = 'manual';
+            timingFallbackCount++;
             if (callbacks.onTimingWarning) {
                 callbacks.onTimingWarning('upload', 'Resource Timing API unavailable');
             }
@@ -295,14 +303,17 @@ const SpeedTest = (function() {
             // Network time: from request sent to first byte received
             rttMs = timing.responseStart - timing.requestStart;
             timingSource = 'resource-timing';
+            resourceTimingUsed = true;
         } else if (timing && timing.fetchStart > 0 && timing.responseEnd > 0) {
             // Fallback: total fetch time (includes more overhead but still from timing API)
             rttMs = timing.responseEnd - timing.fetchStart;
             timingSource = 'fetch-timing';
+            resourceTimingUsed = true;
         } else {
             // Last resort: manual timing
             rttMs = manualEnd - manualStart;
             timingSource = 'manual';
+            timingFallbackCount++;
             if (callbacks.onTimingWarning) {
                 callbacks.onTimingWarning('latency', 'Resource Timing API unavailable');
             }
@@ -1294,11 +1305,18 @@ const SpeedTest = (function() {
         const connectionStable = packetLoss !== null && !packetLoss.unavailable;
         if (!connectionStable) warnings.push('Packet loss test incomplete');
 
-        // Overall score (3 factors: sample count, variability, connection stability)
+        // Timing accuracy
+        const timingAccurate = resourceTimingUsed && timingFallbackCount < 5;
+        if (!timingAccurate && timingFallbackCount > 0) {
+            warnings.push('Some timing measurements used fallback methods');
+        }
+
+        // Overall score (4 factors: sample count, variability, connection stability, timing)
         let score = 100;
         if (!sampleAdequate) score -= 25;
         if (!cvAcceptable) score -= 35;
         if (!connectionStable) score -= 20;
+        if (!timingAccurate) score -= 10;
 
         let overall;
         if (score >= 80) overall = 'high';
@@ -1311,6 +1329,11 @@ const SpeedTest = (function() {
             metrics: {
                 sampleCount: { download: dlCount, upload: ulCount, latency: latCount, adequate: sampleAdequate },
                 coefficientOfVariation: { download: dlCV, upload: ulCV, latency: latCV, acceptable: cvAcceptable },
+                timingAccuracy: {
+                    resourceTimingUsed: resourceTimingUsed,
+                    fallbackCount: timingFallbackCount,
+                    accurate: timingAccurate
+                },
                 connectionStability: {
                     packetTestCompleted: connectionStable,
                     stable: connectionStable
@@ -1337,23 +1360,35 @@ const SpeedTest = (function() {
             let availableOutgoingBitrate;
             let currentRoundTripTime;
 
+            // Collect candidate IDs for lookups
+            const candidateMap = new Map();
+
             stats.forEach(report => {
-                if (report.type === 'candidate-pair' && report.nominated) {
+                // First pass: collect all candidates
+                if (report.type === 'local-candidate' || report.type === 'remote-candidate') {
+                    candidateMap.set(report.id, report);
+                }
+            });
+
+            stats.forEach(report => {
+                // Look for the active candidate-pair (nominated or succeeded state)
+                if (report.type === 'candidate-pair' && (report.nominated || report.state === 'succeeded')) {
                     if (report.currentRoundTripTime !== undefined) {
                         currentRoundTripTime = report.currentRoundTripTime * 1000;
                     }
                     if (report.availableOutgoingBitrate !== undefined) {
                         availableOutgoingBitrate = report.availableOutgoingBitrate;
                     }
-                }
-
-                if (report.type === 'local-candidate') {
-                    localCandidateType = report.candidateType;
-                    if (report.protocol) protocol = report.protocol;
-                }
-
-                if (report.type === 'remote-candidate') {
-                    remoteCandidateType = report.candidateType;
+                    // Get candidate types from referenced candidates
+                    const localCandidate = candidateMap.get(report.localCandidateId);
+                    const remoteCandidate = candidateMap.get(report.remoteCandidateId);
+                    if (localCandidate) {
+                        localCandidateType = localCandidate.candidateType;
+                        if (localCandidate.protocol) protocol = localCandidate.protocol;
+                    }
+                    if (remoteCandidate) {
+                        remoteCandidateType = remoteCandidate.candidateType;
+                    }
                 }
 
                 if (report.type === 'data-channel') {
@@ -1402,6 +1437,8 @@ const SpeedTest = (function() {
         isRunning = true;
         isPaused = false;
         abortController = new AbortController();
+        timingFallbackCount = 0;
+        resourceTimingUsed = false;
 
         // Increase Resource Timing buffer to handle all our requests
         // Default is 150-250 entries which may not be enough
