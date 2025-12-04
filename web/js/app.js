@@ -1014,12 +1014,15 @@
             .filter(s => s.profile === profile)
             .map(s => s.mbps);
 
-        // Update box plot
+        // Update box plot - use card width minus padding, or fallback to 280
         const boxPlotContainer = card.querySelector('.test-box-plot');
         if (boxPlotContainer && profileSamples.length >= 2) {
+            // Use the card's width for better responsiveness
+            const cardWidth = card.offsetWidth || 320;
+            const chartWidth = Math.max(200, cardWidth - 48); // 48px for padding
             const stats = Charts.boxPlot(boxPlotContainer, profileSamples, {
-                width: boxPlotContainer.clientWidth || 280,
-                height: 50,
+                width: chartWidth,
+                height: 60,
                 barColor: type === 'download' ? 'var(--color-download)' : 'var(--color-upload)',
                 unit: 'Mbps'
             });
@@ -1071,16 +1074,21 @@
         card.dataset.profile = profile;
 
         card.innerHTML = `
-            <div class="accordion-header">
-                <div class="accordion-title">
-                    <span>${sizeLabel} ${type} test</span>
+            <div class="test-card-header">
+                <div class="test-card-info">
+                    <span class="test-card-title">${sizeLabel} ${type} test</span>
                     <span class="run-count">(0/${totalRuns})</span>
                 </div>
                 <span class="test-speed"><span class="placeholder"></span></span>
+            </div>
+            <div class="test-card-chart">
+                <div class="test-box-plot" data-tooltip-target="boxplot"></div>
+            </div>
+            <div class="accordion-header">
+                <span class="accordion-label">Details</span>
                 <span class="accordion-icon"></span>
             </div>
             <div class="accordion-content">
-                <div class="test-box-plot" data-tooltip-target="boxplot"></div>
                 <div class="test-stats"></div>
                 <div class="test-chart-label">Speed over time</div>
                 <div class="test-chart"></div>
