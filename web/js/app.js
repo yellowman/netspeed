@@ -30,17 +30,20 @@
      * Initialize the application
      */
     function init() {
+        console.log('App init started');
         cacheElements();
         setupEventListeners();
         setupTheme();
 
         // Check if viewing shared results
         const isSharedView = checkForSharedResults();
+        console.log('isSharedView:', isSharedView);
 
         // Load server info (unless viewing shared results)
         if (!isSharedView) {
             loadInitialData();
         }
+        console.log('App init complete');
     }
 
     /**
@@ -1434,13 +1437,22 @@
      * Check URL for shared results and display them
      */
     function checkForSharedResults() {
+        console.log('checkForSharedResults called, URL:', window.location.href);
         const params = new URLSearchParams(window.location.search);
         const encoded = params.get('r');
+        console.log('Encoded param:', encoded);
 
-        if (!encoded) return false;
+        if (!encoded) {
+            console.log('No r parameter found');
+            return false;
+        }
 
         const results = decodeResultsFromURL(encoded);
-        if (!results) return false;
+        console.log('Decoded results:', results);
+        if (!results) {
+            console.log('Failed to decode results');
+            return false;
+        }
 
         // Display shared results
         displaySharedResults(results);
