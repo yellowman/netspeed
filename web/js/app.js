@@ -19,6 +19,7 @@
         latencySamples: [],
         testStartTime: null,
         timingWarningShown: false,
+        timingFallbackCount: 0,
         mapRendered: false
     };
 
@@ -328,6 +329,7 @@
         state.isRunning = true;
         state.testStartTime = Date.now();
         state.timingWarningShown = false;
+        state.timingFallbackCount = 0;
         resetResults();
         updateUIState('running');
 
@@ -776,12 +778,14 @@
     }
 
     /**
-     * Handle timing API warnings - show toast once per test run
+     * Handle timing API warnings - show toast only after multiple fallbacks
      */
     function handleTimingWarning(type, message) {
-        if (!state.timingWarningShown) {
+        state.timingFallbackCount++;
+        // Only show warning if we've had multiple fallbacks (not just initial timing hiccups)
+        if (!state.timingWarningShown && state.timingFallbackCount >= 5) {
             state.timingWarningShown = true;
-            showToast('Resource Timing API unavailable - latency and bandwidth measurements may be less accurate', 5000);
+            showToast('Resource Timing API limited - some measurements using fallback timing', 5000);
         }
     }
 
