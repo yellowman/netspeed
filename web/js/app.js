@@ -1347,66 +1347,49 @@
 
     /**
      * Encode results into a compact URL-safe string
-     * Format: {base}~{dl_samples}~{ul_samples}~{lat_samples}[~server]
-     * - Base data: v.d.u.l.ld.lu.j.p.rtt.ns.t.q (all base36)
-     * - Samples: comma-separated base36 values for sparklines/box plots
+     * Format: {base}-{dl}-{ul}-{latU}-{latD}-{latL}[-{server}]
+     * All values base36, sections separated by - (URL-safe)
      */
     function encodeResultsForURL() {
         if (!state.summary) return null;
 
-        const d = Math.round(state.summary.downloadMbps * 10);
-        const u = Math.round(state.summary.uploadMbps * 10);
-        const l = Math.round(state.summary.latencyUnloadedMs * 10);
-        const ld = Math.round((state.summary.latencyDownloadMs || 0) * 10);
-        const lu = Math.round((state.summary.latencyUploadMs || 0) * 10);
-        const j = Math.round(state.summary.jitterMs * 10);
-        const p = Math.round(state.summary.packetLossPercent * 100);
-        const rtt = Math.round((state.packetLoss?.rttStatsMs?.median || 0) * 10);
-        const ns = state.networkScore?.overall || 0;
-        const t = Math.floor(Date.now() / 1000);
-
-        // Pack quality grades into single number (each 0-4, so max 4*25+4*5+4=124)
+        // Pack quality grades: each 0-4, packed as qs*25 + qg*5 + qv
         let q = 0;
         if (state.quality) {
-            const qs = encodeGrade(state.quality.videoStreaming);
-            const qg = encodeGrade(state.quality.gaming);
-            const qv = encodeGrade(state.quality.videoChatting);
-            q = qs * 25 + qg * 5 + qv;
+            q = encodeGrade(state.quality.videoStreaming) * 25 +
+                encodeGrade(state.quality.gaming) * 5 +
+                encodeGrade(state.quality.videoChatting);
         }
 
-        // Build base data section
-        const baseData = [
-            '4',  // format version
-            d.toString(36),
-            u.toString(36),
-            l.toString(36),
-            ld.toString(36),
-            lu.toString(36),
-            j.toString(36),
-            p.toString(36),
-            rtt.toString(36),
-            ns.toString(36),
-            t.toString(36),
-            q.toString(36)
-        ].join('.');
+        // Base data: d.u.l.j.p.rtt.ns.t.q (all *10 except ns, t, q)
+        const base = [
+            Math.round(state.summary.downloadMbps * 10),
+            Math.round(state.summary.uploadMbps * 10),
+            Math.round(state.summary.latencyUnloadedMs * 10),
+            Math.round(state.summary.jitterMs * 10),
+            Math.round(state.summary.packetLossPercent * 100),
+            Math.round((state.packetLoss?.rttStatsMs?.median || 0) * 10),
+            state.networkScore?.overall || 0,
+            Math.floor(Date.now() / 1000),
+            q
+        ].map(v => v.toString(36)).join('.');
 
-        // Encode sample arrays (downsample if needed, max 20 points)
-        const dlSamples = encodeSamples(state.downloadSamples.map(s => s.mbps), 20);
-        const ulSamples = encodeSamples(state.uploadSamples.map(s => s.mbps), 20);
-        const latSamples = encodeSamples(
-            state.latencySamples.filter(s => s.phase === 'unloaded').map(s => s.rttMs),
-            20
-        );
+        // Sample arrays (max 15 points each for compact URLs)
+        const dl = encodeSamples(state.downloadSamples.map(s => s.mbps), 15);
+        const ul = encodeSamples(state.uploadSamples.map(s => s.mbps), 15);
+        const latU = encodeSamples(state.latencySamples.filter(s => s.phase === 'unloaded').map(s => s.rttMs), 15);
+        const latD = encodeSamples(state.latencySamples.filter(s => s.phase === 'download').map(s => s.rttMs), 5);
+        const latL = encodeSamples(state.latencySamples.filter(s => s.phase === 'upload').map(s => s.rttMs), 5);
 
-        // Build sections with ~ separator
-        const sections = [baseData, dlSamples, ulSamples, latSamples];
+        // Build with - separator (URL-safe, no encoding needed)
+        const parts = [base, dl, ul, latU, latD, latL];
 
         // Add server city if available
         if (state.meta?.server?.city) {
-            sections.push(encodeURIComponent(state.meta.server.city));
+            parts.push(encodeURIComponent(state.meta.server.city));
         }
 
-        return sections.join('~');
+        return parts.join('-');
     }
 
     /**
@@ -1489,28 +1472,26 @@
 
     /**
      * Decode results from URL parameter
-     * Format: {base}~{dl_samples}~{ul_samples}~{lat_samples}[~server]
+     * Format: {base}-{dl}-{ul}-{latU}-{latD}-{latL}[-{server}]
      */
     function decodeResultsFromURL(encoded) {
         try {
-            const sections = encoded.split('~');
-            if (sections.length < 4) return null;
+            const sections = encoded.split('-');
+            if (sections.length < 6) return null;
 
-            // Parse base data
+            // Parse base data: d.u.l.j.p.rtt.ns.t.q
             const parts = sections[0].split('.');
-            if (parts.length < 12 || parts[0] !== '4') return null;
+            if (parts.length < 9) return null;
 
-            const d = parseInt(parts[1], 36) / 10;
-            const u = parseInt(parts[2], 36) / 10;
-            const l = parseInt(parts[3], 36) / 10;
-            const ld = parseInt(parts[4], 36) / 10;
-            const lu = parseInt(parts[5], 36) / 10;
-            const j = parseInt(parts[6], 36) / 10;
-            const p = parseInt(parts[7], 36) / 100;
-            const rtt = parseInt(parts[8], 36) / 10;
-            const ns = parseInt(parts[9], 36);
-            const t = parseInt(parts[10], 36) * 1000;
-            const q = parseInt(parts[11], 36);
+            const d = parseInt(parts[0], 36) / 10;
+            const u = parseInt(parts[1], 36) / 10;
+            const l = parseInt(parts[2], 36) / 10;
+            const j = parseInt(parts[3], 36) / 10;
+            const p = parseInt(parts[4], 36) / 100;
+            const rtt = parseInt(parts[5], 36) / 10;
+            const ns = parseInt(parts[6], 36);
+            const t = parseInt(parts[7], 36) * 1000;
+            const q = parseInt(parts[8], 36);
 
             const qs = Math.floor(q / 25);
             const qg = Math.floor((q % 25) / 5);
@@ -1519,24 +1500,30 @@
             // Decode sample arrays
             const downloadSamples = decodeSamples(sections[1]);
             const uploadSamples = decodeSamples(sections[2]);
-            const latencySamples = decodeSamples(sections[3]);
+            const latencyUnloaded = decodeSamples(sections[3]);
+            const latencyDownload = decodeSamples(sections[4]);
+            const latencyUpload = decodeSamples(sections[5]);
 
             // Server city (if present)
             let server = null;
-            if (sections.length > 4) {
+            if (sections.length > 6) {
                 try {
-                    server = decodeURIComponent(sections[4]);
+                    server = decodeURIComponent(sections.slice(6).join('-'));
                 } catch (e) {
-                    server = sections[4];
+                    server = sections.slice(6).join('-');
                 }
             }
+
+            // Compute latency medians from samples
+            const latencyDownloadMs = latencyDownload.length > 0 ? Charts.median(latencyDownload) : 0;
+            const latencyUploadMs = latencyUpload.length > 0 ? Charts.median(latencyUpload) : 0;
 
             return {
                 downloadMbps: d,
                 uploadMbps: u,
                 latencyMs: l,
-                latencyDownloadMs: ld,
-                latencyUploadMs: lu,
+                latencyDownloadMs: latencyDownloadMs,
+                latencyUploadMs: latencyUploadMs,
                 jitterMs: j,
                 packetLossPercent: p,
                 rttMs: rtt,
@@ -1550,7 +1537,9 @@
                 },
                 downloadSamples: downloadSamples,
                 uploadSamples: uploadSamples,
-                latencySamples: latencySamples
+                latencyUnloaded: latencyUnloaded,
+                latencyDownload: latencyDownload,
+                latencyUpload: latencyUpload
             };
         } catch (e) {
             console.error('Failed to decode shared results:', e);
@@ -1617,71 +1606,79 @@
         }
 
         // Render sparklines if sample data available
-        if (results.downloadSamples && results.downloadSamples.length >= 2) {
-            if (elements.downloadSparkline) {
-                const width = elements.downloadSparkline.clientWidth || 150;
-                Charts.sparkline(elements.downloadSparkline, results.downloadSamples, {
-                    width: width,
-                    height: 32,
-                    strokeColor: 'var(--color-download)',
-                    fillColor: 'var(--color-download)',
-                    fillOpacity: 0.15,
-                    strokeWidth: 1.5,
-                    dotRadius: 2
-                });
-            }
+        if (results.downloadSamples?.length >= 2 && elements.downloadSparkline) {
+            const width = elements.downloadSparkline.clientWidth || 150;
+            Charts.sparkline(elements.downloadSparkline, results.downloadSamples, {
+                width, height: 32,
+                strokeColor: 'var(--color-download)',
+                fillColor: 'var(--color-download)',
+                fillOpacity: 0.15, strokeWidth: 1.5, dotRadius: 2
+            });
         }
 
-        if (results.uploadSamples && results.uploadSamples.length >= 2) {
-            if (elements.uploadSparkline) {
-                const width = elements.uploadSparkline.clientWidth || 150;
-                Charts.sparkline(elements.uploadSparkline, results.uploadSamples, {
-                    width: width,
-                    height: 32,
-                    strokeColor: 'var(--color-upload)',
-                    fillColor: 'var(--color-upload)',
-                    fillOpacity: 0.15,
-                    strokeWidth: 1.5,
-                    dotRadius: 2
-                });
-            }
+        if (results.uploadSamples?.length >= 2 && elements.uploadSparkline) {
+            const width = elements.uploadSparkline.clientWidth || 150;
+            Charts.sparkline(elements.uploadSparkline, results.uploadSamples, {
+                width, height: 32,
+                strokeColor: 'var(--color-upload)',
+                fillColor: 'var(--color-upload)',
+                fillOpacity: 0.15, strokeWidth: 1.5, dotRadius: 2
+            });
         }
 
-        // Render latency box plot if sample data available
-        if (results.latencySamples && results.latencySamples.length >= 2) {
+        // Render unloaded latency box plot
+        if (results.latencyUnloaded?.length >= 2) {
             if (elements.unloadedLatencyBoxPlot) {
-                const parentWidth = elements.unloadedLatencyBoxPlot.parentElement?.offsetWidth || 300;
-                Charts.boxPlot(elements.unloadedLatencyBoxPlot, results.latencySamples, {
-                    width: Math.max(200, parentWidth - 16),
-                    height: 60,
-                    barColor: 'var(--color-latency)',
-                    unit: 'ms'
+                const w = elements.unloadedLatencyBoxPlot.parentElement?.offsetWidth || 300;
+                Charts.boxPlot(elements.unloadedLatencyBoxPlot, results.latencyUnloaded, {
+                    width: Math.max(200, w - 16), height: 60,
+                    barColor: 'var(--color-latency)', unit: 'ms'
                 });
             }
-
-            // Update latency stats from samples
-            const latMin = Math.min(...results.latencySamples);
-            const latMax = Math.max(...results.latencySamples);
-            const latMedian = Charts.median(results.latencySamples);
-            if (elements.unloadedMin) elements.unloadedMin.textContent = `${latMin.toFixed(1)} ms`;
-            if (elements.unloadedMedian) elements.unloadedMedian.textContent = `${latMedian.toFixed(1)} ms`;
-            if (elements.unloadedMax) elements.unloadedMax.textContent = `${latMax.toFixed(1)} ms`;
-            if (elements.unloadedLatencyCount) {
-                elements.unloadedLatencyCount.textContent = `${results.latencySamples.length}`;
+            const min = Math.min(...results.latencyUnloaded);
+            const max = Math.max(...results.latencyUnloaded);
+            const med = Charts.median(results.latencyUnloaded);
+            if (elements.unloadedMin) elements.unloadedMin.textContent = `${min.toFixed(1)} ms`;
+            if (elements.unloadedMedian) elements.unloadedMedian.textContent = `${med.toFixed(1)} ms`;
+            if (elements.unloadedMax) elements.unloadedMax.textContent = `${max.toFixed(1)} ms`;
+            if (elements.unloadedLatencyCount) elements.unloadedLatencyCount.textContent = results.latencyUnloaded.length;
+            if (elements.unloadedLatencySummary) {
+                elements.unloadedLatencySummary.textContent = `${min.toFixed(1)} - ${max.toFixed(1)} ms`;
             }
         }
 
-        // Update latency summaries for download/upload phases
-        if (results.latencyDownloadMs > 0 && elements.downloadLatencySummary) {
-            elements.downloadLatencySummary.textContent = `${results.latencyDownloadMs.toFixed(1)} ms`;
-        }
-        if (results.latencyUploadMs > 0 && elements.uploadLatencySummary) {
-            elements.uploadLatencySummary.textContent = `${results.latencyUploadMs.toFixed(1)} ms`;
+        // Render download latency box plot
+        if (results.latencyDownload?.length >= 2) {
+            if (elements.downloadLatencyBoxPlot) {
+                const w = elements.downloadLatencyBoxPlot.parentElement?.offsetWidth || 300;
+                Charts.boxPlot(elements.downloadLatencyBoxPlot, results.latencyDownload, {
+                    width: Math.max(200, w - 16), height: 60,
+                    barColor: 'var(--color-download)', unit: 'ms'
+                });
+            }
+            const min = Math.min(...results.latencyDownload);
+            const max = Math.max(...results.latencyDownload);
+            if (elements.downloadLatencyCount) elements.downloadLatencyCount.textContent = `${results.latencyDownload.length}/5`;
+            if (elements.downloadLatencySummary) {
+                elements.downloadLatencySummary.textContent = `${min.toFixed(1)} - ${max.toFixed(1)} ms`;
+            }
         }
 
-        // Update unloaded latency summary
-        if (elements.unloadedLatencySummary) {
-            elements.unloadedLatencySummary.textContent = `${results.latencyMs.toFixed(1)} ms`;
+        // Render upload latency box plot
+        if (results.latencyUpload?.length >= 2) {
+            if (elements.uploadLatencyBoxPlot) {
+                const w = elements.uploadLatencyBoxPlot.parentElement?.offsetWidth || 300;
+                Charts.boxPlot(elements.uploadLatencyBoxPlot, results.latencyUpload, {
+                    width: Math.max(200, w - 16), height: 60,
+                    barColor: 'var(--color-upload)', unit: 'ms'
+                });
+            }
+            const min = Math.min(...results.latencyUpload);
+            const max = Math.max(...results.latencyUpload);
+            if (elements.uploadLatencyCount) elements.uploadLatencyCount.textContent = `${results.latencyUpload.length}/5`;
+            if (elements.uploadLatencySummary) {
+                elements.uploadLatencySummary.textContent = `${min.toFixed(1)} - ${max.toFixed(1)} ms`;
+            }
         }
 
         // Update packet loss display
@@ -1692,13 +1689,10 @@
             elements.rttMedian.textContent = `${results.rttMs.toFixed(1)} ms`;
         }
 
-        // Update network quality score if available
+        // Update network quality score
         if (results.networkScore > 0) {
-            if (elements.overallScore) {
-                elements.overallScore.textContent = results.networkScore;
-            }
+            if (elements.overallScore) elements.overallScore.textContent = results.networkScore;
             if (elements.scoreGrade) {
-                // Derive grade from score
                 let grade = 'Poor';
                 if (results.networkScore >= 90) grade = 'Excellent';
                 else if (results.networkScore >= 75) grade = 'Good';
@@ -1732,7 +1726,6 @@
             elements.startButton.textContent = 'Run New Test';
         }
 
-        // Show a notice that this is a shared result
         showToast('Viewing shared speed test results', 3000);
     }
 
