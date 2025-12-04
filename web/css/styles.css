@@ -1230,11 +1230,101 @@ button {
     color: var(--color-text-primary);
 }
 
+/* Latency Items - restructured for visible graphs */
+.latency-item {
+    border-bottom: 1px solid var(--color-border-subtle);
+    padding-bottom: var(--spacing-md);
+    margin-bottom: var(--spacing-md);
+}
+
+.latency-item:last-child {
+    border-bottom: none;
+    padding-bottom: 0;
+    margin-bottom: 0;
+}
+
+.latency-item-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: var(--spacing-sm) 0;
+}
+
+.latency-item-info {
+    display: flex;
+    align-items: center;
+    gap: var(--spacing-sm);
+}
+
+.latency-item-title {
+    font-size: 0.875rem;
+    font-weight: 500;
+    color: var(--color-text-primary);
+}
+
+.latency-item-badge {
+    font-size: 0.75rem;
+    font-weight: 500;
+    padding: var(--spacing-xs) var(--spacing-sm);
+    background: var(--color-bg-tertiary);
+    border-radius: var(--radius-full);
+    color: var(--color-text-secondary);
+}
+
+.latency-item-value {
+    font-size: 1rem;
+    font-weight: 600;
+    color: var(--color-text-primary);
+    font-variant-numeric: tabular-nums;
+}
+
+.latency-item-chart {
+    padding: var(--spacing-sm) 0;
+}
+
 /* Latency Box Plot */
 .latency-box-plot {
-    margin: var(--spacing-md) 0;
-    min-height: 50px;
+    min-height: 60px;
     cursor: help;
+}
+
+.latency-details-toggle {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    width: 100%;
+    padding: var(--spacing-sm) var(--spacing-md);
+    background: var(--color-bg-tertiary);
+    border: none;
+    border-radius: var(--radius-sm);
+    cursor: pointer;
+    font-size: 0.75rem;
+    color: var(--color-text-tertiary);
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+}
+
+.latency-details-toggle:hover {
+    background: var(--color-bg-secondary);
+}
+
+.latency-details-toggle .accordion-chevron {
+    width: 14px;
+    height: 14px;
+    transition: transform var(--transition-fast);
+}
+
+.latency-details-toggle[aria-expanded="true"] .accordion-chevron {
+    transform: rotate(180deg);
+}
+
+.latency-details-content {
+    display: none;
+    padding-top: var(--spacing-md);
+}
+
+.latency-details-toggle[aria-expanded="true"] + .latency-details-content {
+    display: block;
 }
 
 /* ========================================

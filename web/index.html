@@ -285,17 +285,24 @@
                     </div>
                     <div class="card-body">
                         <!-- Unloaded Latency -->
-                        <div class="accordion" id="unloadedLatencyAccordion">
-                            <button class="accordion-header" aria-expanded="false">
-                                <span class="accordion-title">Unloaded latency</span>
-                                <span class="accordion-badge" id="unloadedLatencyCount">0/20</span>
-                                <span class="accordion-summary" id="unloadedLatencySummary"><span class="placeholder"></span></span>
+                        <div class="latency-item" id="unloadedLatencyAccordion">
+                            <div class="latency-item-header">
+                                <div class="latency-item-info">
+                                    <span class="latency-item-title">Unloaded latency</span>
+                                    <span class="latency-item-badge" id="unloadedLatencyCount">0/20</span>
+                                </div>
+                                <span class="latency-item-value" id="unloadedLatencySummary"><span class="placeholder"></span></span>
+                            </div>
+                            <div class="latency-item-chart">
+                                <div class="latency-box-plot" id="unloadedLatencyBoxPlot" data-tooltip-target="boxplot"></div>
+                            </div>
+                            <button class="latency-details-toggle" aria-expanded="false">
+                                <span>Details</span>
                                 <svg class="accordion-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                                     <polyline points="6 9 12 15 18 9"/>
                                 </svg>
                             </button>
-                            <div class="accordion-content">
-                                <div class="latency-box-plot" id="unloadedLatencyBoxPlot" data-tooltip-target="boxplot"></div>
+                            <div class="latency-details-content">
                                 <div class="latency-chart-container" id="unloadedLatencyChart"></div>
                                 <div class="latency-stats">
                                     <div class="stat-item">
@@ -315,17 +322,24 @@
                         </div>
 
                         <!-- Latency During Download -->
-                        <div class="accordion" id="downloadLatencyAccordion">
-                            <button class="accordion-header" aria-expanded="false">
-                                <span class="accordion-title">Latency during download</span>
-                                <span class="accordion-badge" id="downloadLatencyCount">0/5</span>
-                                <span class="accordion-summary" id="downloadLatencySummary"><span class="placeholder"></span></span>
+                        <div class="latency-item" id="downloadLatencyAccordion">
+                            <div class="latency-item-header">
+                                <div class="latency-item-info">
+                                    <span class="latency-item-title">Latency during download</span>
+                                    <span class="latency-item-badge" id="downloadLatencyCount">0/5</span>
+                                </div>
+                                <span class="latency-item-value" id="downloadLatencySummary"><span class="placeholder"></span></span>
+                            </div>
+                            <div class="latency-item-chart">
+                                <div class="latency-box-plot" id="downloadLatencyBoxPlot" data-tooltip-target="boxplot"></div>
+                            </div>
+                            <button class="latency-details-toggle" aria-expanded="false">
+                                <span>Details</span>
                                 <svg class="accordion-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                                     <polyline points="6 9 12 15 18 9"/>
                                 </svg>
                             </button>
-                            <div class="accordion-content">
-                                <div class="latency-box-plot" id="downloadLatencyBoxPlot" data-tooltip-target="boxplot"></div>
+                            <div class="latency-details-content">
                                 <div class="latency-chart-container" id="downloadLatencyChart"></div>
                                 <table class="latency-table">
                                     <thead>
@@ -337,17 +351,24 @@
                         </div>
 
                         <!-- Latency During Upload -->
-                        <div class="accordion" id="uploadLatencyAccordion">
-                            <button class="accordion-header" aria-expanded="false">
-                                <span class="accordion-title">Latency during upload</span>
-                                <span class="accordion-badge" id="uploadLatencyCount">0/5</span>
-                                <span class="accordion-summary" id="uploadLatencySummary"><span class="placeholder"></span></span>
+                        <div class="latency-item" id="uploadLatencyAccordion">
+                            <div class="latency-item-header">
+                                <div class="latency-item-info">
+                                    <span class="latency-item-title">Latency during upload</span>
+                                    <span class="latency-item-badge" id="uploadLatencyCount">0/5</span>
+                                </div>
+                                <span class="latency-item-value" id="uploadLatencySummary"><span class="placeholder"></span></span>
+                            </div>
+                            <div class="latency-item-chart">
+                                <div class="latency-box-plot" id="uploadLatencyBoxPlot" data-tooltip-target="boxplot"></div>
+                            </div>
+                            <button class="latency-details-toggle" aria-expanded="false">
+                                <span>Details</span>
                                 <svg class="accordion-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                                     <polyline points="6 9 12 15 18 9"/>
                                 </svg>
                             </button>
-                            <div class="accordion-content">
-                                <div class="latency-box-plot" id="uploadLatencyBoxPlot" data-tooltip-target="boxplot"></div>
+                            <div class="latency-details-content">
                                 <div class="latency-chart-container" id="uploadLatencyChart"></div>
                                 <table class="latency-table">
                                     <thead>

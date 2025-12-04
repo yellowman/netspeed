@@ -188,6 +188,14 @@
             });
         });
 
+        // Latency details toggles
+        document.querySelectorAll('.latency-details-toggle').forEach(toggle => {
+            toggle.addEventListener('click', () => {
+                const isExpanded = toggle.getAttribute('aria-expanded') === 'true';
+                toggle.setAttribute('aria-expanded', !isExpanded);
+            });
+        });
+
         // Learn more modal
         elements.learnMoreBtn?.addEventListener('click', () => openModal('learnMoreModal'));
         elements.modalClose?.addEventListener('click', closeModals);
@@ -572,11 +580,12 @@
                 if (elements.unloadedMedian) elements.unloadedMedian.textContent = `${median.toFixed(1)} ms`;
                 if (elements.unloadedMax) elements.unloadedMax.textContent = `${max.toFixed(1)} ms`;
 
-                // Update box plot
+                // Update box plot - use parent width for reliability
                 if (elements.unloadedLatencyBoxPlot && values.length >= 2) {
+                    const parentWidth = elements.unloadedLatencyBoxPlot.parentElement?.offsetWidth || 300;
                     Charts.boxPlot(elements.unloadedLatencyBoxPlot, values, {
-                        width: elements.unloadedLatencyBoxPlot.clientWidth || 280,
-                        height: 50,
+                        width: Math.max(200, parentWidth - 16),
+                        height: 60,
                         barColor: 'var(--color-latency)',
                         unit: 'ms'
                     });
@@ -602,11 +611,12 @@
                 elements.downloadLatencyTable.appendChild(row);
             }
 
-            // Update box plot
+            // Update box plot - use parent width for reliability
             if (elements.downloadLatencyBoxPlot && values.length >= 2) {
+                const parentWidth = elements.downloadLatencyBoxPlot.parentElement?.offsetWidth || 300;
                 Charts.boxPlot(elements.downloadLatencyBoxPlot, values, {
-                    width: elements.downloadLatencyBoxPlot.clientWidth || 280,
-                    height: 50,
+                    width: Math.max(200, parentWidth - 16),
+                    height: 60,
                     barColor: 'var(--color-download)',
                     unit: 'ms'
                 });
@@ -631,11 +641,12 @@
                 elements.uploadLatencyTable.appendChild(row);
             }
 
-            // Update box plot
+            // Update box plot - use parent width for reliability
             if (elements.uploadLatencyBoxPlot && values.length >= 2) {
+                const parentWidth = elements.uploadLatencyBoxPlot.parentElement?.offsetWidth || 300;
                 Charts.boxPlot(elements.uploadLatencyBoxPlot, values, {
-                    width: elements.uploadLatencyBoxPlot.clientWidth || 280,
-                    height: 50,
+                    width: Math.max(200, parentWidth - 16),
+                    height: 60,
                     barColor: 'var(--color-upload)',
                     unit: 'ms'
                 });

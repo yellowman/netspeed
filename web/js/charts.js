@@ -638,8 +638,9 @@ const Charts = (function() {
                 x: scale(min),
                 y: height - 4,
                 'text-anchor': 'middle',
-                'font-size': '10',
-                fill: 'var(--text-tertiary)'
+                'font-size': '11',
+                'font-weight': '500',
+                fill: 'var(--color-text-secondary)'
             });
             minLabel.textContent = formatNumber(min);
             svg.appendChild(minLabel);
@@ -649,8 +650,9 @@ const Charts = (function() {
                 x: scale(max),
                 y: height - 4,
                 'text-anchor': 'middle',
-                'font-size': '10',
-                fill: 'var(--text-tertiary)'
+                'font-size': '11',
+                'font-weight': '500',
+                fill: 'var(--color-text-secondary)'
             });
             maxLabel.textContent = formatNumber(max);
             svg.appendChild(maxLabel);
@@ -660,9 +662,9 @@ const Charts = (function() {
                 x: scale(med),
                 y: 10,
                 'text-anchor': 'middle',
-                'font-size': '11',
+                'font-size': '12',
                 'font-weight': '600',
-                fill: 'var(--text-primary)'
+                fill: 'var(--color-text-primary)'
             });
             medLabel.textContent = formatNumber(med);
             svg.appendChild(medLabel);
