@@ -1080,8 +1080,16 @@ button {
 
 .test-card .test-box-plot {
     min-height: 60px;
+    min-width: 200px;
+    width: 100%;
     position: relative;
     cursor: help;
+}
+
+.test-card .test-box-plot svg {
+    display: block;
+    width: 100%;
+    height: 60px;
 }
 
 /* Accordion for details */
@@ -1285,7 +1293,15 @@ button {
 /* Latency Box Plot */
 .latency-box-plot {
     min-height: 60px;
+    min-width: 200px;
+    width: 100%;
     cursor: help;
+}
+
+.latency-box-plot svg {
+    display: block;
+    width: 100%;
+    height: 60px;
 }
 
 .latency-details-toggle {
@@ -2238,6 +2254,7 @@ button {
 .measurement-column {
     display: flex;
     flex-direction: column;
+    min-width: 280px;
 }
 
 .measurement-column .column-title {

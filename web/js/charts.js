@@ -547,10 +547,10 @@ const Charts = (function() {
             return;
         }
 
+        // Use fixed viewBox but responsive width/height via CSS
         const svg = createSVG('svg', {
-            width,
-            height,
             viewBox: `0 0 ${width} ${height}`,
+            preserveAspectRatio: 'xMidYMid meet',
             class: 'box-plot'
         });
 

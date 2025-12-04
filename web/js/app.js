@@ -604,11 +604,10 @@
                 if (elements.unloadedMedian) elements.unloadedMedian.textContent = `${median.toFixed(1)} ms`;
                 if (elements.unloadedMax) elements.unloadedMax.textContent = `${max.toFixed(1)} ms`;
 
-                // Update box plot - use parent width for reliability
+                // Update box plot - use fixed viewBox width (CSS handles responsiveness)
                 if (elements.unloadedLatencyBoxPlot && values.length >= 2) {
-                    const parentWidth = elements.unloadedLatencyBoxPlot.parentElement?.offsetWidth || 300;
                     Charts.boxPlot(elements.unloadedLatencyBoxPlot, values, {
-                        width: Math.max(200, parentWidth - 16),
+                        width: 300,
                         height: 60,
                         barColor: 'var(--color-latency)',
                         unit: 'ms'
@@ -635,11 +634,10 @@
                 elements.downloadLatencyTable.appendChild(row);
             }
 
-            // Update box plot - use parent width for reliability
+            // Update box plot - use fixed viewBox width (CSS handles responsiveness)
             if (elements.downloadLatencyBoxPlot && values.length >= 2) {
-                const parentWidth = elements.downloadLatencyBoxPlot.parentElement?.offsetWidth || 300;
                 Charts.boxPlot(elements.downloadLatencyBoxPlot, values, {
-                    width: Math.max(200, parentWidth - 16),
+                    width: 300,
                     height: 60,
                     barColor: 'var(--color-download)',
                     unit: 'ms'
@@ -665,11 +663,10 @@
                 elements.uploadLatencyTable.appendChild(row);
             }
 
-            // Update box plot - use parent width for reliability
+            // Update box plot - use fixed viewBox width (CSS handles responsiveness)
             if (elements.uploadLatencyBoxPlot && values.length >= 2) {
-                const parentWidth = elements.uploadLatencyBoxPlot.parentElement?.offsetWidth || 300;
                 Charts.boxPlot(elements.uploadLatencyBoxPlot, values, {
-                    width: Math.max(200, parentWidth - 16),
+                    width: 300,
                     height: 60,
                     barColor: 'var(--color-upload)',
                     unit: 'ms'
@@ -1063,14 +1060,11 @@
             .filter(s => s.profile === profile)
             .map(s => s.mbps);
 
-        // Update box plot - use card width minus padding, or fallback to 280
+        // Update box plot - use fixed viewBox width (CSS handles responsiveness)
         const boxPlotContainer = card.querySelector('.test-box-plot');
         if (boxPlotContainer && profileSamples.length >= 2) {
-            // Use the card's width for better responsiveness
-            const cardWidth = card.offsetWidth || 320;
-            const chartWidth = Math.max(200, cardWidth - 48); // 48px for padding
             const stats = Charts.boxPlot(boxPlotContainer, profileSamples, {
-                width: chartWidth,
+                width: 300,
                 height: 60,
                 barColor: type === 'download' ? 'var(--color-download)' : 'var(--color-upload)',
                 unit: 'Mbps'
@@ -1898,9 +1892,8 @@
         // Render unloaded latency box plot
         if (results.latencyUnloaded?.length >= 2) {
             if (elements.unloadedLatencyBoxPlot) {
-                const w = elements.unloadedLatencyBoxPlot.parentElement?.offsetWidth || 300;
                 Charts.boxPlot(elements.unloadedLatencyBoxPlot, results.latencyUnloaded, {
-                    width: Math.max(200, w - 16), height: 60,
+                    width: 300, height: 60,
                     barColor: 'var(--color-latency)', unit: 'ms'
                 });
             }
@@ -1919,9 +1912,8 @@
         // Render download latency box plot
         if (results.latencyDownload?.length >= 2) {
             if (elements.downloadLatencyBoxPlot) {
-                const w = elements.downloadLatencyBoxPlot.parentElement?.offsetWidth || 300;
                 Charts.boxPlot(elements.downloadLatencyBoxPlot, results.latencyDownload, {
-                    width: Math.max(200, w - 16), height: 60,
+                    width: 300, height: 60,
                     barColor: 'var(--color-download)', unit: 'ms'
                 });
             }
@@ -1936,9 +1928,8 @@
         // Render upload latency box plot
         if (results.latencyUpload?.length >= 2) {
             if (elements.uploadLatencyBoxPlot) {
-                const w = elements.uploadLatencyBoxPlot.parentElement?.offsetWidth || 300;
                 Charts.boxPlot(elements.uploadLatencyBoxPlot, results.latencyUpload, {
-                    width: Math.max(200, w - 16), height: 60,
+                    width: 300, height: 60,
                     barColor: 'var(--color-upload)', unit: 'ms'
                 });
             }
