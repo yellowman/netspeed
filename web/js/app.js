@@ -1373,14 +1373,38 @@
     }
 
     /**
-     * Copy text to clipboard
+     * Copy text to clipboard (with fallback for non-HTTPS)
      */
     function copyToClipboard(text) {
-        navigator.clipboard.writeText(text).then(() => {
+        // Modern clipboard API (requires HTTPS)
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+            navigator.clipboard.writeText(text).then(() => {
+                showNotification('Results copied to clipboard');
+            }).catch(() => {
+                fallbackCopyToClipboard(text);
+            });
+        } else {
+            fallbackCopyToClipboard(text);
+        }
+    }
+
+    /**
+     * Fallback clipboard copy using textarea + execCommand
+     */
+    function fallbackCopyToClipboard(text) {
+        const textarea = document.createElement('textarea');
+        textarea.value = text;
+        textarea.style.position = 'fixed';
+        textarea.style.left = '-9999px';
+        document.body.appendChild(textarea);
+        textarea.select();
+        try {
+            document.execCommand('copy');
             showNotification('Results copied to clipboard');
-        }).catch(() => {
+        } catch (err) {
             showNotification('Failed to copy results', 'error');
-        });
+        }
+        document.body.removeChild(textarea);
     }
 
     /**
