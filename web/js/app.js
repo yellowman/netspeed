@@ -1393,12 +1393,12 @@
             Math.round((serverLoc?.lon || 0) * 1000)
         ].map(v => encodeSignedInt(v)).join('.');
 
-        // Sample arrays (max 15 points each for compact URLs)
-        const dl = encodeSamples(state.downloadSamples.map(s => s.mbps), 15);
-        const ul = encodeSamples(state.uploadSamples.map(s => s.mbps), 15);
-        const latU = encodeSamples(state.latencySamples.filter(s => s.phase === 'unloaded').map(s => s.rttMs), 15);
-        const latD = encodeSamples(state.latencySamples.filter(s => s.phase === 'download').map(s => s.rttMs), 5);
-        const latL = encodeSamples(state.latencySamples.filter(s => s.phase === 'upload').map(s => s.rttMs), 5);
+        // Sample arrays with delta encoding (max 8 points for speeds, 8 for latency)
+        const dl = encodeSamplesDelta(state.downloadSamples.map(s => s.mbps), 8);
+        const ul = encodeSamplesDelta(state.uploadSamples.map(s => s.mbps), 8);
+        const latU = encodeSamplesDelta(state.latencySamples.filter(s => s.phase === 'unloaded').map(s => s.rttMs), 8);
+        const latD = encodeSamplesDelta(state.latencySamples.filter(s => s.phase === 'download').map(s => s.rttMs), 5);
+        const latL = encodeSamplesDelta(state.latencySamples.filter(s => s.phase === 'upload').map(s => s.rttMs), 5);
 
         // Build with - separator (URL-safe, no encoding needed)
         const parts = [base, pkt, geo, dl, ul, latU, latD, latL];
@@ -1428,81 +1428,45 @@
     }
 
     /**
-     * Encode an array of numeric samples to compact base36 string
-     * Downsamples to maxPoints if needed
+     * Encode samples with delta compression
+     * Format: first*10 in base36, then deltas separated by commas
      */
-    function encodeSamples(values, maxPoints) {
+    function encodeSamplesDelta(values, maxPoints) {
         if (!values || values.length === 0) return '';
 
-        // Downsample if too many points
+        // Simple downsample by picking evenly spaced points
         let samples = values;
         if (values.length > maxPoints) {
-            samples = downsample(values, maxPoints);
+            samples = [];
+            for (let i = 0; i < maxPoints; i++) {
+                const idx = Math.floor(i * (values.length - 1) / (maxPoints - 1));
+                samples.push(values[idx]);
+            }
         }
 
-        // Encode each value: multiply by 10 and convert to base36
-        return samples.map(v => Math.round(v * 10).toString(36)).join(',');
+        // Delta encode: first value absolute, rest as deltas
+        const scaled = samples.map(v => Math.round(v * 10));
+        const result = [scaled[0].toString(36)];
+        for (let i = 1; i < scaled.length; i++) {
+            const delta = scaled[i] - scaled[i - 1];
+            result.push(encodeSignedInt(delta));
+        }
+        return result.join(',');
     }
 
     /**
-     * Downsample an array to target number of points using LTTB algorithm
-     * (Largest Triangle Three Buckets - preserves visual shape)
+     * Decode delta-encoded samples back to array
      */
-    function downsample(data, targetPoints) {
-        if (data.length <= targetPoints) return data;
-
-        const result = [];
-        const bucketSize = (data.length - 2) / (targetPoints - 2);
-
-        // Always keep first point
-        result.push(data[0]);
-
-        for (let i = 0; i < targetPoints - 2; i++) {
-            const bucketStart = Math.floor((i) * bucketSize) + 1;
-            const bucketEnd = Math.floor((i + 1) * bucketSize) + 1;
-
-            // Find point in bucket with largest triangle area
-            const prevPoint = result[result.length - 1];
-            const nextBucketStart = Math.floor((i + 1) * bucketSize) + 1;
-            const nextBucketEnd = Math.min(Math.floor((i + 2) * bucketSize) + 1, data.length);
-
-            // Average of next bucket for triangle calculation
-            let nextAvg = 0;
-            for (let j = nextBucketStart; j < nextBucketEnd; j++) {
-                nextAvg += data[j];
-            }
-            nextAvg /= (nextBucketEnd - nextBucketStart) || 1;
-
-            let maxArea = -1;
-            let maxIndex = bucketStart;
-
-            for (let j = bucketStart; j < bucketEnd && j < data.length; j++) {
-                // Triangle area using cross product
-                const area = Math.abs(
-                    (bucketStart - 1 - (nextBucketStart + nextBucketEnd) / 2) * (data[j] - prevPoint) -
-                    (bucketStart - 1 - j) * (nextAvg - prevPoint)
-                );
-                if (area > maxArea) {
-                    maxArea = area;
-                    maxIndex = j;
-                }
-            }
-
-            result.push(data[maxIndex]);
-        }
-
-        // Always keep last point
-        result.push(data[data.length - 1]);
-
-        return result;
-    }
-
-    /**
-     * Decode comma-separated base36 samples back to array
-     */
-    function decodeSamples(encoded) {
+    function decodeSamplesDelta(encoded) {
         if (!encoded || encoded === '') return [];
-        return encoded.split(',').map(s => parseInt(s, 36) / 10);
+        const parts = encoded.split(',');
+        const result = [parseInt(parts[0], 36) / 10];
+        let prev = parseInt(parts[0], 36);
+        for (let i = 1; i < parts.length; i++) {
+            prev += decodeSignedInt(parts[i]);
+            result.push(prev / 10);
+        }
+        return result;
     }
 
     /**
@@ -1554,12 +1518,12 @@
                 serverLon: decodeSignedInt(geo[3] || '0') / 1000
             };
 
-            // Decode sample arrays
-            const downloadSamples = decodeSamples(sections[3]);
-            const uploadSamples = decodeSamples(sections[4]);
-            const latencyUnloaded = decodeSamples(sections[5]);
-            const latencyDownload = decodeSamples(sections[6]);
-            const latencyUpload = decodeSamples(sections[7]);
+            // Decode delta-encoded sample arrays
+            const downloadSamples = decodeSamplesDelta(sections[3]);
+            const uploadSamples = decodeSamplesDelta(sections[4]);
+            const latencyUnloaded = decodeSamplesDelta(sections[5]);
+            const latencyDownload = decodeSamplesDelta(sections[6]);
+            const latencyUpload = decodeSamplesDelta(sections[7]);
 
             // Server city (if present)
             let server = null;
