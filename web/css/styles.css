@@ -2356,37 +2356,47 @@ button {
 
 .details-row-grid {
     display: grid;
-    grid-template-columns: 1fr 1fr 280px;
+    grid-template-columns: 1fr 1fr;
     gap: var(--spacing-md);
-}
-
-@media (max-width: 1000px) {
-    .details-row-grid {
-        grid-template-columns: 1fr 1fr;
-    }
-    .map-compact {
-        grid-column: span 2;
-    }
 }
 
 @media (max-width: 600px) {
     .details-row-grid {
         grid-template-columns: 1fr;
     }
-    .map-compact {
-        grid-column: auto;
-    }
 }
 
 /* Compact Cards */
 .packet-loss-compact,
-.webrtc-compact {
+.quality-scores-compact {
     min-height: auto;
 }
 
 .packet-loss-compact .card-body,
-.webrtc-compact .card-body {
+.quality-scores-compact .card-body {
     padding: var(--spacing-sm) var(--spacing-md);
+}
+
+.quality-scores-row {
+    display: flex;
+    gap: var(--spacing-md);
+    align-items: center;
+}
+
+.quality-scores-compact .quality-mini {
+    flex: 1;
+}
+
+.quality-scores-compact .learn-more-btn {
+    width: 20px;
+    height: 20px;
+    padding: 0;
+    border-radius: var(--radius-full);
+    background: var(--color-bg-tertiary);
+    border: none;
+    font-size: 0.7rem;
+    color: var(--color-text-tertiary);
+    cursor: pointer;
 }
 
 .packet-loss-row {
@@ -2420,8 +2430,7 @@ button {
     height: 12px;
 }
 
-.packet-loss-stats-row,
-.webrtc-stats-row {
+.packet-loss-stats-row {
     display: flex;
     flex-wrap: wrap;
     gap: var(--spacing-sm) var(--spacing-md);
@@ -2439,23 +2448,28 @@ button {
     font-weight: 500;
 }
 
-.map-compact {
-    padding: 0;
-    overflow: hidden;
-    min-height: 160px;
+/* Map Section */
+.map-section {
+    margin-bottom: var(--spacing-md);
 }
 
-.map-container-compact {
-    height: 100%;
-    min-height: 160px;
+.map-card {
+    padding: 0;
+    overflow: hidden;
+}
+
+.map-container {
+    height: 250px;
     background: var(--color-bg-tertiary);
     display: flex;
     align-items: center;
     justify-content: center;
 }
 
-.map-container-compact .map-placeholder {
-    /* Normal size placeholder */
+@media (max-width: 768px) {
+    .map-container {
+        height: 200px;
+    }
 }
 
 /* Extras Section - Collapsible */
@@ -2504,7 +2518,7 @@ button {
 
 .extras-grid {
     display: grid;
-    grid-template-columns: repeat(5, 1fr);
+    grid-template-columns: repeat(6, 1fr);
     gap: var(--spacing-md);
     align-items: start;
 }
@@ -2654,6 +2668,39 @@ button {
     font-size: 0.7rem;
     color: var(--color-text-secondary);
     margin-top: var(--spacing-xs);
+}
+
+/* WebRTC Mini (More Details) */
+.webrtc-mini {
+    padding: var(--spacing-sm);
+    background: var(--color-bg-secondary);
+    border-radius: var(--radius-sm);
+}
+
+.webrtc-mini-label {
+    font-size: 0.7rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    color: var(--color-text-tertiary);
+    margin-right: var(--spacing-sm);
+}
+
+.webrtc-mini .connection-type-badge {
+    font-size: 0.65rem;
+}
+
+.webrtc-mini-stats {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    font-size: 0.7rem;
+    color: var(--color-text-secondary);
+    margin-top: var(--spacing-xs);
+}
+
+.webrtc-mini-stats b {
+    color: var(--color-text-primary);
+    font-weight: 500;
 }
 
 /* Location Extra */

@@ -282,37 +282,31 @@
             </div>
         </section>
 
-        <!-- Secondary Info Row -->
-        <section class="section info-row-section">
-            <div class="info-row-grid">
-                <!-- Quality Cards -->
-                <div class="quality-row">
-                    <div class="quality-mini" id="streamingGrade">
-                        <span class="quality-mini-label">Streaming</span>
-                        <span class="quality-mini-value"><span class="grade-dot"></span><span class="grade-text"><span class="placeholder"></span></span></span>
+        <!-- Map Section -->
+        <section class="section map-section">
+            <div class="card map-card">
+                <div class="map-container" id="mapContainer">
+                    <div class="map-placeholder">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+                            <circle cx="12" cy="10" r="3"/>
+                            <path d="M12 21.7C17.3 17 20 13 20 10a8 8 0 10-16 0c0 3 2.7 7 8 11.7z"/>
+                        </svg>
                     </div>
-                    <div class="quality-mini" id="gamingGrade">
-                        <span class="quality-mini-label">Gaming</span>
-                        <span class="quality-mini-value"><span class="grade-dot"></span><span class="grade-text"><span class="placeholder"></span></span></span>
-                    </div>
-                    <div class="quality-mini" id="videoChatGrade">
-                        <span class="quality-mini-label">Video Chat</span>
-                        <span class="quality-mini-value"><span class="grade-dot"></span><span class="grade-text"><span class="placeholder"></span></span></span>
-                    </div>
-                    <button class="learn-more-btn" id="learnMoreBtn">?</button>
                 </div>
+            </div>
+        </section>
 
-                <!-- Server Info Mini -->
-                <div class="server-info-mini">
-                    <span class="server-info-label">Server</span>
-                    <span class="server-info-value" id="serverLocation"><span class="placeholder"></span></span>
-                    <span class="server-info-separator">|</span>
-                    <span class="server-info-label">Your IP</span>
-                    <span class="server-info-value mono" id="ipAddress"><span class="placeholder"></span></span>
-                    <span class="server-info-separator">|</span>
-                    <span class="server-info-label">Network</span>
-                    <span class="server-info-value" id="networkInfo"><span class="placeholder"></span></span>
-                </div>
+        <!-- Server Info Row -->
+        <section class="section info-row-section">
+            <div class="server-info-mini">
+                <span class="server-info-label">Server</span>
+                <span class="server-info-value" id="serverLocation"><span class="placeholder"></span></span>
+                <span class="server-info-separator">|</span>
+                <span class="server-info-label">Your IP</span>
+                <span class="server-info-value mono" id="ipAddress"><span class="placeholder"></span></span>
+                <span class="server-info-separator">|</span>
+                <span class="server-info-label">Network</span>
+                <span class="server-info-value" id="networkInfo"><span class="placeholder"></span></span>
             </div>
         </section>
 
@@ -357,29 +351,26 @@
                     </div>
                 </div>
 
-                <!-- WebRTC Card (Compact) -->
-                <div class="card webrtc-compact">
+                <!-- Quality Scores Card -->
+                <div class="card quality-scores-compact">
                     <div class="card-header">
-                        <h3 class="card-title">WebRTC</h3>
-                        <span class="connection-type-badge" id="webrtcConnectionBadge"><span class="placeholder"></span></span>
+                        <h3 class="card-title">Quality</h3>
+                        <button class="learn-more-btn" id="learnMoreBtn">?</button>
                     </div>
                     <div class="card-body">
-                        <div class="webrtc-stats-row">
-                            <span class="stat-mini"><b>Path:</b> <span id="connectionPath"><span class="placeholder"></span></span></span>
-                            <span class="stat-mini"><b>Protocol:</b> <span id="webrtcProtocol"><span class="placeholder"></span></span></span>
-                            <span class="stat-mini"><b>ICE RTT:</b> <span id="iceRtt"><span class="placeholder"></span></span></span>
-                        </div>
-                    </div>
-                </div>
-
-                <!-- Map (Compact) -->
-                <div class="card map-compact">
-                    <div class="map-container-compact" id="mapContainer">
-                        <div class="map-placeholder">
-                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
-                                <circle cx="12" cy="10" r="3"/>
-                                <path d="M12 21.7C17.3 17 20 13 20 10a8 8 0 10-16 0c0 3 2.7 7 8 11.7z"/>
-                            </svg>
+                        <div class="quality-scores-row">
+                            <div class="quality-mini" id="streamingGrade">
+                                <span class="quality-mini-label">Streaming</span>
+                                <span class="quality-mini-value"><span class="grade-dot"></span><span class="grade-text"><span class="placeholder"></span></span></span>
+                            </div>
+                            <div class="quality-mini" id="gamingGrade">
+                                <span class="quality-mini-label">Gaming</span>
+                                <span class="quality-mini-value"><span class="grade-dot"></span><span class="grade-text"><span class="placeholder"></span></span></span>
+                            </div>
+                            <div class="quality-mini" id="videoChatGrade">
+                                <span class="quality-mini-label">Video Chat</span>
+                                <span class="quality-mini-value"><span class="grade-dot"></span><span class="grade-text"><span class="placeholder"></span></span></span>
+                            </div>
                         </div>
                     </div>
                 </div>
@@ -440,6 +431,17 @@
                                 <span><span id="connectionIcon"></span> Connection: <span id="connectionDetail"><span class="placeholder"></span></span></span>
                             </div>
                             <div class="confidence-warnings" id="confidenceWarnings"></div>
+                        </div>
+
+                        <!-- WebRTC Info -->
+                        <div class="webrtc-mini">
+                            <span class="webrtc-mini-label">WebRTC</span>
+                            <span class="connection-type-badge" id="webrtcConnectionBadge"><span class="placeholder"></span></span>
+                            <div class="webrtc-mini-stats">
+                                <span>Path: <b id="connectionPath"><span class="placeholder"></span></b></span>
+                                <span>Protocol: <b id="webrtcProtocol"><span class="placeholder"></span></b></span>
+                                <span>ICE RTT: <b id="iceRtt"><span class="placeholder"></span></b></span>
+                            </div>
                         </div>
 
                         <!-- Additional Location Info -->
