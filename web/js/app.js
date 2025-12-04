@@ -1355,8 +1355,8 @@
 
     /**
      * Encode results into a compact URL-safe string
-     * Format: {base}-{pkt}-{geo}-{ext}-{dl}-{ul}-{latU}-{latD}-{latL}-{lossDist}[-{server}]
-     * All values base36, sections separated by - (URL-safe)
+     * Format: {packed}-{dl}-{ul}-{latU}-{latD}-{latL}-{lossDist}[-{server}]
+     * Uses delta encoding for all arrays, packs enums into single values
      */
     function encodeResultsForURL() {
         if (!state.summary) return null;
@@ -1369,89 +1369,75 @@
                 encodeGrade(state.quality.videoChatting);
         }
 
-        // Base data: d.u.l.j.p.ns.t.q
-        const base = [
-            Math.round(state.summary.downloadMbps * 10),
-            Math.round(state.summary.uploadMbps * 10),
-            Math.round(state.summary.latencyUnloadedMs * 10),
-            Math.round(state.summary.jitterMs * 10),
-            Math.round(state.summary.packetLossPercent * 100),
-            state.networkScore?.overall || 0,
-            Math.floor(Date.now() / 1000),
-            q
-        ].map(v => v.toString(36)).join('.');
-
-        // Packet loss stats: sent.recv.rttMin.rttMed.rttP90.rttJitter
-        const pl = state.packetLoss;
-        const pkt = [
-            pl?.sent || 0,
-            pl?.received || 0,
-            Math.round((pl?.rttStatsMs?.min || 0) * 10),
-            Math.round((pl?.rttStatsMs?.median || 0) * 10),
-            Math.round((pl?.rttStatsMs?.p90 || 0) * 10),
-            Math.round((pl?.jitterMs || 0) * 10)
-        ].map(v => v.toString(36)).join('.');
-
-        // Geo coords: clientLat.clientLon.serverLat.serverLon (scaled by 1000 for precision)
-        const serverLoc = state.locations?.find(l => l.iata === state.meta?.colo);
-        const geo = [
-            Math.round((state.meta?.latitude || 0) * 1000),
-            Math.round((state.meta?.longitude || 0) * 1000),
-            Math.round((serverLoc?.lat || 0) * 1000),
-            Math.round((serverLoc?.lon || 0) * 1000)
-        ].map(v => encodeSignedInt(v)).join('.');
-
-        // Extended data: conn.proto.iceRtt.lossType.burstCnt.maxBurst.avgBurst.conf.bwComp.dlTrend.ulTrend.dlPeak.ulPeak.dlSust.ulSust.dlVar.ulVar
+        // Pack small enums into single value: connType(0-4)*360 + proto(0-1)*180 + lossType(0-3)*45 + conf(0-2)*15 + dlTrend(0-2)*5 + ulTrend(0-2) + q*1620
         const dc = state.dataChannelStats;
         const lp = state.lossPattern;
         const bw = state.bandwidthEstimate;
         const tc = state.testConfidence;
         const ns = state.networkScore;
 
-        // Encode connection type: 0=host, 1=srflx, 2=prflx, 3=relay, 4=unknown
         const connTypes = { 'host': 0, 'srflx': 1, 'prflx': 2, 'relay': 3, 'unknown': 4 };
-        const connType = connTypes[dc?.connectionType] ?? 4;
-
-        // Encode protocol: 0=udp, 1=tcp
-        const proto = dc?.protocol?.toLowerCase() === 'tcp' ? 1 : 0;
-
-        // Encode loss type: 0=none, 1=random, 2=burst, 3=tail
         const lossTypes = { 'none': 0, 'random': 1, 'burst': 2, 'tail': 3 };
-        const lossType = lossTypes[lp?.type] ?? 0;
-
-        // Encode confidence: 0=high, 1=medium, 2=low
         const confLevels = { 'high': 0, 'medium': 1, 'low': 2 };
-        const conf = confLevels[tc?.overall] ?? 2;
-
-        // Encode trend: 0=stable, 1=improving, 2=degrading
         const trendMap = { 'stable': 0, 'improving': 1, 'degrading': 2 };
 
-        // Pack network score components: bandwidth.latency.stability.reliability
-        const bwComp = ns?.components ? [
-            ns.components.bandwidth || 0,
-            ns.components.latency || 0,
-            ns.components.stability || 0,
-            ns.components.reliability || 0
-        ].map(v => v.toString(36)).join('.') : '0.0.0.0';
+        const connType = connTypes[dc?.connectionType] ?? 4;
+        const proto = dc?.protocol?.toLowerCase() === 'tcp' ? 1 : 0;
+        const lossType = lossTypes[lp?.type] ?? 0;
+        const conf = confLevels[tc?.overall] ?? 2;
+        const dlTrend = trendMap[bw?.downloadTrend] ?? 0;
+        const ulTrend = trendMap[bw?.uploadTrend] ?? 0;
 
-        const ext = [
-            connType,
-            proto,
+        // Pack: q*1620 + connType*324 + proto*162 + lossType*54 + conf*18 + dlTrend*3 + ulTrend
+        // Max: 124*1620 + 4*324 + 1*162 + 3*54 + 2*18 + 2*3 + 2 = 202806 (fits in 4 base36 chars)
+        const flags = q * 1620 + connType * 324 + proto * 162 + lossType * 54 + conf * 18 + dlTrend * 3 + ulTrend;
+
+        // All values to encode (delta-encoded as one array)
+        const serverLoc = state.locations?.find(l => l.iata === state.meta?.colo);
+        const pl = state.packetLoss;
+
+        const values = [
+            Math.round(state.summary.downloadMbps * 10),
+            Math.round(state.summary.uploadMbps * 10),
+            Math.round(state.summary.latencyUnloadedMs * 10),
+            Math.round(state.summary.jitterMs * 10),
+            Math.round(state.summary.packetLossPercent * 100),
+            ns?.overall || 0,
+            // Timestamp as offset from 2024-01-01 in minutes (saves chars)
+            Math.floor((Date.now() / 1000 - 1704067200) / 60),
+            flags,
+            // Packet loss stats
+            pl?.sent || 0,
+            pl?.received || 0,
+            Math.round((pl?.rttStatsMs?.min || 0) * 10),
+            Math.round((pl?.rttStatsMs?.median || 0) * 10),
+            Math.round((pl?.rttStatsMs?.p90 || 0) * 10),
+            Math.round((pl?.jitterMs || 0) * 10),
+            // Geo (signed, handled specially)
+            Math.round((state.meta?.latitude || 0) * 1000),
+            Math.round((state.meta?.longitude || 0) * 1000),
+            Math.round((serverLoc?.lat || 0) * 1000),
+            Math.round((serverLoc?.lon || 0) * 1000),
+            // Extended metrics
             Math.round((dc?.currentRoundTripTime || 0) * 10),
-            lossType,
             lp?.burstCount || 0,
             Math.round((lp?.maxBurstLength || 0) * 10),
             Math.round((lp?.avgBurstLength || 0) * 10),
-            conf,
-            trendMap[bw?.downloadTrend] ?? 0,
-            trendMap[bw?.uploadTrend] ?? 0,
             Math.round((bw?.downloadPeakMbps || 0) * 10),
             Math.round((bw?.uploadPeakMbps || 0) * 10),
             Math.round((bw?.downloadSustainedMbps || 0) * 10),
             Math.round((bw?.uploadSustainedMbps || 0) * 10),
             Math.round((bw?.downloadVariability || 0) * 100),
-            Math.round((bw?.uploadVariability || 0) * 100)
-        ].map(v => v.toString(36)).join('.') + '.' + bwComp;
+            Math.round((bw?.uploadVariability || 0) * 100),
+            // Network score components
+            ns?.components?.bandwidth || 0,
+            ns?.components?.latency || 0,
+            ns?.components?.stability || 0,
+            ns?.components?.reliability || 0
+        ];
+
+        // Encode fixed values with signed support
+        const packed = encodeValueArray(values);
 
         // Sample arrays with delta encoding (all samples)
         const dl = encodeSamplesDelta(state.downloadSamples.map(s => s.mbps));
@@ -1464,7 +1450,7 @@
         const lossDist = encodeSamplesDelta(lp?.lossDistribution || []);
 
         // Build with - separator (URL-safe, no encoding needed)
-        const parts = [base, pkt, geo, ext, dl, ul, latU, latD, latL, lossDist];
+        const parts = [packed, dl, ul, latU, latD, latL, lossDist];
 
         // Add server city if available
         if (state.meta?.server?.city) {
@@ -1472,6 +1458,81 @@
         }
 
         return parts.join('-');
+    }
+
+    /**
+     * Encode array of values with compact representation (supports signed)
+     * Format: first value base36, then deltas using compact encoding
+     */
+    function encodeValueArray(values) {
+        if (!values || values.length === 0) return '';
+
+        let result = encodeSignedInt(values[0]);
+        for (let i = 1; i < values.length; i++) {
+            const delta = values[i] - values[i - 1];
+            if (delta === 0) {
+                result += '0';
+            } else if (delta >= 1 && delta <= 26) {
+                result += String.fromCharCode(96 + delta); // a-z for 1-26
+            } else if (delta >= -26 && delta <= -1) {
+                result += String.fromCharCode(64 - delta); // A-Z for -1 to -26
+            } else {
+                result += '_' + encodeSignedInt(delta);
+            }
+        }
+        return result;
+    }
+
+    /**
+     * Decode array of values with compact representation
+     */
+    function decodeValueArray(encoded, count) {
+        if (!encoded || encoded === '') return new Array(count).fill(0);
+
+        // Parse first value (may be signed with 'n' prefix)
+        let i = 0;
+        let firstEnd = 0;
+        if (encoded[0] === 'n') {
+            firstEnd = 1;
+            while (firstEnd < encoded.length && /[0-9a-z]/.test(encoded[firstEnd])) firstEnd++;
+        } else {
+            while (firstEnd < encoded.length && /[0-9a-z]/.test(encoded[firstEnd])) firstEnd++;
+        }
+
+        let prev = decodeSignedInt(encoded.slice(0, firstEnd));
+        const result = [prev];
+        i = firstEnd;
+
+        while (i < encoded.length && result.length < count) {
+            const c = encoded[i];
+            if (c === '0') {
+                result.push(prev);
+                i++;
+            } else if (c >= 'a' && c <= 'z') {
+                prev += c.charCodeAt(0) - 96;
+                result.push(prev);
+                i++;
+            } else if (c >= 'A' && c <= 'Z') {
+                prev -= c.charCodeAt(0) - 64;
+                result.push(prev);
+                i++;
+            } else if (c === '_') {
+                i++;
+                let deltaEnd = i;
+                if (encoded[i] === 'n') deltaEnd++;
+                while (deltaEnd < encoded.length && /[0-9a-z]/.test(encoded[deltaEnd])) deltaEnd++;
+                const delta = decodeSignedInt(encoded.slice(i, deltaEnd));
+                prev += delta;
+                result.push(prev);
+                i = deltaEnd;
+            } else {
+                i++;
+            }
+        }
+
+        // Pad with zeros if needed
+        while (result.length < count) result.push(0);
+        return result;
     }
 
     /**
@@ -1591,114 +1652,128 @@
 
     /**
      * Decode results from URL parameter
-     * Format: {base}-{pkt}-{geo}-{ext}-{dl}-{ul}-{latU}-{latD}-{latL}-{lossDist}[-{server}]
+     * Format: {packed}-{dl}-{ul}-{latU}-{latD}-{latL}-{lossDist}[-{server}]
      */
     function decodeResultsFromURL(encoded) {
         try {
             const sections = encoded.split('-');
-            if (sections.length < 10) return null;
+            if (sections.length < 7) return null;
 
-            // Parse base data: d.u.l.j.p.ns.t.q
-            const base = sections[0].split('.');
-            if (base.length < 8) return null;
+            // Decode packed values array (32 values)
+            const v = decodeValueArray(sections[0], 32);
 
-            const d = parseInt(base[0], 36) / 10;
-            const u = parseInt(base[1], 36) / 10;
-            const l = parseInt(base[2], 36) / 10;
-            const j = parseInt(base[3], 36) / 10;
-            const p = parseInt(base[4], 36) / 100;
-            const ns = parseInt(base[5], 36);
-            const t = parseInt(base[6], 36) * 1000;
-            const q = parseInt(base[7], 36);
+            // Extract values
+            const d = v[0] / 10;  // downloadMbps
+            const u = v[1] / 10;  // uploadMbps
+            const l = v[2] / 10;  // latencyMs
+            const j = v[3] / 10;  // jitterMs
+            const p = v[4] / 100; // packetLossPercent
+            const netScore = v[5]; // networkScore
+            const t = (v[6] * 60 + 1704067200) * 1000; // timestamp (from 2024-01-01 offset in minutes)
+            const flags = v[7];   // packed enums
 
+            // Unpack flags: q*1620 + connType*324 + proto*162 + lossType*54 + conf*18 + dlTrend*3 + ulTrend
+            const q = Math.floor(flags / 1620);
+            const rem1 = flags % 1620;
+            const connType = Math.floor(rem1 / 324);
+            const rem2 = rem1 % 324;
+            const proto = Math.floor(rem2 / 162);
+            const rem3 = rem2 % 162;
+            const lossType = Math.floor(rem3 / 54);
+            const rem4 = rem3 % 54;
+            const conf = Math.floor(rem4 / 18);
+            const rem5 = rem4 % 18;
+            const dlTrend = Math.floor(rem5 / 3);
+            const ulTrend = rem5 % 3;
+
+            // Unpack quality grades
             const qs = Math.floor(q / 25);
             const qg = Math.floor((q % 25) / 5);
             const qv = q % 5;
 
-            // Parse packet loss stats: sent.recv.rttMin.rttMed.rttP90.rttJitter
-            const pkt = sections[1].split('.');
+            // Packet loss stats
             const packetLoss = {
-                sent: parseInt(pkt[0] || '0', 36),
-                received: parseInt(pkt[1] || '0', 36),
-                rttMin: parseInt(pkt[2] || '0', 36) / 10,
-                rttMedian: parseInt(pkt[3] || '0', 36) / 10,
-                rttP90: parseInt(pkt[4] || '0', 36) / 10,
-                rttJitter: parseInt(pkt[5] || '0', 36) / 10
+                sent: v[8],
+                received: v[9],
+                rttMin: v[10] / 10,
+                rttMedian: v[11] / 10,
+                rttP90: v[12] / 10,
+                rttJitter: v[13] / 10
             };
             packetLoss.lossPercent = packetLoss.sent > 0
                 ? ((packetLoss.sent - packetLoss.received) / packetLoss.sent) * 100
                 : 0;
 
-            // Parse geo coords: clientLat.clientLon.serverLat.serverLon
-            const geo = sections[2].split('.');
+            // Geo coords
             const coords = {
-                clientLat: decodeSignedInt(geo[0] || '0') / 1000,
-                clientLon: decodeSignedInt(geo[1] || '0') / 1000,
-                serverLat: decodeSignedInt(geo[2] || '0') / 1000,
-                serverLon: decodeSignedInt(geo[3] || '0') / 1000
+                clientLat: v[14] / 1000,
+                clientLon: v[15] / 1000,
+                serverLat: v[16] / 1000,
+                serverLon: v[17] / 1000
             };
 
-            // Parse extended data
-            const ext = sections[3].split('.');
+            // Data channel stats
             const connTypes = ['host', 'srflx', 'prflx', 'relay', 'unknown'];
-            const lossTypes = ['none', 'random', 'burst', 'tail'];
-            const confLevels = ['high', 'medium', 'low'];
-            const trends = ['stable', 'improving', 'degrading'];
-
             const dataChannelStats = {
-                connectionType: connTypes[parseInt(ext[0] || '4', 36)] || 'unknown',
-                protocol: parseInt(ext[1] || '0', 36) === 1 ? 'tcp' : 'udp',
-                currentRoundTripTime: parseInt(ext[2] || '0', 36) / 10
+                connectionType: connTypes[connType] || 'unknown',
+                protocol: proto === 1 ? 'tcp' : 'udp',
+                currentRoundTripTime: v[18] / 10
             };
 
+            // Loss pattern
+            const lossTypes = ['none', 'random', 'burst', 'tail'];
             const lossPattern = {
-                type: lossTypes[parseInt(ext[3] || '0', 36)] || 'none',
-                burstCount: parseInt(ext[4] || '0', 36),
-                maxBurstLength: parseInt(ext[5] || '0', 36) / 10,
-                avgBurstLength: parseInt(ext[6] || '0', 36) / 10,
-                lossDistribution: []  // Will be filled from lossDist section
+                type: lossTypes[lossType] || 'none',
+                burstCount: v[19],
+                maxBurstLength: v[20] / 10,
+                avgBurstLength: v[21] / 10,
+                lossDistribution: []
             };
 
-            const testConfidence = {
-                overall: confLevels[parseInt(ext[7] || '2', 36)] || 'low'
-            };
-
+            // Bandwidth estimate
+            const trends = ['stable', 'improving', 'degrading'];
             const bandwidthEstimate = {
-                downloadTrend: trends[parseInt(ext[8] || '0', 36)] || 'stable',
-                uploadTrend: trends[parseInt(ext[9] || '0', 36)] || 'stable',
-                downloadPeakMbps: parseInt(ext[10] || '0', 36) / 10,
-                uploadPeakMbps: parseInt(ext[11] || '0', 36) / 10,
-                downloadSustainedMbps: parseInt(ext[12] || '0', 36) / 10,
-                uploadSustainedMbps: parseInt(ext[13] || '0', 36) / 10,
-                downloadVariability: parseInt(ext[14] || '0', 36) / 100,
-                uploadVariability: parseInt(ext[15] || '0', 36) / 100
+                downloadTrend: trends[dlTrend] || 'stable',
+                uploadTrend: trends[ulTrend] || 'stable',
+                downloadPeakMbps: v[22] / 10,
+                uploadPeakMbps: v[23] / 10,
+                downloadSustainedMbps: v[24] / 10,
+                uploadSustainedMbps: v[25] / 10,
+                downloadVariability: v[26] / 100,
+                uploadVariability: v[27] / 100
             };
 
-            // Network score components (positions 16-19)
+            // Network score components
             const networkScoreComponents = {
-                bandwidth: parseInt(ext[16] || '0', 36),
-                latency: parseInt(ext[17] || '0', 36),
-                stability: parseInt(ext[18] || '0', 36),
-                reliability: parseInt(ext[19] || '0', 36)
+                bandwidth: v[28],
+                latency: v[29],
+                stability: v[30],
+                reliability: v[31]
+            };
+
+            // Test confidence
+            const confLevels = ['high', 'medium', 'low'];
+            const testConfidence = {
+                overall: confLevels[conf] || 'low'
             };
 
             // Decode delta-encoded sample arrays
-            const downloadSamples = decodeSamplesDelta(sections[4]);
-            const uploadSamples = decodeSamplesDelta(sections[5]);
-            const latencyUnloaded = decodeSamplesDelta(sections[6]);
-            const latencyDownload = decodeSamplesDelta(sections[7]);
-            const latencyUpload = decodeSamplesDelta(sections[8]);
+            const downloadSamples = decodeSamplesDelta(sections[1]);
+            const uploadSamples = decodeSamplesDelta(sections[2]);
+            const latencyUnloaded = decodeSamplesDelta(sections[3]);
+            const latencyDownload = decodeSamplesDelta(sections[4]);
+            const latencyUpload = decodeSamplesDelta(sections[5]);
 
             // Loss distribution
-            lossPattern.lossDistribution = decodeSamplesDelta(sections[9]);
+            lossPattern.lossDistribution = decodeSamplesDelta(sections[6]);
 
             // Server city (if present)
             let server = null;
-            if (sections.length > 10) {
+            if (sections.length > 7) {
                 try {
-                    server = decodeURIComponent(sections.slice(10).join('-'));
+                    server = decodeURIComponent(sections.slice(7).join('-'));
                 } catch (e) {
-                    server = sections.slice(10).join('-');
+                    server = sections.slice(7).join('-');
                 }
             }
 
@@ -1714,7 +1789,7 @@
                 latencyUploadMs: latencyUploadMs,
                 jitterMs: j,
                 packetLossPercent: p,
-                networkScore: ns,
+                networkScore: netScore,
                 networkScoreComponents: networkScoreComponents,
                 timestamp: t,
                 server: server,
