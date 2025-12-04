@@ -30,20 +30,17 @@
      * Initialize the application
      */
     function init() {
-        console.log('App init started');
         cacheElements();
         setupEventListeners();
         setupTheme();
 
         // Check if viewing shared results
         const isSharedView = checkForSharedResults();
-        console.log('isSharedView:', isSharedView);
 
         // Load server info (unless viewing shared results)
         if (!isSharedView) {
             loadInitialData();
         }
-        console.log('App init complete');
     }
 
     /**
@@ -403,6 +400,8 @@
         state.latencySamples = [];
         state.summary = null;
         state.quality = null;
+        state.packetLoss = null;
+        state.networkScore = null;
 
         // Reset hero values with shimmer placeholders
         const ph = '<span class="placeholder"></span>';
@@ -713,6 +712,8 @@
     function handleComplete(results, summary, quality) {
         state.summary = summary;
         state.quality = quality;
+        state.packetLoss = results.packetLoss;
+        state.networkScore = results.networkQualityScore;
 
         // Update final hero values
         updateHeroValue('download', summary.downloadMbps);
@@ -1346,21 +1347,22 @@
 
     /**
      * Encode results into a compact URL-safe string
-     * Format: v.d.u.l.j.p.t.q[.s]
-     * - All numbers in base36 for compactness
-     * - d,u,l,j multiplied by 10, p by 100 to avoid decimals
-     * - q = packed quality grades (qs*25 + qg*5 + qv)
-     * - s = server city (optional, URL-encoded)
+     * Format: {base}~{dl_samples}~{ul_samples}~{lat_samples}[~server]
+     * - Base data: v.d.u.l.ld.lu.j.p.rtt.ns.t.q (all base36)
+     * - Samples: comma-separated base36 values for sparklines/box plots
      */
     function encodeResultsForURL() {
         if (!state.summary) return null;
 
-        const v = 2;  // version 2 = compact format
         const d = Math.round(state.summary.downloadMbps * 10);
         const u = Math.round(state.summary.uploadMbps * 10);
         const l = Math.round(state.summary.latencyUnloadedMs * 10);
+        const ld = Math.round((state.summary.latencyDownloadMs || 0) * 10);
+        const lu = Math.round((state.summary.latencyUploadMs || 0) * 10);
         const j = Math.round(state.summary.jitterMs * 10);
         const p = Math.round(state.summary.packetLossPercent * 100);
+        const rtt = Math.round((state.packetLoss?.rttStatsMs?.median || 0) * 10);
+        const ns = state.networkScore?.overall || 0;
         const t = Math.floor(Date.now() / 1000);
 
         // Pack quality grades into single number (each 0-4, so max 4*25+4*5+4=124)
@@ -1372,119 +1374,188 @@
             q = qs * 25 + qg * 5 + qv;
         }
 
-        // Build compact string with base36 numbers
-        const parts = [
-            v.toString(36),
+        // Build base data section
+        const baseData = [
+            '4',  // format version
             d.toString(36),
             u.toString(36),
             l.toString(36),
+            ld.toString(36),
+            lu.toString(36),
             j.toString(36),
             p.toString(36),
+            rtt.toString(36),
+            ns.toString(36),
             t.toString(36),
             q.toString(36)
-        ];
+        ].join('.');
 
-        // Add server city if available (URL-encode for Unicode support)
+        // Encode sample arrays (downsample if needed, max 20 points)
+        const dlSamples = encodeSamples(state.downloadSamples.map(s => s.mbps), 20);
+        const ulSamples = encodeSamples(state.uploadSamples.map(s => s.mbps), 20);
+        const latSamples = encodeSamples(
+            state.latencySamples.filter(s => s.phase === 'unloaded').map(s => s.rttMs),
+            20
+        );
+
+        // Build sections with ~ separator
+        const sections = [baseData, dlSamples, ulSamples, latSamples];
+
+        // Add server city if available
         if (state.meta?.server?.city) {
-            parts.push(encodeURIComponent(state.meta.server.city));
+            sections.push(encodeURIComponent(state.meta.server.city));
         }
 
-        return parts.join('.');
+        return sections.join('~');
+    }
+
+    /**
+     * Encode an array of numeric samples to compact base36 string
+     * Downsamples to maxPoints if needed
+     */
+    function encodeSamples(values, maxPoints) {
+        if (!values || values.length === 0) return '';
+
+        // Downsample if too many points
+        let samples = values;
+        if (values.length > maxPoints) {
+            samples = downsample(values, maxPoints);
+        }
+
+        // Encode each value: multiply by 10 and convert to base36
+        return samples.map(v => Math.round(v * 10).toString(36)).join(',');
+    }
+
+    /**
+     * Downsample an array to target number of points using LTTB algorithm
+     * (Largest Triangle Three Buckets - preserves visual shape)
+     */
+    function downsample(data, targetPoints) {
+        if (data.length <= targetPoints) return data;
+
+        const result = [];
+        const bucketSize = (data.length - 2) / (targetPoints - 2);
+
+        // Always keep first point
+        result.push(data[0]);
+
+        for (let i = 0; i < targetPoints - 2; i++) {
+            const bucketStart = Math.floor((i) * bucketSize) + 1;
+            const bucketEnd = Math.floor((i + 1) * bucketSize) + 1;
+
+            // Find point in bucket with largest triangle area
+            const prevPoint = result[result.length - 1];
+            const nextBucketStart = Math.floor((i + 1) * bucketSize) + 1;
+            const nextBucketEnd = Math.min(Math.floor((i + 2) * bucketSize) + 1, data.length);
+
+            // Average of next bucket for triangle calculation
+            let nextAvg = 0;
+            for (let j = nextBucketStart; j < nextBucketEnd; j++) {
+                nextAvg += data[j];
+            }
+            nextAvg /= (nextBucketEnd - nextBucketStart) || 1;
+
+            let maxArea = -1;
+            let maxIndex = bucketStart;
+
+            for (let j = bucketStart; j < bucketEnd && j < data.length; j++) {
+                // Triangle area using cross product
+                const area = Math.abs(
+                    (bucketStart - 1 - (nextBucketStart + nextBucketEnd) / 2) * (data[j] - prevPoint) -
+                    (bucketStart - 1 - j) * (nextAvg - prevPoint)
+                );
+                if (area > maxArea) {
+                    maxArea = area;
+                    maxIndex = j;
+                }
+            }
+
+            result.push(data[maxIndex]);
+        }
+
+        // Always keep last point
+        result.push(data[data.length - 1]);
+
+        return result;
+    }
+
+    /**
+     * Decode comma-separated base36 samples back to array
+     */
+    function decodeSamples(encoded) {
+        if (!encoded || encoded === '') return [];
+        return encoded.split(',').map(s => parseInt(s, 36) / 10);
     }
 
     /**
      * Decode results from URL parameter
-     * Supports both v1 (base64 JSON) and v2 (compact dot-separated)
+     * Format: {base}~{dl_samples}~{ul_samples}~{lat_samples}[~server]
      */
     function decodeResultsFromURL(encoded) {
         try {
-            // Check if it's v2 compact format (starts with "2.")
-            if (encoded.startsWith('2.')) {
-                return decodeCompactFormat(encoded);
-            }
+            const sections = encoded.split('~');
+            if (sections.length < 4) return null;
 
-            // Fall back to v1 base64 JSON format
-            let base64 = encoded
-                .replace(/-/g, '+')
-                .replace(/_/g, '/');
-            while (base64.length % 4) {
-                base64 += '=';
-            }
+            // Parse base data
+            const parts = sections[0].split('.');
+            if (parts.length < 12 || parts[0] !== '4') return null;
 
-            const json = atob(base64);
-            const data = JSON.parse(json);
+            const d = parseInt(parts[1], 36) / 10;
+            const u = parseInt(parts[2], 36) / 10;
+            const l = parseInt(parts[3], 36) / 10;
+            const ld = parseInt(parts[4], 36) / 10;
+            const lu = parseInt(parts[5], 36) / 10;
+            const j = parseInt(parts[6], 36) / 10;
+            const p = parseInt(parts[7], 36) / 100;
+            const rtt = parseInt(parts[8], 36) / 10;
+            const ns = parseInt(parts[9], 36);
+            const t = parseInt(parts[10], 36) * 1000;
+            const q = parseInt(parts[11], 36);
 
-            if (!data.v || !data.d || !data.u) {
-                return null;
+            const qs = Math.floor(q / 25);
+            const qg = Math.floor((q % 25) / 5);
+            const qv = q % 5;
+
+            // Decode sample arrays
+            const downloadSamples = decodeSamples(sections[1]);
+            const uploadSamples = decodeSamples(sections[2]);
+            const latencySamples = decodeSamples(sections[3]);
+
+            // Server city (if present)
+            let server = null;
+            if (sections.length > 4) {
+                try {
+                    server = decodeURIComponent(sections[4]);
+                } catch (e) {
+                    server = sections[4];
+                }
             }
 
             return {
-                downloadMbps: data.d,
-                uploadMbps: data.u,
-                latencyMs: data.l || 0,
-                jitterMs: data.j || 0,
-                packetLossPercent: data.p || 0,
-                timestamp: data.t ? data.t * 1000 : Date.now(),
-                server: data.s || null,
+                downloadMbps: d,
+                uploadMbps: u,
+                latencyMs: l,
+                latencyDownloadMs: ld,
+                latencyUploadMs: lu,
+                jitterMs: j,
+                packetLossPercent: p,
+                rttMs: rtt,
+                networkScore: ns,
+                timestamp: t,
+                server: server,
                 quality: {
-                    streaming: decodeGrade(data.qs),
-                    gaming: decodeGrade(data.qg),
-                    videoChatting: decodeGrade(data.qv)
-                }
+                    streaming: decodeGrade(qs),
+                    gaming: decodeGrade(qg),
+                    videoChatting: decodeGrade(qv)
+                },
+                downloadSamples: downloadSamples,
+                uploadSamples: uploadSamples,
+                latencySamples: latencySamples
             };
         } catch (e) {
             console.error('Failed to decode shared results:', e);
             return null;
         }
-    }
-
-    /**
-     * Decode v2 compact format
-     */
-    function decodeCompactFormat(encoded) {
-        const parts = encoded.split('.');
-        if (parts.length < 8) return null;
-
-        const v = parseInt(parts[0], 36);
-        if (v !== 2) return null;
-
-        const d = parseInt(parts[1], 36) / 10;
-        const u = parseInt(parts[2], 36) / 10;
-        const l = parseInt(parts[3], 36) / 10;
-        const j = parseInt(parts[4], 36) / 10;
-        const p = parseInt(parts[5], 36) / 100;
-        const t = parseInt(parts[6], 36) * 1000;
-        const q = parseInt(parts[7], 36);
-
-        // Unpack quality grades
-        const qs = Math.floor(q / 25);
-        const qg = Math.floor((q % 25) / 5);
-        const qv = q % 5;
-
-        // Server city (optional, URL-decoded)
-        let server = null;
-        if (parts.length > 8) {
-            try {
-                server = decodeURIComponent(parts.slice(8).join('.'));
-            } catch (e) {
-                server = parts.slice(8).join('.');
-            }
-        }
-
-        return {
-            downloadMbps: d,
-            uploadMbps: u,
-            latencyMs: l,
-            jitterMs: j,
-            packetLossPercent: p,
-            timestamp: t,
-            server: server,
-            quality: {
-                streaming: decodeGrade(qs),
-                gaming: decodeGrade(qg),
-                videoChatting: decodeGrade(qv)
-            }
-        };
     }
 
     /**
@@ -1507,20 +1578,15 @@
      * Check URL for shared results and display them
      */
     function checkForSharedResults() {
-        console.log('checkForSharedResults called, URL:', window.location.href);
         const params = new URLSearchParams(window.location.search);
         const encoded = params.get('r');
-        console.log('Encoded param:', encoded);
 
         if (!encoded) {
-            console.log('No r parameter found');
             return false;
         }
 
         const results = decodeResultsFromURL(encoded);
-        console.log('Decoded results:', results);
         if (!results) {
-            console.log('Failed to decode results');
             return false;
         }
 
@@ -1533,19 +1599,9 @@
      * Display shared results in read-only mode
      */
     function displaySharedResults(results) {
-        console.log('Displaying shared results:', results);
-        console.log('Elements available:', {
-            downloadValue: !!elements.downloadValue,
-            uploadValue: !!elements.uploadValue,
-            latencyValue: !!elements.latencyValue,
-            jitterValue: !!elements.jitterValue,
-            packetLossValue: !!elements.packetLossValue
-        });
-
         // Update hero values
         if (elements.downloadValue) {
             elements.downloadValue.textContent = results.downloadMbps.toFixed(1);
-            console.log('Set download to:', results.downloadMbps.toFixed(1));
         }
         if (elements.uploadValue) {
             elements.uploadValue.textContent = results.uploadMbps.toFixed(1);
@@ -1558,6 +1614,97 @@
         }
         if (elements.packetLossValue) {
             elements.packetLossValue.textContent = results.packetLossPercent.toFixed(2);
+        }
+
+        // Render sparklines if sample data available
+        if (results.downloadSamples && results.downloadSamples.length >= 2) {
+            if (elements.downloadSparkline) {
+                const width = elements.downloadSparkline.clientWidth || 150;
+                Charts.sparkline(elements.downloadSparkline, results.downloadSamples, {
+                    width: width,
+                    height: 32,
+                    strokeColor: 'var(--color-download)',
+                    fillColor: 'var(--color-download)',
+                    fillOpacity: 0.15,
+                    strokeWidth: 1.5,
+                    dotRadius: 2
+                });
+            }
+        }
+
+        if (results.uploadSamples && results.uploadSamples.length >= 2) {
+            if (elements.uploadSparkline) {
+                const width = elements.uploadSparkline.clientWidth || 150;
+                Charts.sparkline(elements.uploadSparkline, results.uploadSamples, {
+                    width: width,
+                    height: 32,
+                    strokeColor: 'var(--color-upload)',
+                    fillColor: 'var(--color-upload)',
+                    fillOpacity: 0.15,
+                    strokeWidth: 1.5,
+                    dotRadius: 2
+                });
+            }
+        }
+
+        // Render latency box plot if sample data available
+        if (results.latencySamples && results.latencySamples.length >= 2) {
+            if (elements.unloadedLatencyBoxPlot) {
+                const parentWidth = elements.unloadedLatencyBoxPlot.parentElement?.offsetWidth || 300;
+                Charts.boxPlot(elements.unloadedLatencyBoxPlot, results.latencySamples, {
+                    width: Math.max(200, parentWidth - 16),
+                    height: 60,
+                    barColor: 'var(--color-latency)',
+                    unit: 'ms'
+                });
+            }
+
+            // Update latency stats from samples
+            const latMin = Math.min(...results.latencySamples);
+            const latMax = Math.max(...results.latencySamples);
+            const latMedian = Charts.median(results.latencySamples);
+            if (elements.unloadedMin) elements.unloadedMin.textContent = `${latMin.toFixed(1)} ms`;
+            if (elements.unloadedMedian) elements.unloadedMedian.textContent = `${latMedian.toFixed(1)} ms`;
+            if (elements.unloadedMax) elements.unloadedMax.textContent = `${latMax.toFixed(1)} ms`;
+            if (elements.unloadedLatencyCount) {
+                elements.unloadedLatencyCount.textContent = `${results.latencySamples.length}`;
+            }
+        }
+
+        // Update latency summaries for download/upload phases
+        if (results.latencyDownloadMs > 0 && elements.downloadLatencySummary) {
+            elements.downloadLatencySummary.textContent = `${results.latencyDownloadMs.toFixed(1)} ms`;
+        }
+        if (results.latencyUploadMs > 0 && elements.uploadLatencySummary) {
+            elements.uploadLatencySummary.textContent = `${results.latencyUploadMs.toFixed(1)} ms`;
+        }
+
+        // Update unloaded latency summary
+        if (elements.unloadedLatencySummary) {
+            elements.unloadedLatencySummary.textContent = `${results.latencyMs.toFixed(1)} ms`;
+        }
+
+        // Update packet loss display
+        if (elements.packetLossDetail) {
+            elements.packetLossDetail.textContent = `${results.packetLossPercent.toFixed(2)}%`;
+        }
+        if (results.rttMs > 0 && elements.rttMedian) {
+            elements.rttMedian.textContent = `${results.rttMs.toFixed(1)} ms`;
+        }
+
+        // Update network quality score if available
+        if (results.networkScore > 0) {
+            if (elements.overallScore) {
+                elements.overallScore.textContent = results.networkScore;
+            }
+            if (elements.scoreGrade) {
+                // Derive grade from score
+                let grade = 'Poor';
+                if (results.networkScore >= 90) grade = 'Excellent';
+                else if (results.networkScore >= 75) grade = 'Good';
+                else if (results.networkScore >= 50) grade = 'Fair';
+                elements.scoreGrade.textContent = grade;
+            }
         }
 
         // Update quality grades
@@ -1798,7 +1945,6 @@
      * Update data channel stats display
      */
     function updateDataChannelStatsDisplay(stats) {
-        console.log('Updating WebRTC stats:', stats);
 
         if (!stats) {
             // Set placeholders for unavailable stats
@@ -1894,11 +2040,8 @@
      */
     function updateNetworkQualityScoreDisplay(score) {
         if (!score) {
-            console.warn('updateNetworkQualityScoreDisplay: no score provided');
             return;
         }
-
-        console.log('Updating network quality display:', score);
 
         if (elements.overallScore) {
             elements.overallScore.textContent = score.overall;
