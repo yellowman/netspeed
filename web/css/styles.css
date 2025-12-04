@@ -2612,7 +2612,7 @@ button {
 }
 
 .score-bar-item > span:first-child {
-    width: 28px;
+    width: 55px;
     color: var(--color-text-tertiary);
 }
 
