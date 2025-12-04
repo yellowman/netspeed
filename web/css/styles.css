@@ -2448,28 +2448,19 @@ button {
     font-weight: 500;
 }
 
-/* Map Section */
-.map-section {
-    margin-bottom: var(--spacing-md);
-}
-
+/* Map Card (under Latency column) */
 .map-card {
     padding: 0;
     overflow: hidden;
+    margin-top: var(--spacing-md);
 }
 
 .map-container {
-    height: 250px;
+    height: 200px;
     background: var(--color-bg-tertiary);
     display: flex;
     align-items: center;
     justify-content: center;
-}
-
-@media (max-width: 768px) {
-    .map-container {
-        height: 200px;
-    }
 }
 
 /* Extras Section - Collapsible */
@@ -2621,7 +2612,7 @@ button {
 }
 
 .score-bar-item > span:first-child {
-    width: 28px;
+    width: 55px;
     color: var(--color-text-tertiary);
 }
 

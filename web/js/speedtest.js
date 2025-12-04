@@ -1400,8 +1400,13 @@ const SpeedTest = (function() {
 
             // Extract data from active pair
             if (activePair) {
+                // Try Chrome-style currentRoundTripTime first
                 if (activePair.currentRoundTripTime !== undefined) {
                     currentRoundTripTime = activePair.currentRoundTripTime * 1000;
+                }
+                // Firefox fallback: calculate from totalRoundTripTime / responsesReceived
+                else if (activePair.totalRoundTripTime !== undefined && activePair.responsesReceived > 0) {
+                    currentRoundTripTime = (activePair.totalRoundTripTime / activePair.responsesReceived) * 1000;
                 }
                 if (activePair.availableOutgoingBitrate !== undefined) {
                     availableOutgoingBitrate = activePair.availableOutgoingBitrate;

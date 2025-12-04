@@ -19,6 +19,7 @@
         latencySamples: [],
         testStartTime: null,
         timingWarningShown: false,
+        timingFallbackCount: 0,
         mapRendered: false
     };
 
@@ -32,7 +33,14 @@
         cacheElements();
         setupEventListeners();
         setupTheme();
-        loadInitialData();
+
+        // Check if viewing shared results
+        const isSharedView = checkForSharedResults();
+
+        // Load server info (unless viewing shared results)
+        if (!isSharedView) {
+            loadInitialData();
+        }
     }
 
     /**
@@ -127,7 +135,6 @@
         elements.uploadVariability = document.getElementById('uploadVariability');
 
         // Network quality score
-        elements.gaugeFill = document.getElementById('gaugeFill');
         elements.overallScore = document.getElementById('overallScore');
         elements.scoreGrade = document.getElementById('scoreGrade');
         elements.scoreDescription = document.getElementById('scoreDescription');
@@ -328,6 +335,7 @@
         state.isRunning = true;
         state.testStartTime = Date.now();
         state.timingWarningShown = false;
+        state.timingFallbackCount = 0;
         resetResults();
         updateUIState('running');
 
@@ -776,12 +784,14 @@
     }
 
     /**
-     * Handle timing API warnings - show toast once per test run
+     * Handle timing API warnings - show toast only after multiple fallbacks
      */
     function handleTimingWarning(type, message) {
-        if (!state.timingWarningShown) {
+        state.timingFallbackCount++;
+        // Only show warning if we've had multiple fallbacks (not just initial timing hiccups)
+        if (!state.timingWarningShown && state.timingFallbackCount >= 5) {
             state.timingWarningShown = true;
-            showToast('Resource Timing API unavailable - latency and bandwidth measurements may be less accurate', 5000);
+            showToast('Resource Timing API limited - some measurements using fallback timing', 5000);
         }
     }
 
@@ -1329,17 +1339,182 @@
     }
 
     /**
-     * Share results
+     * Encode results into a compact URL-safe string
+     */
+    function encodeResultsForURL() {
+        if (!state.summary) return null;
+
+        // Compact result object with short keys
+        const data = {
+            d: Math.round(state.summary.downloadMbps * 10) / 10,  // download
+            u: Math.round(state.summary.uploadMbps * 10) / 10,    // upload
+            l: Math.round(state.summary.latencyUnloadedMs * 10) / 10,  // latency
+            j: Math.round(state.summary.jitterMs * 10) / 10,      // jitter
+            p: Math.round(state.summary.packetLossPercent * 100) / 100,  // packet loss
+            t: Math.floor(Date.now() / 1000),  // timestamp (seconds)
+            v: 1  // version for future compatibility
+        };
+
+        // Add quality grades if available
+        if (state.quality) {
+            data.qs = state.quality.streaming?.charAt(0) || '';  // first letter of grade
+            data.qg = state.quality.gaming?.charAt(0) || '';
+            data.qv = state.quality.videoChatting?.charAt(0) || '';
+        }
+
+        // Add server info if available
+        if (state.meta?.server?.city) {
+            data.s = state.meta.server.city;
+        }
+
+        // Encode as base64url (URL-safe base64)
+        const json = JSON.stringify(data);
+        const base64 = btoa(json)
+            .replace(/\+/g, '-')
+            .replace(/\//g, '_')
+            .replace(/=+$/, '');
+
+        return base64;
+    }
+
+    /**
+     * Decode results from URL parameter
+     */
+    function decodeResultsFromURL(encoded) {
+        try {
+            // Restore base64 padding and characters
+            let base64 = encoded
+                .replace(/-/g, '+')
+                .replace(/_/g, '/');
+            // Add padding if needed
+            while (base64.length % 4) {
+                base64 += '=';
+            }
+
+            const json = atob(base64);
+            const data = JSON.parse(json);
+
+            // Validate version and required fields
+            if (!data.v || !data.d || !data.u) {
+                return null;
+            }
+
+            return {
+                downloadMbps: data.d,
+                uploadMbps: data.u,
+                latencyMs: data.l || 0,
+                jitterMs: data.j || 0,
+                packetLossPercent: data.p || 0,
+                timestamp: data.t ? data.t * 1000 : Date.now(),
+                server: data.s || null,
+                quality: {
+                    streaming: expandGrade(data.qs),
+                    gaming: expandGrade(data.qg),
+                    videoChatting: expandGrade(data.qv)
+                }
+            };
+        } catch (e) {
+            console.error('Failed to decode shared results:', e);
+            return null;
+        }
+    }
+
+    /**
+     * Expand single-letter grade to full word
+     */
+    function expandGrade(letter) {
+        const grades = { G: 'Great', O: 'OK', P: 'Poor', N: 'N/A' };
+        return grades[letter] || 'N/A';
+    }
+
+    /**
+     * Check URL for shared results and display them
+     */
+    function checkForSharedResults() {
+        const params = new URLSearchParams(window.location.search);
+        const encoded = params.get('r');
+
+        if (!encoded) return false;
+
+        const results = decodeResultsFromURL(encoded);
+        if (!results) return false;
+
+        // Display shared results
+        displaySharedResults(results);
+        return true;
+    }
+
+    /**
+     * Display shared results in read-only mode
+     */
+    function displaySharedResults(results) {
+        // Update hero values
+        if (elements.downloadValue) {
+            elements.downloadValue.textContent = results.downloadMbps.toFixed(1);
+        }
+        if (elements.uploadValue) {
+            elements.uploadValue.textContent = results.uploadMbps.toFixed(1);
+        }
+        if (elements.latencyValue) {
+            elements.latencyValue.textContent = results.latencyMs.toFixed(1);
+        }
+        if (elements.jitterValue) {
+            elements.jitterValue.textContent = results.jitterMs.toFixed(1);
+        }
+        if (elements.packetLossValue) {
+            elements.packetLossValue.textContent = results.packetLossPercent.toFixed(2);
+        }
+
+        // Update quality grades
+        if (results.quality) {
+            updateQualityScores({
+                videoStreaming: results.quality.streaming,
+                gaming: results.quality.gaming,
+                videoChatting: results.quality.videoChatting
+            });
+        }
+
+        // Update timestamp
+        if (elements.measureTime) {
+            const date = new Date(results.timestamp);
+            elements.measureTime.textContent = `Shared result from ${formatTime(date)}`;
+        }
+
+        // Show server if available
+        if (results.server && elements.serverLocation) {
+            elements.serverLocation.textContent = results.server;
+        }
+
+        // Update UI to show this is a shared result
+        if (elements.startButton) {
+            elements.startButton.textContent = 'Run New Test';
+        }
+
+        // Show a notice that this is a shared result
+        showToast('Viewing shared speed test results', 3000);
+    }
+
+    /**
+     * Share results with encoded URL
      */
     async function shareResults() {
         if (!state.summary) return;
 
+        const encoded = encodeResultsForURL();
+        if (!encoded) return;
+
+        // Build share URL
+        const baseUrl = window.location.origin + window.location.pathname;
+        const shareUrl = `${baseUrl}?r=${encoded}`;
+
+        const shareText = `Download: ${state.summary.downloadMbps.toFixed(1)} Mbps | ` +
+                         `Upload: ${state.summary.uploadMbps.toFixed(1)} Mbps | ` +
+                         `Latency: ${state.summary.latencyUnloadedMs.toFixed(1)} ms`;
+
         const shareData = {
             title: 'Speed Test Results',
-            text: `Download: ${state.summary.downloadMbps.toFixed(1)} Mbps\n` +
-                  `Upload: ${state.summary.uploadMbps.toFixed(1)} Mbps\n` +
-                  `Latency: ${state.summary.latencyUnloadedMs.toFixed(1)} ms`,
-            url: window.location.href
+            text: shareText,
+            url: shareUrl
         };
 
         if (navigator.share) {
@@ -1347,11 +1522,11 @@
                 await navigator.share(shareData);
             } catch (err) {
                 if (err.name !== 'AbortError') {
-                    copyToClipboard(shareData.text);
+                    copyToClipboard(shareUrl);
                 }
             }
         } else {
-            copyToClipboard(shareData.text);
+            copyToClipboard(shareUrl);
         }
     }
 
@@ -1373,14 +1548,38 @@
     }
 
     /**
-     * Copy text to clipboard
+     * Copy text to clipboard (with fallback for non-HTTPS)
      */
     function copyToClipboard(text) {
-        navigator.clipboard.writeText(text).then(() => {
+        // Modern clipboard API (requires HTTPS)
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+            navigator.clipboard.writeText(text).then(() => {
+                showNotification('Results copied to clipboard');
+            }).catch(() => {
+                fallbackCopyToClipboard(text);
+            });
+        } else {
+            fallbackCopyToClipboard(text);
+        }
+    }
+
+    /**
+     * Fallback clipboard copy using textarea + execCommand
+     */
+    function fallbackCopyToClipboard(text) {
+        const textarea = document.createElement('textarea');
+        textarea.value = text;
+        textarea.style.position = 'fixed';
+        textarea.style.left = '-9999px';
+        document.body.appendChild(textarea);
+        textarea.select();
+        try {
+            document.execCommand('copy');
             showNotification('Results copied to clipboard');
-        }).catch(() => {
+        } catch (err) {
             showNotification('Failed to copy results', 'error');
-        });
+        }
+        document.body.removeChild(textarea);
     }
 
     /**
@@ -1605,22 +1804,6 @@
         }
 
         console.log('Updating network quality display:', score);
-
-        // Update gauge - use setAttribute for SVG attributes
-        if (elements.gaugeFill) {
-            // Circle circumference is 2*PI*50 = 314
-            const circumference = 314;
-            const offset = circumference - (score.overall / 100) * circumference;
-            // Use setAttribute for SVG elements - more reliable than style property
-            elements.gaugeFill.setAttribute('stroke-dashoffset', offset);
-
-            // Set grade class for color
-            elements.gaugeFill.setAttribute('class', 'gauge-fill');
-            const gradeClass = score.grade.toLowerCase().replace('+', '-plus');
-            elements.gaugeFill.classList.add(`grade-${gradeClass}`);
-        } else {
-            console.warn('gaugeFill element not found');
-        }
 
         if (elements.overallScore) {
             elements.overallScore.textContent = score.overall;

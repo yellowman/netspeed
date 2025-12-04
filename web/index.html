@@ -278,19 +278,17 @@
                             </div>
                         </div>
                     </div>
-                </div>
-            </div>
-        </section>
 
-        <!-- Map Section -->
-        <section class="section map-section">
-            <div class="card map-card">
-                <div class="map-container" id="mapContainer">
-                    <div class="map-placeholder">
-                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
-                            <circle cx="12" cy="10" r="3"/>
-                            <path d="M12 21.7C17.3 17 20 13 20 10a8 8 0 10-16 0c0 3 2.7 7 8 11.7z"/>
-                        </svg>
+                    <!-- Map under Latency -->
+                    <div class="card map-card">
+                        <div class="map-container" id="mapContainer">
+                            <div class="map-placeholder">
+                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+                                    <circle cx="12" cy="10" r="3"/>
+                                    <path d="M12 21.7C17.3 17 20 13 20 10a8 8 0 10-16 0c0 3 2.7 7 8 11.7z"/>
+                                </svg>
+                            </div>
+                        </div>
                     </div>
                 </div>
             </div>
@@ -387,7 +385,7 @@
                     </svg>
                 </summary>
                 <div class="extras-content">
-                    <!-- Bandwidth Analysis -->
+                    <!-- Row 1: Speeds and WebRTC -->
                     <div class="extras-grid">
                         <div class="bandwidth-mini download">
                             <span class="bandwidth-mini-label">Download</span>
@@ -406,6 +404,17 @@
                             </div>
                         </div>
 
+                        <!-- WebRTC Info -->
+                        <div class="webrtc-mini">
+                            <span class="webrtc-mini-label">WebRTC</span>
+                            <span class="connection-type-badge" id="webrtcConnectionBadge"><span class="placeholder"></span></span>
+                            <div class="webrtc-mini-stats">
+                                <span>Path: <b id="connectionPath"><span class="placeholder"></span></b></span>
+                                <span>Protocol: <b id="webrtcProtocol"><span class="placeholder"></span></b></span>
+                                <span>ICE RTT: <b id="iceRtt"><span class="placeholder"></span></b></span>
+                            </div>
+                        </div>
+
                         <!-- Network Score Mini -->
                         <div class="score-mini">
                             <div class="score-mini-gauge" id="scoreGauge">
@@ -413,10 +422,10 @@
                                 <span class="score-mini-grade" id="scoreGrade"><span class="placeholder"></span></span>
                             </div>
                             <div class="score-mini-bars">
-                                <div class="score-bar-item"><span>BW</span><div class="score-bar-bg"><div class="score-bar-fill" id="bandwidthBar"></div></div><span id="bandwidthScore"><span class="placeholder"></span></span></div>
-                                <div class="score-bar-item"><span>Lat</span><div class="score-bar-bg"><div class="score-bar-fill" id="latencyBar"></div></div><span id="latencyScore"><span class="placeholder"></span></span></div>
-                                <div class="score-bar-item"><span>Stab</span><div class="score-bar-bg"><div class="score-bar-fill" id="stabilityBar"></div></div><span id="stabilityScore"><span class="placeholder"></span></span></div>
-                                <div class="score-bar-item"><span>Rel</span><div class="score-bar-bg"><div class="score-bar-fill" id="reliabilityBar"></div></div><span id="reliabilityScore"><span class="placeholder"></span></span></div>
+                                <div class="score-bar-item"><span>Bandwidth</span><div class="score-bar-bg"><div class="score-bar-fill" id="bandwidthBar"></div></div><span id="bandwidthScore"><span class="placeholder"></span></span></div>
+                                <div class="score-bar-item"><span>Latency</span><div class="score-bar-bg"><div class="score-bar-fill" id="latencyBar"></div></div><span id="latencyScore"><span class="placeholder"></span></span></div>
+                                <div class="score-bar-item"><span>Stability</span><div class="score-bar-bg"><div class="score-bar-fill" id="stabilityBar"></div></div><span id="stabilityScore"><span class="placeholder"></span></span></div>
+                                <div class="score-bar-item"><span>Reliability</span><div class="score-bar-bg"><div class="score-bar-fill" id="reliabilityBar"></div></div><span id="reliabilityScore"><span class="placeholder"></span></span></div>
                             </div>
                         </div>
 
@@ -431,17 +440,6 @@
                                 <span><span id="connectionIcon"></span> Connection: <span id="connectionDetail"><span class="placeholder"></span></span></span>
                             </div>
                             <div class="confidence-warnings" id="confidenceWarnings"></div>
-                        </div>
-
-                        <!-- WebRTC Info -->
-                        <div class="webrtc-mini">
-                            <span class="webrtc-mini-label">WebRTC</span>
-                            <span class="connection-type-badge" id="webrtcConnectionBadge"><span class="placeholder"></span></span>
-                            <div class="webrtc-mini-stats">
-                                <span>Path: <b id="connectionPath"><span class="placeholder"></span></b></span>
-                                <span>Protocol: <b id="webrtcProtocol"><span class="placeholder"></span></b></span>
-                                <span>ICE RTT: <b id="iceRtt"><span class="placeholder"></span></b></span>
-                            </div>
                         </div>
 
                         <!-- Additional Location Info -->
