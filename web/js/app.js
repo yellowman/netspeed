@@ -1393,12 +1393,12 @@
             Math.round((serverLoc?.lon || 0) * 1000)
         ].map(v => encodeSignedInt(v)).join('.');
 
-        // Sample arrays with delta encoding (max 8 points for speeds, 8 for latency)
-        const dl = encodeSamplesDelta(state.downloadSamples.map(s => s.mbps), 8);
-        const ul = encodeSamplesDelta(state.uploadSamples.map(s => s.mbps), 8);
-        const latU = encodeSamplesDelta(state.latencySamples.filter(s => s.phase === 'unloaded').map(s => s.rttMs), 8);
-        const latD = encodeSamplesDelta(state.latencySamples.filter(s => s.phase === 'download').map(s => s.rttMs), 5);
-        const latL = encodeSamplesDelta(state.latencySamples.filter(s => s.phase === 'upload').map(s => s.rttMs), 5);
+        // Sample arrays with delta encoding (all samples)
+        const dl = encodeSamplesDelta(state.downloadSamples.map(s => s.mbps));
+        const ul = encodeSamplesDelta(state.uploadSamples.map(s => s.mbps));
+        const latU = encodeSamplesDelta(state.latencySamples.filter(s => s.phase === 'unloaded').map(s => s.rttMs));
+        const latD = encodeSamplesDelta(state.latencySamples.filter(s => s.phase === 'download').map(s => s.rttMs));
+        const latL = encodeSamplesDelta(state.latencySamples.filter(s => s.phase === 'upload').map(s => s.rttMs));
 
         // Build with - separator (URL-safe, no encoding needed)
         const parts = [base, pkt, geo, dl, ul, latU, latD, latL];
@@ -1428,43 +1428,100 @@
     }
 
     /**
-     * Encode samples with delta compression
-     * Format: first*10 in base36, then deltas separated by commas
+     * Encode samples with compact delta + run-length compression
+     * Format: first.deltas where deltas use: a-z=1-26, A-Z=-1to-26, 0=0, Z{n}=n zeros, _{base36}=large
      */
-    function encodeSamplesDelta(values, maxPoints) {
+    function encodeSamplesDelta(values) {
         if (!values || values.length === 0) return '';
 
-        // Simple downsample by picking evenly spaced points
-        let samples = values;
-        if (values.length > maxPoints) {
-            samples = [];
-            for (let i = 0; i < maxPoints; i++) {
-                const idx = Math.floor(i * (values.length - 1) / (maxPoints - 1));
-                samples.push(values[idx]);
+        const samples = values;
+
+        // Delta encode with compact representation
+        const scaled = samples.map(v => Math.round(v * 10));
+        let result = scaled[0].toString(36);
+
+        let i = 1;
+        while (i < scaled.length) {
+            const delta = scaled[i] - scaled[i - 1];
+
+            // Count consecutive zeros for run-length encoding
+            if (delta === 0) {
+                let zeroCount = 0;
+                while (i < scaled.length && scaled[i] - scaled[i - 1] === 0) {
+                    zeroCount++;
+                    i++;
+                }
+                result += zeroCount === 1 ? '0' : 'Z' + zeroCount.toString(36);
+            } else if (delta >= 1 && delta <= 26) {
+                result += String.fromCharCode(96 + delta); // a-z for 1-26
+                i++;
+            } else if (delta >= -26 && delta <= -1) {
+                result += String.fromCharCode(64 - delta); // A-Z for -1 to -26
+                i++;
+            } else {
+                result += '_' + encodeSignedInt(delta); // larger deltas
+                i++;
             }
         }
-
-        // Delta encode: first value absolute, rest as deltas
-        const scaled = samples.map(v => Math.round(v * 10));
-        const result = [scaled[0].toString(36)];
-        for (let i = 1; i < scaled.length; i++) {
-            const delta = scaled[i] - scaled[i - 1];
-            result.push(encodeSignedInt(delta));
-        }
-        return result.join(',');
+        return result;
     }
 
     /**
-     * Decode delta-encoded samples back to array
+     * Decode compact delta-encoded samples
      */
     function decodeSamplesDelta(encoded) {
         if (!encoded || encoded === '') return [];
-        const parts = encoded.split(',');
-        const result = [parseInt(parts[0], 36) / 10];
-        let prev = parseInt(parts[0], 36);
-        for (let i = 1; i < parts.length; i++) {
-            prev += decodeSignedInt(parts[i]);
-            result.push(prev / 10);
+
+        // Find first non-base36 char to split first value
+        let firstEnd = 0;
+        while (firstEnd < encoded.length && /[0-9a-z]/i.test(encoded[firstEnd]) &&
+               !'ABCDEFGHIJKLMNOPQRSTUVWXYZ'.includes(encoded[firstEnd])) {
+            firstEnd++;
+        }
+        // Handle case where first char could be part of delta encoding
+        const firstMatch = encoded.match(/^[0-9a-z]+/i);
+        if (!firstMatch) return [];
+
+        let prev = parseInt(firstMatch[0], 36);
+        const result = [prev / 10];
+        let i = firstMatch[0].length;
+
+        while (i < encoded.length) {
+            const c = encoded[i];
+            if (c === '0') {
+                result.push(prev / 10); // delta 0
+                i++;
+            } else if (c === 'Z') {
+                // Run of zeros: Z followed by count
+                i++;
+                let countStr = '';
+                while (i < encoded.length && /[0-9a-z]/.test(encoded[i])) {
+                    countStr += encoded[i];
+                    i++;
+                }
+                const count = parseInt(countStr, 36);
+                for (let j = 0; j < count; j++) result.push(prev / 10);
+            } else if (c >= 'a' && c <= 'z') {
+                prev += c.charCodeAt(0) - 96; // 1-26
+                result.push(prev / 10);
+                i++;
+            } else if (c >= 'A' && c <= 'Z') {
+                prev -= c.charCodeAt(0) - 64; // -1 to -26
+                result.push(prev / 10);
+                i++;
+            } else if (c === '_') {
+                // Large delta
+                i++;
+                let deltaStr = '';
+                while (i < encoded.length && /[0-9a-zn]/.test(encoded[i])) {
+                    deltaStr += encoded[i];
+                    i++;
+                }
+                prev += decodeSignedInt(deltaStr);
+                result.push(prev / 10);
+            } else {
+                i++; // skip unknown
+            }
         }
         return result;
     }
