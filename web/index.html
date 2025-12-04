@@ -385,7 +385,7 @@
                     </svg>
                 </summary>
                 <div class="extras-content">
-                    <!-- Bandwidth Analysis -->
+                    <!-- Row 1: Speeds and WebRTC -->
                     <div class="extras-grid">
                         <div class="bandwidth-mini download">
                             <span class="bandwidth-mini-label">Download</span>
@@ -401,6 +401,17 @@
                                 <span>Peak: <b id="uploadPeak"><span class="placeholder"></span></b></span>
                                 <span>Sustained: <b id="uploadSustained"><span class="placeholder"></span></b></span>
                                 <span id="uploadTrend"></span>
+                            </div>
+                        </div>
+
+                        <!-- WebRTC Info -->
+                        <div class="webrtc-mini">
+                            <span class="webrtc-mini-label">WebRTC</span>
+                            <span class="connection-type-badge" id="webrtcConnectionBadge"><span class="placeholder"></span></span>
+                            <div class="webrtc-mini-stats">
+                                <span>Path: <b id="connectionPath"><span class="placeholder"></span></b></span>
+                                <span>Protocol: <b id="webrtcProtocol"><span class="placeholder"></span></b></span>
+                                <span>ICE RTT: <b id="iceRtt"><span class="placeholder"></span></b></span>
                             </div>
                         </div>
 
@@ -429,17 +440,6 @@
                                 <span><span id="connectionIcon"></span> Connection: <span id="connectionDetail"><span class="placeholder"></span></span></span>
                             </div>
                             <div class="confidence-warnings" id="confidenceWarnings"></div>
-                        </div>
-
-                        <!-- WebRTC Info -->
-                        <div class="webrtc-mini">
-                            <span class="webrtc-mini-label">WebRTC</span>
-                            <span class="connection-type-badge" id="webrtcConnectionBadge"><span class="placeholder"></span></span>
-                            <div class="webrtc-mini-stats">
-                                <span>Path: <b id="connectionPath"><span class="placeholder"></span></b></span>
-                                <span>Protocol: <b id="webrtcProtocol"><span class="placeholder"></span></b></span>
-                                <span>ICE RTT: <b id="iceRtt"><span class="placeholder"></span></b></span>
-                            </div>
                         </div>
 
                         <!-- Additional Location Info -->
