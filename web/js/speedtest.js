@@ -1370,24 +1370,23 @@ const SpeedTest = (function() {
                 }
             });
 
+            // Find active candidate-pair with multiple strategies
+            let activePair = null;
+
             stats.forEach(report => {
-                // Look for the active candidate-pair (nominated or succeeded state)
-                if (report.type === 'candidate-pair' && (report.nominated || report.state === 'succeeded')) {
-                    if (report.currentRoundTripTime !== undefined) {
-                        currentRoundTripTime = report.currentRoundTripTime * 1000;
-                    }
-                    if (report.availableOutgoingBitrate !== undefined) {
-                        availableOutgoingBitrate = report.availableOutgoingBitrate;
-                    }
-                    // Get candidate types from referenced candidates
-                    const localCandidate = candidateMap.get(report.localCandidateId);
-                    const remoteCandidate = candidateMap.get(report.remoteCandidateId);
-                    if (localCandidate) {
-                        localCandidateType = localCandidate.candidateType;
-                        if (localCandidate.protocol) protocol = localCandidate.protocol;
-                    }
-                    if (remoteCandidate) {
-                        remoteCandidateType = remoteCandidate.candidateType;
+                if (report.type === 'candidate-pair') {
+                    // Strategy 1: nominated pair (Chrome)
+                    // Strategy 2: succeeded state (Firefox/Safari)
+                    // Strategy 3: in-progress with RTT (fallback)
+                    const isActive = report.nominated ||
+                                     report.state === 'succeeded' ||
+                                     (report.state === 'in-progress' && report.currentRoundTripTime !== undefined);
+
+                    if (isActive) {
+                        // Prefer pairs with RTT data
+                        if (!activePair || (report.currentRoundTripTime !== undefined && activePair.currentRoundTripTime === undefined)) {
+                            activePair = report;
+                        }
                     }
                 }
 
@@ -1398,6 +1397,26 @@ const SpeedTest = (function() {
                     messagesReceived = report.messagesReceived || 0;
                 }
             });
+
+            // Extract data from active pair
+            if (activePair) {
+                if (activePair.currentRoundTripTime !== undefined) {
+                    currentRoundTripTime = activePair.currentRoundTripTime * 1000;
+                }
+                if (activePair.availableOutgoingBitrate !== undefined) {
+                    availableOutgoingBitrate = activePair.availableOutgoingBitrate;
+                }
+                // Get candidate types from referenced candidates
+                const localCandidate = candidateMap.get(activePair.localCandidateId);
+                const remoteCandidate = candidateMap.get(activePair.remoteCandidateId);
+                if (localCandidate) {
+                    localCandidateType = localCandidate.candidateType;
+                    if (localCandidate.protocol) protocol = localCandidate.protocol;
+                }
+                if (remoteCandidate) {
+                    remoteCandidateType = remoteCandidate.candidateType;
+                }
+            }
 
             // Determine connection type
             if (localCandidateType === 'relay' || remoteCandidateType === 'relay') {
