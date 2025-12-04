@@ -1448,9 +1448,19 @@
      * Display shared results in read-only mode
      */
     function displaySharedResults(results) {
+        console.log('Displaying shared results:', results);
+        console.log('Elements available:', {
+            downloadValue: !!elements.downloadValue,
+            uploadValue: !!elements.uploadValue,
+            latencyValue: !!elements.latencyValue,
+            jitterValue: !!elements.jitterValue,
+            packetLossValue: !!elements.packetLossValue
+        });
+
         // Update hero values
         if (elements.downloadValue) {
             elements.downloadValue.textContent = results.downloadMbps.toFixed(1);
+            console.log('Set download to:', results.downloadMbps.toFixed(1));
         }
         if (elements.uploadValue) {
             elements.uploadValue.textContent = results.uploadMbps.toFixed(1);
