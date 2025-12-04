@@ -1545,13 +1545,15 @@
         // Update hero values
         if (elements.downloadValue) {
             elements.downloadValue.textContent = results.downloadMbps.toFixed(1);
-            console.log('Set download to:', results.downloadMbps.toFixed(1));
+            console.log('Set download to:', results.downloadMbps.toFixed(1), 'innerHTML now:', elements.downloadValue.innerHTML);
         }
         if (elements.uploadValue) {
             elements.uploadValue.textContent = results.uploadMbps.toFixed(1);
+            console.log('Set upload to:', results.uploadMbps.toFixed(1), 'innerHTML now:', elements.uploadValue.innerHTML);
         }
         if (elements.latencyValue) {
             elements.latencyValue.textContent = results.latencyMs.toFixed(1);
+            console.log('Set latency to:', results.latencyMs.toFixed(1), 'innerHTML now:', elements.latencyValue.innerHTML);
         }
         if (elements.jitterValue) {
             elements.jitterValue.textContent = results.jitterMs.toFixed(1);
@@ -1559,6 +1561,12 @@
         if (elements.packetLossValue) {
             elements.packetLossValue.textContent = results.packetLossPercent.toFixed(2);
         }
+
+        // Debug: verify DOM actually updated
+        setTimeout(() => {
+            console.log('After timeout - download innerHTML:', elements.downloadValue?.innerHTML);
+            console.log('After timeout - download computed style color:', getComputedStyle(elements.downloadValue).color);
+        }, 100);
 
         // Update quality grades
         if (results.quality) {
