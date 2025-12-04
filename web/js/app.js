@@ -1361,11 +1361,11 @@
             v: 1  // version for future compatibility
         };
 
-        // Add quality grades if available
+        // Add quality grades if available (use numeric codes: 4=Great, 3=Good, 2=Okay, 1=Poor)
         if (state.quality) {
-            data.qs = state.quality.videoStreaming?.charAt(0) || '';  // first letter of grade
-            data.qg = state.quality.gaming?.charAt(0) || '';
-            data.qv = state.quality.videoChatting?.charAt(0) || '';
+            data.qs = encodeGrade(state.quality.videoStreaming);
+            data.qg = encodeGrade(state.quality.gaming);
+            data.qv = encodeGrade(state.quality.videoChatting);
         }
 
         // Add server info if available
@@ -1414,9 +1414,9 @@
                 timestamp: data.t ? data.t * 1000 : Date.now(),
                 server: data.s || null,
                 quality: {
-                    streaming: expandGrade(data.qs),
-                    gaming: expandGrade(data.qg),
-                    videoChatting: expandGrade(data.qv)
+                    streaming: decodeGrade(data.qs),
+                    gaming: decodeGrade(data.qg),
+                    videoChatting: decodeGrade(data.qv)
                 }
             };
         } catch (e) {
@@ -1426,11 +1426,19 @@
     }
 
     /**
-     * Expand single-letter grade to full word
+     * Encode grade to numeric code (4=Great, 3=Good, 2=Okay, 1=Poor)
      */
-    function expandGrade(letter) {
-        const grades = { G: 'Great', O: 'OK', P: 'Poor', N: 'N/A' };
-        return grades[letter] || 'N/A';
+    function encodeGrade(grade) {
+        const codes = { 'Great': 4, 'Good': 3, 'Okay': 2, 'Poor': 1 };
+        return codes[grade] || 0;
+    }
+
+    /**
+     * Decode numeric grade code to full word
+     */
+    function decodeGrade(code) {
+        const grades = { 4: 'Great', 3: 'Good', 2: 'Okay', 1: 'Poor' };
+        return grades[code] || 'N/A';
     }
 
     /**
