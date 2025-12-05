@@ -1580,33 +1580,102 @@ type ThroughputSampleExtended = ThroughputSample & {
 
 ---
 
-## 15. test run counts
+## 15. test profiles and adaptive selection
 
-### 15.1 download profiles
+### 15.1 all available download profiles
 
-| Profile | Size | Runs |
-|---------|------|------|
-| 100kB   | 100,000 bytes | 10 |
-| 1MB     | 1,000,000 bytes | 8 |
-| 10MB    | 10,000,000 bytes | 6 |
-| 25MB    | 25,000,000 bytes | 4 |
-| 100MB   | 100,000,000 bytes | 3 |
+| Profile | Size | Runs | Notes |
+|---------|------|------|-------|
+| 100kB   | 100,000 bytes | 10 | baseline (always included) |
+| 1MB     | 1,000,000 bytes | 8 | baseline (always included) |
+| 10MB    | 10,000,000 bytes | 6 | |
+| 25MB    | 25,000,000 bytes | 4 | |
+| 100MB   | 100,000,000 bytes | 3 | |
+| 250MB   | 250,000,000 bytes | 2 | |
+| 500MB   | 500,000,000 bytes | 2 | 1s at 4 Gbps |
+| 1GB     | 1,000,000,000 bytes | 2 | 1s at 8 Gbps |
+| 2GB     | 2,000,000,000 bytes | 2 | 1s at 16 Gbps |
 
-**Total download tests:** 31
+### 15.2 all available upload profiles
 
-### 15.2 upload profiles
+| Profile | Size | Runs | Notes |
+|---------|------|------|-------|
+| 100kB   | 100,000 bytes | 8 | baseline (always included) |
+| 1MB     | 1,000,000 bytes | 6 | baseline (always included) |
+| 10MB    | 10,000,000 bytes | 4 | |
+| 25MB    | 25,000,000 bytes | 4 | |
+| 50MB    | 50,000,000 bytes | 3 | |
+| 100MB   | 100,000,000 bytes | 2 | |
+| 250MB   | 250,000,000 bytes | 2 | 1s at 2 Gbps |
+| 500MB   | 500,000,000 bytes | 2 | 1s at 4 Gbps |
+| 1GB     | 1,000,000,000 bytes | 2 | 1s at 8 Gbps |
 
-| Profile | Size | Runs |
-|---------|------|------|
-| 100kB   | 100,000 bytes | 8 |
-| 1MB     | 1,000,000 bytes | 6 |
-| 10MB    | 10,000,000 bytes | 4 |
-| 25MB    | 25,000,000 bytes | 4 |
-| 50MB    | 50,000,000 bytes | 3 |
+**Note:** Sizes use decimal (kB/MB/GB) notation: 1 kB = 1,000 bytes, 1 MB = 1,000,000 bytes, 1 GB = 1,000,000,000 bytes.
 
-**Total upload tests:** 25
+### 15.3 adaptive profile selection
 
-**Note:** Sizes use decimal (kB/MB) notation: 1 kB = 1,000 bytes, 1 MB = 1,000,000 bytes.
+profiles are selected dynamically based on estimated connection speed. the algorithm uses linear time-based scaling:
+
+**formula:**
+```
+estimatedTime = (bytes × 8) / (speedMbps × 1,000,000)
+include profile if estimatedTime ≤ 4 seconds
+```
+
+**selection process:**
+
+1. **estimation phase:** run 4 tests with 1MB profile to estimate speed
+2. **profile selection:** include profiles where estimated transfer time ≤ 4 seconds
+3. **test execution:** run remaining tests with selected profiles
+
+**baseline profiles (always included):**
+- 100kB and 1MB are always included regardless of speed
+
+**examples at various speeds:**
+
+| Speed | Download Profiles | Upload Profiles |
+|-------|-------------------|-----------------|
+| 128 Kbps | 100kB, 1MB | 100kB, 1MB |
+| 5 Mbps | 100kB, 1MB | 100kB, 1MB |
+| 40 Mbps | 100kB, 1MB, 10MB | 100kB, 1MB |
+| 200 Mbps | 100kB, 1MB, 10MB, 25MB, 100MB | 100kB, 1MB, 10MB, 25MB, 50MB, 100MB |
+| 1 Gbps | 100kB, 1MB, 10MB, 25MB, 100MB, 250MB, 500MB | 100kB, 1MB, ... 500MB |
+| 5 Gbps | all profiles | all profiles |
+| 100 Gbps | all profiles | all profiles |
+
+**implementation:**
+
+```ts
+function estimateTransferTime(bytes: number, speedMbps: number): number {
+  if (speedMbps <= 0) return Infinity;
+  return (bytes * 8) / (speedMbps * 1e6);
+}
+
+function selectProfiles(estimatedSpeedMbps: number, allProfiles: ProfileMap): ProfileMap {
+  // Always include baseline
+  const profiles = {
+    '100kB': allProfiles['100kB'],
+    '1MB': allProfiles['1MB']
+  };
+
+  // Add larger profiles based on estimated transfer time
+  for (const [name, profile] of Object.entries(allProfiles)) {
+    if (name === '100kB' || name === '1MB') continue;
+    const estimatedSeconds = estimateTransferTime(profile.bytes, estimatedSpeedMbps);
+    if (estimatedSeconds <= 4) {
+      profiles[name] = profile;
+    }
+  }
+
+  return profiles;
+}
+```
+
+this ensures:
+- slow connections (128 Kbps) only run small tests that complete quickly
+- fast connections (1+ Gbps) run larger tests for accurate measurements
+- extremely fast connections (10+ Gbps) use GB-sized tests
+- linear scaling works across the full range from 128 Kbps to 1 Tbps
 
 ---
 
