@@ -487,15 +487,39 @@ const SpeedTest = (function() {
     }
 
     /**
+     * Quick bandwidth estimate for latency batching decision
+     * Returns estimated Mbps or 0 on failure
+     */
+    async function quickBandwidthEstimate() {
+        try {
+            const bytes = 100 * 1000; // 100KB
+            const url = `/__down?bytes=${bytes}&measId=bw-check-${Date.now()}`;
+            const start = performance.now();
+            const response = await fetch(url, { cache: 'no-store', signal: abortController?.signal });
+            if (!response.ok) return 0;
+            await response.arrayBuffer();
+            const durationMs = performance.now() - start;
+            const mbps = (bytes * 8) / (durationMs * 1000);
+            return mbps;
+        } catch {
+            return 0;
+        }
+    }
+
+    /**
      * Run unloaded latency tests with adaptive batching
-     * Starts sequential to estimate connection quality, then batches on fast connections
+     * Uses hybrid of latency and bandwidth to decide batching strategy
      */
     async function runUnloadedLatency() {
         const samples = [];
         const totalProbes = CONFIG.latencyProbes;
-        const initialProbes = 5; // Run first 5 sequentially to estimate
+        const initialProbes = 3; // Run first 3 sequentially to estimate
         const batchSize = 5; // Batch size for parallel mode
-        const latencyThresholdMs = 100; // Above this, stay sequential
+
+        // Thresholds for batching decision
+        const lowLatencyMs = 50;      // Below this: always parallel (fast/local)
+        const highLatencyMs = 100;    // Above this: check bandwidth
+        const minBandwidthMbps = 10;  // Minimum bandwidth for parallel on high-latency
 
         // Phase 1: Run initial probes sequentially to estimate connection quality
         for (let i = 0; i < Math.min(initialProbes, totalProbes); i++) {
@@ -522,9 +546,23 @@ const SpeedTest = (function() {
         // Calculate median RTT from initial probes
         const sortedRtts = samples.map(s => s.rttMs).sort((a, b) => a - b);
         const medianRtt = sortedRtts[Math.floor(sortedRtts.length / 2)];
-        const useParallel = medianRtt < latencyThresholdMs;
 
-        console.log(`Latency: median RTT ${medianRtt.toFixed(1)}ms, using ${useParallel ? 'parallel' : 'sequential'} mode`);
+        // Decide batching strategy based on latency and bandwidth
+        let useParallel;
+        if (medianRtt < lowLatencyMs) {
+            // Low latency: definitely fast connection, use parallel
+            useParallel = true;
+            console.log(`Latency: median RTT ${medianRtt.toFixed(1)}ms (low), using parallel mode`);
+        } else if (medianRtt >= highLatencyMs) {
+            // High latency: check bandwidth to distinguish satellite from slow DSL
+            const bandwidth = await quickBandwidthEstimate();
+            useParallel = bandwidth >= minBandwidthMbps;
+            console.log(`Latency: median RTT ${medianRtt.toFixed(1)}ms (high), bandwidth ~${bandwidth.toFixed(1)} Mbps, using ${useParallel ? 'parallel' : 'sequential'} mode`);
+        } else {
+            // Medium latency (50-100ms): typical internet, use parallel
+            useParallel = true;
+            console.log(`Latency: median RTT ${medianRtt.toFixed(1)}ms (medium), using parallel mode`);
+        }
 
         // Phase 2: Run remaining probes (parallel or sequential based on connection quality)
         let probeIndex = initialProbes;
