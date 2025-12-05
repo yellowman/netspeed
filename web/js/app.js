@@ -1590,14 +1590,8 @@
     function decodeSamplesDelta(encoded) {
         if (!encoded || encoded === '') return [];
 
-        // Find first non-base36 char to split first value
-        let firstEnd = 0;
-        while (firstEnd < encoded.length && /[0-9a-z]/i.test(encoded[firstEnd]) &&
-               !'ABCDEFGHIJKLMNOPQRSTUVWXYZ'.includes(encoded[firstEnd])) {
-            firstEnd++;
-        }
-        // Handle case where first char could be part of delta encoding
-        const firstMatch = encoded.match(/^[0-9a-z]+/i);
+        // Extract first base36 value (lowercase only - uppercase A-Z are negative deltas)
+        const firstMatch = encoded.match(/^[0-9a-z]+/);
         if (!firstMatch) return [];
 
         let prev = parseInt(firstMatch[0], 36);
