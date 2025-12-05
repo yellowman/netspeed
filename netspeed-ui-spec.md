@@ -1608,3 +1608,130 @@ type ThroughputSampleExtended = ThroughputSample & {
 
 **Note:** Sizes use decimal (kB/MB) notation: 1 kB = 1,000 bytes, 1 MB = 1,000,000 bytes.
 
+---
+
+## 16. packet loss error handling
+
+### 16.1 ICE connection failure detection
+
+the packet loss test monitors ICE connection state to detect failures:
+
+```ts
+pc.oniceconnectionstatechange = () => {
+  const state = pc.iceConnectionState;
+  if (state === 'failed') {
+    reject(new Error('ICE connection failed'));
+  } else if (state === 'disconnected') {
+    // Give 2 seconds to recover before failing
+    setTimeout(() => {
+      if (pc.iceConnectionState === 'disconnected' || pc.iceConnectionState === 'failed') {
+        reject(new Error('ICE connection disconnected'));
+      }
+    }, 2000);
+  }
+};
+```
+
+### 16.2 error types
+
+the packet loss test can fail with the following error types:
+
+| Error | Cause |
+|-------|-------|
+| `ICE connection timeout` | Connection setup took longer than 15 seconds |
+| `ICE connection failed` | ICE negotiation failed (firewall, network issue) |
+| `ICE connection disconnected` | Connection dropped during setup |
+| `ICE gathering timeout` | ICE candidate gathering took longer than 10 seconds |
+| `Data channel error` | WebRTC data channel failed to open |
+| `Server rejected connection` | `/api/packet-test/offer` returned error |
+| `TURN server not configured` | `/api/turn/credentials` returned 4xx/5xx |
+
+### 16.3 unavailable result type
+
+when an error occurs, return an unavailable result:
+
+```ts
+type PacketLossResultUnavailable = {
+  sent: 0;
+  received: 0;
+  lossPercent: 0;
+  rttStatsMs: { min: 0; median: 0; p90: 0 };
+  jitterMs: 0;
+  unavailable: true;
+  reason: string;  // human-readable error message
+};
+```
+
+### 16.4 UI display for errors
+
+when packet loss test is unavailable, display error state:
+
+**main value:**
+- show `--` instead of percentage
+
+**badge:**
+- show `Error` instead of `received/sent`
+
+**detail text:**
+- show `Unable to perform measurement: <reason>`
+- examples:
+  - `Unable to perform measurement: ICE connection timeout`
+  - `Unable to perform measurement: ICE connection failed`
+  - `Unable to perform measurement: TURN server not configured`
+
+**RTT stats:**
+- show placeholder spans (empty/greyed out)
+
+**implementation:**
+
+```ts
+function updatePacketLossDetails(packetLoss: PacketLossResult) {
+  if (packetLoss.unavailable) {
+    const errorMsg = `Unable to perform measurement: ${packetLoss.reason || 'Unknown error'}`;
+
+    elements.packetLossValue.textContent = '--';
+    elements.packetLossBadge.textContent = 'Error';
+    elements.packetLossDetail.textContent = errorMsg;
+    elements.packetsReceived.textContent = errorMsg;
+
+    // Clear RTT stats with placeholders
+    elements.rttMin.innerHTML = '<span class="placeholder"></span>';
+    elements.rttMedian.innerHTML = '<span class="placeholder"></span>';
+    elements.rttP90.innerHTML = '<span class="placeholder"></span>';
+    elements.rttJitter.innerHTML = '<span class="placeholder"></span>';
+    return;
+  }
+
+  // ... normal display logic
+}
+```
+
+### 16.5 connection issue detection
+
+detect connection failures vs actual packet loss by analyzing response patterns:
+
+```ts
+// No responses at all - connection failed
+if (received === 0) {
+  return { unavailable: true, reason: 'No responses received - connection failed' };
+}
+
+// High loss with pattern analysis
+if (lossPercent > 10) {
+  const lateAckPercent = calculateLateAckPercent(acks, sent);
+  const earlyAckPercent = calculateEarlyAckPercent(acks, sent);
+
+  // Early packets succeeded but late packets failed = connection died
+  if (earlyAckPercent > 80 && lateAckPercent < 50) {
+    return { unavailable: true, reason: `Connection died mid-test - last response at packet ${maxAckedSeq}/${sent}` };
+  }
+
+  // Very high loss throughout = unstable connection
+  if (lossPercent > 50) {
+    return { unavailable: true, reason: `Connection unstable - received only ${received}/${sent} responses` };
+  }
+}
+```
+
+this prevents misleading packet loss percentages when the issue is connection failure rather than network quality.
+
