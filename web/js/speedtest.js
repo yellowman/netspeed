@@ -126,14 +126,20 @@ const SpeedTest = (function() {
     }
 
     /**
-     * Estimate speed from initial test samples
+     * Estimate speed from test samples using median (robust to outliers)
+     * Being conservative avoids selecting profiles that take too long
      */
     function estimateSpeed(samples) {
         if (samples.length === 0) return 0;
-        // Use 75th percentile for a stable estimate
         const sorted = [...samples].sort((a, b) => a - b);
-        const p75Index = Math.floor(sorted.length * 0.75);
-        return sorted[p75Index];
+        // Use median - robust to outlier spikes that could cause
+        // profile selection based on unsustainable burst speeds
+        const midIndex = Math.floor(sorted.length / 2);
+        if (sorted.length % 2 === 0) {
+            // Even number of samples: average the two middle values
+            return (sorted[midIndex - 1] + sorted[midIndex]) / 2;
+        }
+        return sorted[midIndex];
     }
 
     // State
