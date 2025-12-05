@@ -25,21 +25,10 @@ const SpeedTest = (function() {
         '100MB': { bytes: 100 * 1000 * 1000, runs: 2 }  // For very fast connections
     };
 
-    // Speed thresholds for adaptive profile selection (in Mbps)
-    const SPEED_THRESHOLDS = {
-        download: {
-            '10MB':  50,    // Enable 10MB tests if speed > 50 Mbps
-            '25MB':  200,   // Enable 25MB tests if speed > 200 Mbps
-            '100MB': 500,   // Enable 100MB tests if speed > 500 Mbps
-            '250MB': 2000   // Enable 250MB tests if speed > 2000 Mbps
-        },
-        upload: {
-            '10MB':  50,    // Enable 10MB tests if speed > 50 Mbps
-            '25MB':  200,   // Enable 25MB tests if speed > 200 Mbps
-            '50MB':  500,   // Enable 50MB tests if speed > 500 Mbps
-            '100MB': 1000   // Enable 100MB tests if speed > 1000 Mbps
-        }
-    };
+    // Maximum duration (seconds) for a single test to be included
+    // Profiles are selected if their estimated transfer time is under this limit
+    // This scales linearly from 128 Kbps to 1 Tbps
+    const MAX_TEST_DURATION_SECONDS = 4;
 
     // Active profiles (set dynamically based on detected speed)
     let DOWNLOAD_PROFILES = {};
@@ -58,40 +47,66 @@ const SpeedTest = (function() {
     };
 
     /**
+     * Calculate estimated transfer time in seconds
+     */
+    function estimateTransferTime(bytes, speedMbps) {
+        if (speedMbps <= 0) return Infinity;
+        // time = bits / bits_per_second
+        // bits = bytes * 8, bits_per_second = speedMbps * 1,000,000
+        return (bytes * 8) / (speedMbps * 1e6);
+    }
+
+    /**
      * Select appropriate download profiles based on estimated speed
+     * Uses linear scaling: include profiles where transfer time < MAX_TEST_DURATION_SECONDS
      */
     function selectDownloadProfiles(estimatedSpeedMbps) {
+        // Always include baseline profiles
         const profiles = {
             '100kB': ALL_DOWNLOAD_PROFILES['100kB'],
             '1MB': ALL_DOWNLOAD_PROFILES['1MB']
         };
 
-        for (const [profile, threshold] of Object.entries(SPEED_THRESHOLDS.download)) {
-            if (estimatedSpeedMbps > threshold && ALL_DOWNLOAD_PROFILES[profile]) {
-                profiles[profile] = ALL_DOWNLOAD_PROFILES[profile];
+        // Check larger profiles based on estimated transfer time
+        const largerProfiles = ['10MB', '25MB', '100MB', '250MB'];
+        for (const name of largerProfiles) {
+            const profile = ALL_DOWNLOAD_PROFILES[name];
+            if (!profile) continue;
+
+            const estimatedSeconds = estimateTransferTime(profile.bytes, estimatedSpeedMbps);
+            if (estimatedSeconds <= MAX_TEST_DURATION_SECONDS) {
+                profiles[name] = profile;
             }
         }
 
-        console.log(`Download profiles selected for ${estimatedSpeedMbps.toFixed(0)} Mbps:`, Object.keys(profiles));
+        console.log(`Download profiles for ${estimatedSpeedMbps.toFixed(1)} Mbps:`, Object.keys(profiles));
         return profiles;
     }
 
     /**
      * Select appropriate upload profiles based on estimated speed
+     * Uses linear scaling: include profiles where transfer time < MAX_TEST_DURATION_SECONDS
      */
     function selectUploadProfiles(estimatedSpeedMbps) {
+        // Always include baseline profiles
         const profiles = {
             '100kB': ALL_UPLOAD_PROFILES['100kB'],
             '1MB': ALL_UPLOAD_PROFILES['1MB']
         };
 
-        for (const [profile, threshold] of Object.entries(SPEED_THRESHOLDS.upload)) {
-            if (estimatedSpeedMbps > threshold && ALL_UPLOAD_PROFILES[profile]) {
-                profiles[profile] = ALL_UPLOAD_PROFILES[profile];
+        // Check larger profiles based on estimated transfer time
+        const largerProfiles = ['10MB', '25MB', '50MB', '100MB'];
+        for (const name of largerProfiles) {
+            const profile = ALL_UPLOAD_PROFILES[name];
+            if (!profile) continue;
+
+            const estimatedSeconds = estimateTransferTime(profile.bytes, estimatedSpeedMbps);
+            if (estimatedSeconds <= MAX_TEST_DURATION_SECONDS) {
+                profiles[name] = profile;
             }
         }
 
-        console.log(`Upload profiles selected for ${estimatedSpeedMbps.toFixed(0)} Mbps:`, Object.keys(profiles));
+        console.log(`Upload profiles for ${estimatedSpeedMbps.toFixed(1)} Mbps:`, Object.keys(profiles));
         return profiles;
     }
 
