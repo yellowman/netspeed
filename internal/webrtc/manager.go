@@ -21,16 +21,18 @@ type Manager struct {
 
 // Config holds WebRTC manager configuration.
 type Config struct {
-	ICEServers     []webrtc.ICEServer
-	TestTimeout    time.Duration // How long to keep a test session alive
-	CleanupTicker  time.Duration // How often to clean up expired sessions
+	ICEServers      []webrtc.ICEServer
+	IdleTimeout     time.Duration // Close session if no packets received for this duration
+	MaxSessionTime  time.Duration // Maximum session lifetime (safety net)
+	CleanupTicker   time.Duration // How often to clean up expired sessions
 }
 
 // DefaultConfig returns a default configuration.
 func DefaultConfig() Config {
 	return Config{
-		TestTimeout:   30 * time.Second,
-		CleanupTicker: 10 * time.Second,
+		IdleTimeout:    30 * time.Second,  // Close if idle for 30 seconds
+		MaxSessionTime: 120 * time.Second, // Max 2 minutes total
+		CleanupTicker:  10 * time.Second,
 	}
 }
 
@@ -40,8 +42,10 @@ type Session struct {
 	PeerConnection *webrtc.PeerConnection
 	DataChannel    *webrtc.DataChannel
 	CreatedAt      time.Time
+	LastActivity   time.Time // Updated when data channel opens or packets are received
 	Stats          *SessionStats
 	done           chan struct{}
+	mu             sync.Mutex
 }
 
 // SessionStats tracks packet statistics for a session.
@@ -97,8 +101,23 @@ func (m *Manager) cleanupExpired() {
 
 	now := time.Now()
 	for id, session := range m.sessions {
-		if now.Sub(session.CreatedAt) > m.config.TestTimeout {
-			log.Printf("Cleaning up expired session: %s", id)
+		session.mu.Lock()
+		lastActivity := session.LastActivity
+		session.mu.Unlock()
+
+		sessionAge := now.Sub(session.CreatedAt)
+		idleTime := now.Sub(lastActivity)
+
+		// Clean up if:
+		// 1. Session exceeds max lifetime (safety net), OR
+		// 2. Session has been idle too long (no packets received)
+		if sessionAge > m.config.MaxSessionTime {
+			log.Printf("Cleaning up session %s: exceeded max lifetime (%v)", id, sessionAge)
+			session.Close()
+			delete(m.sessions, id)
+		} else if idleTime > m.config.IdleTimeout {
+			log.Printf("Cleaning up session %s: idle timeout (%v since last activity, received %d packets)",
+				id, idleTime, session.Stats.TotalRecv)
 			session.Close()
 			delete(m.sessions, id)
 		}
@@ -129,13 +148,15 @@ func (m *Manager) HandleOffer(offerSDP string, testProfile string) (answerSDP st
 	}
 
 	// Create session
+	now := time.Now()
 	session := &Session{
 		ID:             testID,
 		PeerConnection: peerConnection,
-		CreatedAt:      time.Now(),
+		CreatedAt:      now,
+		LastActivity:   now,
 		Stats: &SessionStats{
 			LastSeq:   -1,
-			StartTime: time.Now(),
+			StartTime: now,
 		},
 		done: make(chan struct{}),
 	}
@@ -213,7 +234,12 @@ func (m *Manager) HandleOffer(offerSDP string, testProfile string) (answerSDP st
 func (m *Manager) setupPacketLossChannel(session *Session, dc *webrtc.DataChannel) {
 	dc.OnOpen(func() {
 		log.Printf("Session %s: packet-loss channel opened", session.ID)
-		session.Stats.StartTime = time.Now()
+		now := time.Now()
+		session.Stats.StartTime = now
+		// Update last activity when data channel opens
+		session.mu.Lock()
+		session.LastActivity = now
+		session.mu.Unlock()
 	})
 
 	dc.OnClose(func() {
@@ -229,11 +255,18 @@ func (m *Manager) setupPacketLossChannel(session *Session, dc *webrtc.DataChanne
 			return
 		}
 
+		now := time.Now()
+
+		// Update last activity to prevent idle timeout
+		session.mu.Lock()
+		session.LastActivity = now
+		session.mu.Unlock()
+
 		// Update stats
 		session.Stats.mu.Lock()
 		session.Stats.TotalRecv++
 		session.Stats.LastSeq = pkt.Seq
-		session.Stats.LastRecvTime = time.Now()
+		session.Stats.LastRecvTime = now
 		session.Stats.mu.Unlock()
 
 		// Send ack with timestamps for RTT calculation
