@@ -2116,7 +2116,13 @@
 
         // Update UI to show this is a shared result
         if (elements.startButton) {
-            elements.startButton.textContent = 'Run New Test';
+            const span = elements.startButton.querySelector('span');
+            if (span) {
+                span.textContent = 'Run New Test';
+            } else {
+                elements.startButton.textContent = 'Run New Test';
+            }
+            elements.startButton.disabled = false;
         }
 
         showToast('Viewing shared speed test results', 3000);
