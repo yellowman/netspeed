@@ -435,14 +435,46 @@ latency tests call `GET /__down?bytes=0` and treat the duration as rtt.
 
 **phases:**
 
-1. **unloaded latency**
-   - 20 sequential probes:
+1. **unloaded latency** (adaptive batching)
+   - 20 total probes with hybrid latency+bandwidth detection:
 
      ```ts
      const url = `/__down?bytes=0&phase=unloaded&seq=${i}`;
      ```
 
+   - **phase 1:** run first 3 probes sequentially to estimate connection quality
+   - **phase 2:** decide batching strategy based on median RTT:
+     - RTT < 50ms: use parallel batching (fast/local connection)
+     - RTT 50-100ms: use parallel batching (typical internet)
+     - RTT ≥ 100ms: check bandwidth first via quick 100KB download
+       - bandwidth ≥ 2 Mbps: use parallel batching (satellite connection)
+       - bandwidth < 2 Mbps: continue sequential (slow DSL)
+   - **phase 3:** run remaining 17 probes using selected strategy
+     - parallel mode: batch 5 probes at a time
+     - sequential mode: one probe at a time
+
    - measure `durationMs` per request; store as `LatencySample` with `phase='unloaded'`.
+
+   **adaptive batching implementation:**
+   ```ts
+   const lowLatencyMs = 50;      // Below this: always parallel
+   const highLatencyMs = 100;    // Above this: check bandwidth
+   const minBandwidthMbps = 2;   // Minimum bandwidth for parallel on high-latency
+
+   // Calculate median RTT from initial 3 probes
+   const medianRtt = calculateMedian(samples.map(s => s.rttMs));
+
+   let useParallel;
+   if (medianRtt < lowLatencyMs) {
+     useParallel = true;  // Fast connection
+   } else if (medianRtt >= highLatencyMs) {
+     // High latency: check bandwidth to distinguish satellite from slow DSL
+     const bandwidth = await quickBandwidthEstimate();  // 100KB download
+     useParallel = bandwidth >= minBandwidthMbps;
+   } else {
+     useParallel = true;  // Medium latency (50-100ms)
+   }
+   ```
 
 2. **latency during download**
    - while a medium/large download profile is running (e.g. `10M` or `25M`):
@@ -1630,14 +1662,23 @@ profiles are selected dynamically based on estimated connection speed. the algor
 **formula:**
 ```
 estimatedTime = (bytes × 8) / (speedMbps × 1,000,000)
-include profile if estimatedTime ≤ 4 seconds
+include profile if estimatedTime ≤ MAX_TEST_DURATION_SECONDS (4 seconds)
+```
+
+**time budget constants:**
+```ts
+const MAX_TEST_DURATION_SECONDS = 4;       // max time for a single profile to be selected
+const TOTAL_DOWNLOAD_DURATION_SECONDS = 8; // total time budget for download phase
+const TOTAL_UPLOAD_DURATION_SECONDS = 8;   // total time budget for upload phase
 ```
 
 **selection process:**
 
-1. **estimation phase:** run 4 tests with 1MB profile to estimate speed
-2. **profile selection:** include profiles where estimated transfer time ≤ 4 seconds
-3. **test execution:** run remaining tests with selected profiles
+1. **baseline phase:** run all 100kB tests (10 runs) then all 1MB tests (8 runs)
+2. **speed estimation:** calculate median speed from 1MB samples (after burst buffers depleted)
+3. **profile selection:** include larger profiles where estimated transfer time ≤ 4 seconds
+4. **time budget execution:** run selected profiles until 8-second budget exhausted
+5. **batch skipping:** if a profile's entire batch won't fit in remaining time, skip it entirely (no partial batches)
 
 **baseline profiles (always included):**
 - 100kB and 1MB are always included regardless of speed
@@ -1690,6 +1731,32 @@ this ensures:
 - fast connections (1+ Gbps) run larger tests for accurate measurements
 - extremely fast connections (10+ Gbps) use GB-sized tests
 - linear scaling works across the full range from 128 Kbps to 1 Tbps
+- total test duration is bounded by 8-second budget per phase
+
+**batch skipping implementation:**
+
+```ts
+for (const profileName of largerProfiles) {
+  if (!DOWNLOAD_PROFILES[profileName]) continue;
+  const { bytes, runs } = DOWNLOAD_PROFILES[profileName];
+
+  // Check if entire batch can fit in remaining time budget
+  const elapsedMs = performance.now() - phase4StartTime;
+  const remainingMs = timeBudgetMs - elapsedMs;
+  const estimatedBatchTime = estimateTransferTime(bytes, estimatedSpeed) * runs * 1000;
+
+  if (estimatedBatchTime > remainingMs) {
+    console.log(`Download: skipping ${profileName} batch (${runs} runs) - insufficient time`);
+    expectedTotal -= runs; // Adjust expected total for progress reporting
+    continue;
+  }
+
+  // Run all tests in this batch
+  for (let run = 0; run < runs; run++) {
+    // ... execute test
+  }
+}
+```
 
 ---
 
@@ -1847,4 +1914,104 @@ if (lossPercent > 10) {
 ```
 
 this prevents misleading packet loss percentages when the issue is connection failure rather than network quality.
+
+---
+
+## 17. progress callbacks
+
+### 17.1 callback signatures
+
+progress callbacks use consistent integer counts (not floats):
+
+**download/upload progress:**
+```ts
+type ProgressCallback = (
+  profile: string,      // e.g., '100kB', '1MB', '10MB'
+  run: number,          // current run (1-indexed)
+  totalRuns: number,    // total runs for this profile
+  sample: ThroughputSample,
+  totalComplete: number, // total samples completed so far
+  expectedTotal: number  // expected total samples
+) => void;
+```
+
+**latency progress:**
+```ts
+type LatencyProgressCallback = (
+  phase: 'unloaded' | 'download' | 'upload',
+  current: number,      // current probe count (1-indexed)
+  total: number,        // total probes for this phase
+  sample: LatencySample
+) => void;
+```
+
+### 17.2 progress phases
+
+progress uses different denominators based on test phase:
+
+| Phase | Denominator | Description |
+|-------|-------------|-------------|
+| Baseline (100kB + 1MB) | baselineRuns (18) | Fixed count: 10 + 8 runs |
+| Larger profiles | expectedTotal | Baseline + selected profile runs, minus skipped batches |
+
+**expectedTotal adjustment:**
+when batches are skipped due to time budget, `expectedTotal` is decremented:
+
+```ts
+if (estimatedBatchTime > remainingMs) {
+  expectedTotal -= runs;  // Adjust for skipped batch
+  continue;
+}
+```
+
+this ensures progress reaches 100% even when batches are skipped.
+
+---
+
+## 18. shared URL encoding
+
+### 18.1 loss type encoding fix
+
+when encoding share URLs, if loss pattern type is unknown but there's actual packet loss, default to 'random':
+
+**encoding:**
+```ts
+let lossType = lossTypes[lp?.type] ?? 0;  // 0 = 'none'
+if (lossType === 0 && state.packetLoss?.lossPercent > 0.5) {
+  lossType = 1;  // 'random' - we know there was loss but pattern unknown
+}
+```
+
+**decoding:**
+```ts
+let resolvedLossType = lossTypes[lossType] || 'none';
+if (resolvedLossType === 'none' && packetLoss.lossPercent > 0.5) {
+  resolvedLossType = 'random';  // Infer loss type from actual loss data
+}
+```
+
+this prevents the loss type badge from showing "No Loss" when there's clearly packet loss in the decoded results.
+
+### 18.2 shared results button fix
+
+when viewing shared results, update the start button text without destroying inner elements:
+
+**correct approach:**
+```ts
+if (elements.startButton) {
+  const span = elements.startButton.querySelector('span');
+  if (span) {
+    span.textContent = 'Run New Test';  // Update span, not button
+  } else {
+    elements.startButton.textContent = 'Run New Test';
+  }
+  elements.startButton.disabled = false;
+}
+```
+
+**incorrect approach (breaks button):**
+```ts
+// DON'T DO THIS - destroys inner <span> element
+elements.startButton.textContent = 'Run New Test';
+```
 

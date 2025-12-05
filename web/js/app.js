@@ -1389,7 +1389,11 @@
 
         const connType = connTypes[dc?.connectionType] ?? 4;
         const proto = dc?.protocol?.toLowerCase() === 'tcp' ? 1 : 0;
-        const lossType = lossTypes[lp?.type] ?? 0;
+        // Default to 'random' if there's packet loss but lossPattern wasn't set
+        let lossType = lossTypes[lp?.type] ?? 0;
+        if (lossType === 0 && state.packetLoss?.lossPercent > 0.5) {
+            lossType = 1; // 'random' - we know there was loss but pattern unknown
+        }
         const conf = confLevels[tc?.overall] ?? 2;
         const dlTrend = trendMap[bw?.downloadTrend] ?? 0;
         const ulTrend = trendMap[bw?.uploadTrend] ?? 0;
@@ -1748,8 +1752,14 @@
 
             // Loss pattern
             const lossTypes = ['none', 'random', 'burst', 'tail'];
+            // If there was actual packet loss but encoded type says 'none', default to 'random'
+            // This handles cases where lossPattern wasn't set when URL was encoded
+            let resolvedLossType = lossTypes[lossType] || 'none';
+            if (resolvedLossType === 'none' && packetLoss.lossPercent > 0.5) {
+                resolvedLossType = 'random';
+            }
             const lossPattern = {
-                type: lossTypes[lossType] || 'none',
+                type: resolvedLossType,
                 burstCount: v[19],
                 maxBurstLength: v[20] / 10,
                 avgBurstLength: v[21] / 10,
