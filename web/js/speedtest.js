@@ -58,10 +58,7 @@ const SpeedTest = (function() {
         loadedLatencyProbes: 5,
         packetLossPackets: 1000,
         packetLossInterval: 10,
-        packetLossExtraWait: 3000,
-        // Adaptive testing config
-        estimationRuns: 4,  // Number of runs for speed estimation
-        targetTestDuration: 60  // Target total test duration in seconds (not strict)
+        packetLossExtraWait: 3000
     };
 
     /**
@@ -495,68 +492,83 @@ const SpeedTest = (function() {
 
     /**
      * Run download tests with adaptive profile selection
+     * Runs baseline profiles first, then re-estimates before larger profiles
      */
     async function runDownloadTests() {
-        // Phase 1: Run estimation tests with 100kB profile (smallest, runs first)
-        const estimationSamples = [];
-        const estimationProfile = ALL_DOWNLOAD_PROFILES['100kB'];
+        let totalRuns = 0;
+        const allSamples = [];
 
-        console.log('Download speed estimation phase...');
-        for (let i = 0; i < CONFIG.estimationRuns; i++) {
+        // Phase 1: Run all 100kB tests (baseline, always included)
+        const profile100k = ALL_DOWNLOAD_PROFILES['100kB'];
+        console.log('Download: running 100kB baseline tests...');
+        for (let i = 0; i < profile100k.runs; i++) {
             if (abortController?.signal.aborted) break;
             while (isPaused) await sleep(100);
 
             try {
-                const sample = await runDownload(estimationProfile.bytes, '100kB', i);
-                estimationSamples.push(sample.mbps);
+                const sample = await runDownload(profile100k.bytes, '100kB', i);
+                allSamples.push(sample.mbps);
                 results.throughputSamples.push(sample);
+                totalRuns++;
 
                 if (callbacks.onDownloadProgress) {
-                    callbacks.onDownloadProgress('100kB', i + 1, CONFIG.estimationRuns, sample, i + 1, CONFIG.estimationRuns);
+                    callbacks.onDownloadProgress('100kB', i + 1, profile100k.runs, sample, totalRuns, profile100k.runs);
                 }
             } catch (err) {
-                console.error(`Download estimation run ${i} failed:`, err);
+                console.error(`Download 100kB run ${i} failed:`, err);
             }
         }
 
-        // Phase 2: Select profiles based on estimated speed
-        const estimatedSpeed = estimateSpeed(estimationSamples);
-        DOWNLOAD_PROFILES = selectDownloadProfiles(estimatedSpeed);
+        // Phase 2: Run all 1MB tests (baseline, always included)
+        const profile1m = ALL_DOWNLOAD_PROFILES['1MB'];
+        const samplesFor1MB = [];
+        console.log('Download: running 1MB baseline tests...');
+        for (let i = 0; i < profile1m.runs; i++) {
+            if (abortController?.signal.aborted) break;
+            while (isPaused) await sleep(100);
 
-        // Phase 3: Run remaining tests (skip 100kB estimation runs already done)
-        const profiles = Object.entries(DOWNLOAD_PROFILES);
-        let totalRuns = CONFIG.estimationRuns;  // Already completed estimation runs
-        const totalExpected = profiles.reduce((sum, [name, cfg]) => {
-            // For 100kB, subtract estimation runs already done
-            if (name === '100kB') {
-                return sum + Math.max(0, cfg.runs - CONFIG.estimationRuns);
+            try {
+                const sample = await runDownload(profile1m.bytes, '1MB', i);
+                samplesFor1MB.push(sample.mbps);
+                allSamples.push(sample.mbps);
+                results.throughputSamples.push(sample);
+                totalRuns++;
+
+                if (callbacks.onDownloadProgress) {
+                    callbacks.onDownloadProgress('1MB', i + 1, profile1m.runs, sample, totalRuns, profile100k.runs + profile1m.runs);
+                }
+            } catch (err) {
+                console.error(`Download 1MB run ${i} failed:`, err);
             }
-            return sum + cfg.runs;
-        }, CONFIG.estimationRuns);
+        }
 
-        for (const [profile, { bytes, runs }] of profiles) {
-            // For 100kB profile, skip runs already done in estimation
-            const startRun = (profile === '100kB') ? CONFIG.estimationRuns : 0;
-            const actualRuns = runs - startRun;
+        // Phase 3: Estimate sustained speed from 1MB tests (after burst buffers depleted)
+        const estimatedSpeed = estimateSpeed(samplesFor1MB);
+        DOWNLOAD_PROFILES = selectDownloadProfiles(estimatedSpeed);
+        console.log(`Download: estimated sustained speed ${estimatedSpeed.toFixed(1)} Mbps`);
 
-            if (actualRuns <= 0) continue;
+        // Phase 4: Run larger profiles based on sustained speed estimate
+        const largerProfiles = ['10MB', '25MB', '100MB', '250MB', '500MB', '1GB', '2GB', '5GB', '12GB', '50GB', '100GB', '125GB'];
+        for (const profileName of largerProfiles) {
+            if (!DOWNLOAD_PROFILES[profileName]) continue;
+            const { bytes, runs } = DOWNLOAD_PROFILES[profileName];
 
-            for (let run = startRun; run < runs; run++) {
+            for (let run = 0; run < runs; run++) {
                 if (abortController?.signal.aborted) break;
                 while (isPaused) await sleep(100);
 
                 try {
-                    const sample = await runDownload(bytes, profile, run);
+                    const sample = await runDownload(bytes, profileName, run);
                     results.throughputSamples.push(sample);
                     totalRuns++;
 
                     if (callbacks.onDownloadProgress) {
-                        callbacks.onDownloadProgress(profile, run + 1 - startRun, actualRuns, sample, totalRuns, totalExpected);
+                        callbacks.onDownloadProgress(profileName, run + 1, runs, sample, totalRuns, totalRuns);
                     }
                 } catch (err) {
-                    console.error(`Download ${profile} run ${run} failed:`, err);
+                    console.error(`Download ${profileName} run ${run} failed:`, err);
                     if (callbacks.onError) {
-                        callbacks.onError('download', profile, run, err);
+                        callbacks.onError('download', profileName, run, err);
                     }
                 }
             }
@@ -565,68 +577,83 @@ const SpeedTest = (function() {
 
     /**
      * Run upload tests with adaptive profile selection
+     * Runs baseline profiles first, then re-estimates before larger profiles
      */
     async function runUploadTests() {
-        // Phase 1: Run estimation tests with 100kB profile (smallest, runs first)
-        const estimationSamples = [];
-        const estimationProfile = ALL_UPLOAD_PROFILES['100kB'];
+        let totalRuns = 0;
+        const allSamples = [];
 
-        console.log('Upload speed estimation phase...');
-        for (let i = 0; i < CONFIG.estimationRuns; i++) {
+        // Phase 1: Run all 100kB tests (baseline, always included)
+        const profile100k = ALL_UPLOAD_PROFILES['100kB'];
+        console.log('Upload: running 100kB baseline tests...');
+        for (let i = 0; i < profile100k.runs; i++) {
             if (abortController?.signal.aborted) break;
             while (isPaused) await sleep(100);
 
             try {
-                const sample = await runUpload(estimationProfile.bytes, '100kB', i);
-                estimationSamples.push(sample.mbps);
+                const sample = await runUpload(profile100k.bytes, '100kB', i);
+                allSamples.push(sample.mbps);
                 results.throughputSamples.push(sample);
+                totalRuns++;
 
                 if (callbacks.onUploadProgress) {
-                    callbacks.onUploadProgress('100kB', i + 1, CONFIG.estimationRuns, sample, i + 1, CONFIG.estimationRuns);
+                    callbacks.onUploadProgress('100kB', i + 1, profile100k.runs, sample, totalRuns, profile100k.runs);
                 }
             } catch (err) {
-                console.error(`Upload estimation run ${i} failed:`, err);
+                console.error(`Upload 100kB run ${i} failed:`, err);
             }
         }
 
-        // Phase 2: Select profiles based on estimated speed
-        const estimatedSpeed = estimateSpeed(estimationSamples);
-        UPLOAD_PROFILES = selectUploadProfiles(estimatedSpeed);
+        // Phase 2: Run all 1MB tests (baseline, always included)
+        const profile1m = ALL_UPLOAD_PROFILES['1MB'];
+        const samplesFor1MB = [];
+        console.log('Upload: running 1MB baseline tests...');
+        for (let i = 0; i < profile1m.runs; i++) {
+            if (abortController?.signal.aborted) break;
+            while (isPaused) await sleep(100);
 
-        // Phase 3: Run remaining tests (skip 100kB estimation runs already done)
-        const profiles = Object.entries(UPLOAD_PROFILES);
-        let totalRuns = CONFIG.estimationRuns;  // Already completed estimation runs
-        const totalExpected = profiles.reduce((sum, [name, cfg]) => {
-            // For 100kB, subtract estimation runs already done
-            if (name === '100kB') {
-                return sum + Math.max(0, cfg.runs - CONFIG.estimationRuns);
+            try {
+                const sample = await runUpload(profile1m.bytes, '1MB', i);
+                samplesFor1MB.push(sample.mbps);
+                allSamples.push(sample.mbps);
+                results.throughputSamples.push(sample);
+                totalRuns++;
+
+                if (callbacks.onUploadProgress) {
+                    callbacks.onUploadProgress('1MB', i + 1, profile1m.runs, sample, totalRuns, profile100k.runs + profile1m.runs);
+                }
+            } catch (err) {
+                console.error(`Upload 1MB run ${i} failed:`, err);
             }
-            return sum + cfg.runs;
-        }, CONFIG.estimationRuns);
+        }
 
-        for (const [profile, { bytes, runs }] of profiles) {
-            // For 100kB profile, skip runs already done in estimation
-            const startRun = (profile === '100kB') ? CONFIG.estimationRuns : 0;
-            const actualRuns = runs - startRun;
+        // Phase 3: Estimate sustained speed from 1MB tests (after burst buffers depleted)
+        const estimatedSpeed = estimateSpeed(samplesFor1MB);
+        UPLOAD_PROFILES = selectUploadProfiles(estimatedSpeed);
+        console.log(`Upload: estimated sustained speed ${estimatedSpeed.toFixed(1)} Mbps`);
 
-            if (actualRuns <= 0) continue;
+        // Phase 4: Run larger profiles based on sustained speed estimate
+        const largerProfiles = ['10MB', '25MB', '50MB', '100MB', '250MB', '500MB', '1GB', '2GB', '5GB', '12GB', '50GB', '100GB', '125GB'];
+        for (const profileName of largerProfiles) {
+            if (!UPLOAD_PROFILES[profileName]) continue;
+            const { bytes, runs } = UPLOAD_PROFILES[profileName];
 
-            for (let run = startRun; run < runs; run++) {
+            for (let run = 0; run < runs; run++) {
                 if (abortController?.signal.aborted) break;
                 while (isPaused) await sleep(100);
 
                 try {
-                    const sample = await runUpload(bytes, profile, run);
+                    const sample = await runUpload(bytes, profileName, run);
                     results.throughputSamples.push(sample);
                     totalRuns++;
 
                     if (callbacks.onUploadProgress) {
-                        callbacks.onUploadProgress(profile, run + 1 - startRun, actualRuns, sample, totalRuns, totalExpected);
+                        callbacks.onUploadProgress(profileName, run + 1, runs, sample, totalRuns, totalRuns);
                     }
                 } catch (err) {
-                    console.error(`Upload ${profile} run ${run} failed:`, err);
+                    console.error(`Upload ${profileName} run ${run} failed:`, err);
                     if (callbacks.onError) {
-                        callbacks.onError('upload', profile, run, err);
+                        callbacks.onError('upload', profileName, run, err);
                     }
                 }
             }
