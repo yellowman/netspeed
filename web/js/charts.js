@@ -572,7 +572,7 @@ const Charts = (function() {
             class: 'box-plot'
         });
 
-        const svgPadding = showLabels ? 40 : 10;
+        const svgPadding = showLabels ? 20 : 10;
         const chartWidth = width - svgPadding * 2;
         const centerY = height / 2;
 
