@@ -516,6 +516,9 @@ const SpeedTest = (function() {
 
         // Phase 1: Run all 100kB tests (baseline, always included)
         const profile100k = ALL_DOWNLOAD_PROFILES['100kB'];
+        const profile1m = ALL_DOWNLOAD_PROFILES['1MB'];
+        const baselineRuns = profile100k.runs + profile1m.runs;
+
         console.log('Download: running 100kB baseline tests...');
         for (let i = 0; i < profile100k.runs; i++) {
             if (abortController?.signal.aborted) break;
@@ -528,7 +531,7 @@ const SpeedTest = (function() {
                 totalRuns++;
 
                 if (callbacks.onDownloadProgress) {
-                    callbacks.onDownloadProgress('100kB', i + 1, profile100k.runs, sample, totalRuns, profile100k.runs);
+                    callbacks.onDownloadProgress('100kB', i + 1, profile100k.runs, sample, totalRuns, baselineRuns);
                 }
             } catch (err) {
                 console.error(`Download 100kB run ${i} failed:`, err);
@@ -536,7 +539,6 @@ const SpeedTest = (function() {
         }
 
         // Phase 2: Run all 1MB tests (baseline, always included)
-        const profile1m = ALL_DOWNLOAD_PROFILES['1MB'];
         const samplesFor1MB = [];
         console.log('Download: running 1MB baseline tests...');
         for (let i = 0; i < profile1m.runs; i++) {
@@ -551,7 +553,7 @@ const SpeedTest = (function() {
                 totalRuns++;
 
                 if (callbacks.onDownloadProgress) {
-                    callbacks.onDownloadProgress('1MB', i + 1, profile1m.runs, sample, totalRuns, profile100k.runs + profile1m.runs);
+                    callbacks.onDownloadProgress('1MB', i + 1, profile1m.runs, sample, totalRuns, baselineRuns);
                 }
             } catch (err) {
                 console.error(`Download 1MB run ${i} failed:`, err);
@@ -569,7 +571,6 @@ const SpeedTest = (function() {
         const timeBudgetMs = TOTAL_DOWNLOAD_DURATION_SECONDS * 1000;
 
         // Calculate expected total runs for progress reporting (baseline + selected larger profiles)
-        const baselineRuns = profile100k.runs + profile1m.runs;
         let expectedTotal = baselineRuns;
         for (const name of largerProfiles) {
             if (DOWNLOAD_PROFILES[name]) {
@@ -627,6 +628,9 @@ const SpeedTest = (function() {
 
         // Phase 1: Run all 100kB tests (baseline, always included)
         const profile100k = ALL_UPLOAD_PROFILES['100kB'];
+        const profile1m = ALL_UPLOAD_PROFILES['1MB'];
+        const baselineRuns = profile100k.runs + profile1m.runs;
+
         console.log('Upload: running 100kB baseline tests...');
         for (let i = 0; i < profile100k.runs; i++) {
             if (abortController?.signal.aborted) break;
@@ -639,7 +643,7 @@ const SpeedTest = (function() {
                 totalRuns++;
 
                 if (callbacks.onUploadProgress) {
-                    callbacks.onUploadProgress('100kB', i + 1, profile100k.runs, sample, totalRuns, profile100k.runs);
+                    callbacks.onUploadProgress('100kB', i + 1, profile100k.runs, sample, totalRuns, baselineRuns);
                 }
             } catch (err) {
                 console.error(`Upload 100kB run ${i} failed:`, err);
@@ -647,7 +651,6 @@ const SpeedTest = (function() {
         }
 
         // Phase 2: Run all 1MB tests (baseline, always included)
-        const profile1m = ALL_UPLOAD_PROFILES['1MB'];
         const samplesFor1MB = [];
         console.log('Upload: running 1MB baseline tests...');
         for (let i = 0; i < profile1m.runs; i++) {
@@ -662,7 +665,7 @@ const SpeedTest = (function() {
                 totalRuns++;
 
                 if (callbacks.onUploadProgress) {
-                    callbacks.onUploadProgress('1MB', i + 1, profile1m.runs, sample, totalRuns, profile100k.runs + profile1m.runs);
+                    callbacks.onUploadProgress('1MB', i + 1, profile1m.runs, sample, totalRuns, baselineRuns);
                 }
             } catch (err) {
                 console.error(`Upload 1MB run ${i} failed:`, err);
@@ -680,7 +683,6 @@ const SpeedTest = (function() {
         const timeBudgetMs = TOTAL_UPLOAD_DURATION_SECONDS * 1000;
 
         // Calculate expected total runs for progress reporting (baseline + selected larger profiles)
-        const baselineRuns = profile100k.runs + profile1m.runs;
         let expectedTotal = baselineRuns;
         for (const name of largerProfiles) {
             if (UPLOAD_PROFILES[name]) {
