@@ -1790,7 +1790,7 @@
                 packetLoss: packetLoss,
                 coords: coords,
                 quality: {
-                    streaming: decodeGrade(qs),
+                    videoStreaming: decodeGrade(qs),
                     gaming: decodeGrade(qg),
                     videoChatting: decodeGrade(qv)
                 },
@@ -1996,11 +1996,7 @@
 
         // Update quality grades
         if (results.quality) {
-            updateQualityScores({
-                videoStreaming: results.quality.streaming,
-                gaming: results.quality.gaming,
-                videoChatting: results.quality.videoChatting
-            });
+            updateQualityScores(results.quality);
         }
 
         // Update data channel stats
