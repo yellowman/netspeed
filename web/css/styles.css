@@ -1585,6 +1585,30 @@ button {
     vertical-align: middle;
 }
 
+/* Error icon - red circle with exclamation point */
+.error-icon {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 1.5em;
+    height: 1.5em;
+    background-color: var(--color-danger, #dc3545);
+    border-radius: 50%;
+    color: white;
+    font-weight: bold;
+    font-size: 1em;
+    vertical-align: middle;
+}
+
+.error-icon::before {
+    content: '!';
+}
+
+/* Error state for metric values */
+.metric-value.error {
+    color: var(--color-danger, #dc3545);
+}
+
 /* ========================================
    Extended Location Display
    ======================================== */

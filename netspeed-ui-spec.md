@@ -1667,7 +1667,8 @@ type PacketLossResultUnavailable = {
 when packet loss test is unavailable, display error state:
 
 **main value:**
-- show `--` instead of percentage
+- show red circle with exclamation point icon (`<span class="error-icon"></span>`)
+- add `error` class to value element for red color styling
 
 **badge:**
 - show `Error` instead of `received/sent`
@@ -1680,7 +1681,31 @@ when packet loss test is unavailable, display error state:
   - `Unable to perform measurement: TURN server not configured`
 
 **RTT stats:**
-- show placeholder spans (empty/greyed out)
+- show shimmer placeholder spans (animated loading indicator)
+
+**css for error icon:**
+
+```css
+.error-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.5em;
+  height: 1.5em;
+  background-color: var(--color-danger, #dc3545);
+  border-radius: 50%;
+  color: white;
+  font-weight: bold;
+}
+
+.error-icon::before {
+  content: '!';
+}
+
+.metric-value.error {
+  color: var(--color-danger, #dc3545);
+}
+```
 
 **implementation:**
 
@@ -1689,18 +1714,23 @@ function updatePacketLossDetails(packetLoss: PacketLossResult) {
   if (packetLoss.unavailable) {
     const errorMsg = `Unable to perform measurement: ${packetLoss.reason || 'Unknown error'}`;
 
-    elements.packetLossValue.textContent = '--';
+    elements.packetLossValue.innerHTML = '<span class="error-icon"></span>';
+    elements.packetLossValue.classList.add('error');
     elements.packetLossBadge.textContent = 'Error';
     elements.packetLossDetail.textContent = errorMsg;
     elements.packetsReceived.textContent = errorMsg;
 
-    // Clear RTT stats with placeholders
-    elements.rttMin.innerHTML = '<span class="placeholder"></span>';
-    elements.rttMedian.innerHTML = '<span class="placeholder"></span>';
-    elements.rttP90.innerHTML = '<span class="placeholder"></span>';
-    elements.rttJitter.innerHTML = '<span class="placeholder"></span>';
+    // Show shimmer placeholders for RTT stats
+    const ph = '<span class="placeholder"></span>';
+    elements.rttMin.innerHTML = ph;
+    elements.rttMedian.innerHTML = ph;
+    elements.rttP90.innerHTML = ph;
+    elements.rttJitter.innerHTML = ph;
     return;
   }
+
+  // Clear error state if previously set
+  elements.packetLossValue.classList.remove('error');
 
   // ... normal display logic
 }

@@ -1244,7 +1244,8 @@
         if (packetLoss.unavailable) {
             const errorMsg = `Unable to perform measurement: ${packetLoss.reason || 'Unknown error'}`;
             if (elements.packetLossValue) {
-                elements.packetLossValue.textContent = '--';
+                elements.packetLossValue.innerHTML = '<span class="error-icon"></span>';
+                elements.packetLossValue.classList.add('error');
             }
             if (elements.packetLossBadge) {
                 elements.packetLossBadge.textContent = 'Error';
@@ -1264,6 +1265,11 @@
             if (elements.rttP90) elements.rttP90.innerHTML = ph;
             if (elements.rttJitter) elements.rttJitter.innerHTML = ph;
             return;
+        }
+
+        // Clear error state if previously set
+        if (elements.packetLossValue) {
+            elements.packetLossValue.classList.remove('error');
         }
 
         // Update badge
