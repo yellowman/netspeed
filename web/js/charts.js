@@ -541,9 +541,10 @@ const Charts = (function() {
         const p75 = percentile(sorted, 75);
         const avg = data.reduce((a, b) => a + b, 0) / data.length;
 
-        // If all values are the same, just show a point
-        if (min === max) {
-            container.innerHTML = `<span class="no-data">${formatNumber(min)} ${unit}</span>`;
+        // If all values are the same or range is negligible, show a point with value
+        const range = max - min;
+        if (range === 0 || (avg > 0 && range / avg < 0.01)) {
+            container.innerHTML = `<span class="no-data">${formatNumber(avg)} ${unit}</span>`;
             return;
         }
 
