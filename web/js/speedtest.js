@@ -548,16 +548,24 @@ const SpeedTest = (function() {
 
                 const batchResults = await Promise.all(batchPromises);
 
-                for (const sample of batchResults) {
+                // Process each sample and call callback for each valid one
+                let validCount = 0;
+                for (let i = 0; i < batchResults.length; i++) {
+                    const sample = batchResults[i];
                     if (sample) {
                         samples.push(sample);
                         results.latencySamples.push(sample);
+                        validCount++;
+
+                        if (callbacks.onLatencyProgress) {
+                            callbacks.onLatencyProgress('unloaded', probeIndex + i + 1, totalProbes, sample);
+                        }
                     }
                 }
 
-                if (callbacks.onLatencyProgress) {
-                    const lastSample = batchResults.find(s => s) || { rttMs: 0 };
-                    callbacks.onLatencyProgress('unloaded', batchEnd, totalProbes, lastSample);
+                // If all probes failed, still report progress
+                if (validCount === 0 && callbacks.onLatencyProgress) {
+                    callbacks.onLatencyProgress('unloaded', batchEnd, totalProbes, { rttMs: 0, phase: 'unloaded', ts: Date.now() });
                 }
 
                 probeIndex = batchEnd;
