@@ -487,20 +487,44 @@ const SpeedTest = (function() {
     }
 
     /**
-     * Run unloaded latency tests
+     * Run unloaded latency tests in parallel batches for speed
      */
     async function runUnloadedLatency() {
         const samples = [];
-        for (let i = 0; i < CONFIG.latencyProbes; i++) {
+        const batchSize = 5; // Run 5 probes in parallel
+        const totalProbes = CONFIG.latencyProbes;
+
+        for (let batchStart = 0; batchStart < totalProbes; batchStart += batchSize) {
             if (abortController?.signal.aborted) break;
             while (isPaused) await sleep(100);
 
-            const sample = await runLatencyProbe('unloaded', i);
-            samples.push(sample);
-            results.latencySamples.push(sample);
+            // Launch batch of probes in parallel
+            const batchEnd = Math.min(batchStart + batchSize, totalProbes);
+            const batchPromises = [];
+            for (let i = batchStart; i < batchEnd; i++) {
+                batchPromises.push(
+                    runLatencyProbe('unloaded', i).catch(err => {
+                        console.error(`Latency probe ${i} failed:`, err);
+                        return null;
+                    })
+                );
+            }
 
+            const batchResults = await Promise.all(batchPromises);
+
+            // Process results
+            for (let i = 0; i < batchResults.length; i++) {
+                const sample = batchResults[i];
+                if (sample) {
+                    samples.push(sample);
+                    results.latencySamples.push(sample);
+                }
+            }
+
+            // Report progress after each batch
             if (callbacks.onLatencyProgress) {
-                callbacks.onLatencyProgress('unloaded', i + 1, CONFIG.latencyProbes, sample);
+                const lastSample = batchResults.find(s => s) || { rttMs: 0 };
+                callbacks.onLatencyProgress('unloaded', batchEnd, totalProbes, lastSample);
             }
         }
         return samples;
