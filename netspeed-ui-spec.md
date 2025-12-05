@@ -1595,6 +1595,11 @@ type ThroughputSampleExtended = ThroughputSample & {
 | 500MB   | 500,000,000 bytes | 2 | 1s at 4 Gbps |
 | 1GB     | 1,000,000,000 bytes | 2 | 1s at 8 Gbps |
 | 2GB     | 2,000,000,000 bytes | 2 | 1s at 16 Gbps |
+| 5GB     | 5,000,000,000 bytes | 2 | 1s at 40 Gbps |
+| 12GB    | 12,000,000,000 bytes | 2 | 1s at ~100 Gbps |
+| 50GB    | 50,000,000,000 bytes | 2 | 1s at 400 Gbps |
+| 100GB   | 100,000,000,000 bytes | 2 | 1s at 800 Gbps |
+| 125GB   | 125,000,000,000 bytes | 2 | 1s at 1 Tbps |
 
 ### 15.2 all available upload profiles
 
@@ -1609,6 +1614,12 @@ type ThroughputSampleExtended = ThroughputSample & {
 | 250MB   | 250,000,000 bytes | 2 | 1s at 2 Gbps |
 | 500MB   | 500,000,000 bytes | 2 | 1s at 4 Gbps |
 | 1GB     | 1,000,000,000 bytes | 2 | 1s at 8 Gbps |
+| 2GB     | 2,000,000,000 bytes | 2 | 1s at 16 Gbps |
+| 5GB     | 5,000,000,000 bytes | 2 | 1s at 40 Gbps |
+| 12GB    | 12,000,000,000 bytes | 2 | 1s at ~100 Gbps |
+| 50GB    | 50,000,000,000 bytes | 2 | 1s at 400 Gbps |
+| 100GB   | 100,000,000,000 bytes | 2 | 1s at 800 Gbps |
+| 125GB   | 125,000,000,000 bytes | 2 | 1s at 1 Tbps |
 
 **Note:** Sizes use decimal (kB/MB/GB) notation: 1 kB = 1,000 bytes, 1 MB = 1,000,000 bytes, 1 GB = 1,000,000,000 bytes.
 
@@ -1638,10 +1649,13 @@ include profile if estimatedTime ≤ 4 seconds
 | 128 Kbps | 100kB, 1MB | 100kB, 1MB |
 | 5 Mbps | 100kB, 1MB | 100kB, 1MB |
 | 40 Mbps | 100kB, 1MB, 10MB | 100kB, 1MB |
-| 200 Mbps | 100kB, 1MB, 10MB, 25MB, 100MB | 100kB, 1MB, 10MB, 25MB, 50MB, 100MB |
-| 1 Gbps | 100kB, 1MB, 10MB, 25MB, 100MB, 250MB, 500MB | 100kB, 1MB, ... 500MB |
-| 5 Gbps | all profiles | all profiles |
-| 100 Gbps | all profiles | all profiles |
+| 200 Mbps | 100kB, 1MB, ... 100MB | 100kB, 1MB, ... 100MB |
+| 1 Gbps | 100kB, 1MB, ... 500MB | 100kB, 1MB, ... 500MB |
+| 10 Gbps | 100kB, 1MB, ... 5GB | 100kB, 1MB, ... 5GB |
+| 100 Gbps | 100kB, 1MB, ... 50GB | 100kB, 1MB, ... 50GB |
+| 400 Gbps | 100kB, 1MB, ... 125GB | 100kB, 1MB, ... 125GB |
+| 800 Gbps | all profiles | all profiles |
+| 1 Tbps | all profiles | all profiles |
 
 **implementation:**
 
