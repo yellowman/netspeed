@@ -567,24 +567,34 @@ const SpeedTest = (function() {
         const largerProfiles = ['10MB', '25MB', '100MB', '250MB', '500MB', '1GB', '2GB', '5GB', '12GB', '50GB', '100GB', '125GB'];
         const phase4StartTime = performance.now();
         const timeBudgetMs = TOTAL_DOWNLOAD_DURATION_SECONDS * 1000;
-        let timeExhausted = false;
+
+        // Calculate expected total runs for progress reporting (baseline + selected larger profiles)
+        const baselineRuns = profile100k.runs + profile1m.runs;
+        let expectedTotal = baselineRuns;
+        for (const name of largerProfiles) {
+            if (DOWNLOAD_PROFILES[name]) {
+                expectedTotal += DOWNLOAD_PROFILES[name].runs;
+            }
+        }
 
         for (const profileName of largerProfiles) {
-            if (timeExhausted) break;
+            if (abortController?.signal.aborted) break;
             if (!DOWNLOAD_PROFILES[profileName]) continue;
             const { bytes, runs } = DOWNLOAD_PROFILES[profileName];
+
+            // Check if entire batch can fit in remaining time budget
+            const elapsedMs = performance.now() - phase4StartTime;
+            const remainingMs = timeBudgetMs - elapsedMs;
+            const estimatedBatchTime = estimateTransferTime(bytes, estimatedSpeed) * runs * 1000;
+
+            if (estimatedBatchTime > remainingMs) {
+                console.log(`Download: skipping ${profileName} batch (${runs} runs, ~${(estimatedBatchTime / 1000).toFixed(1)}s) - only ${(remainingMs / 1000).toFixed(1)}s remaining`);
+                continue;
+            }
 
             for (let run = 0; run < runs; run++) {
                 if (abortController?.signal.aborted) break;
                 while (isPaused) await sleep(100);
-
-                // Check time budget before starting test
-                const elapsedMs = performance.now() - phase4StartTime;
-                if (elapsedMs >= timeBudgetMs) {
-                    console.log(`Download: time budget exhausted (${(elapsedMs / 1000).toFixed(1)}s)`);
-                    timeExhausted = true;
-                    break;
-                }
 
                 try {
                     const sample = await runDownload(bytes, profileName, run);
@@ -592,8 +602,7 @@ const SpeedTest = (function() {
                     totalRuns++;
 
                     if (callbacks.onDownloadProgress) {
-                        const progress = Math.min(1, (performance.now() - phase4StartTime) / timeBudgetMs);
-                        callbacks.onDownloadProgress(profileName, run + 1, runs, sample, progress, 1);
+                        callbacks.onDownloadProgress(profileName, run + 1, runs, sample, totalRuns, expectedTotal);
                     }
                 } catch (err) {
                     console.error(`Download ${profileName} run ${run} failed:`, err);
@@ -669,24 +678,34 @@ const SpeedTest = (function() {
         const largerProfiles = ['10MB', '25MB', '50MB', '100MB', '250MB', '500MB', '1GB', '2GB', '5GB', '12GB', '50GB', '100GB', '125GB'];
         const phase4StartTime = performance.now();
         const timeBudgetMs = TOTAL_UPLOAD_DURATION_SECONDS * 1000;
-        let timeExhausted = false;
+
+        // Calculate expected total runs for progress reporting (baseline + selected larger profiles)
+        const baselineRuns = profile100k.runs + profile1m.runs;
+        let expectedTotal = baselineRuns;
+        for (const name of largerProfiles) {
+            if (UPLOAD_PROFILES[name]) {
+                expectedTotal += UPLOAD_PROFILES[name].runs;
+            }
+        }
 
         for (const profileName of largerProfiles) {
-            if (timeExhausted) break;
+            if (abortController?.signal.aborted) break;
             if (!UPLOAD_PROFILES[profileName]) continue;
             const { bytes, runs } = UPLOAD_PROFILES[profileName];
+
+            // Check if entire batch can fit in remaining time budget
+            const elapsedMs = performance.now() - phase4StartTime;
+            const remainingMs = timeBudgetMs - elapsedMs;
+            const estimatedBatchTime = estimateTransferTime(bytes, estimatedSpeed) * runs * 1000;
+
+            if (estimatedBatchTime > remainingMs) {
+                console.log(`Upload: skipping ${profileName} batch (${runs} runs, ~${(estimatedBatchTime / 1000).toFixed(1)}s) - only ${(remainingMs / 1000).toFixed(1)}s remaining`);
+                continue;
+            }
 
             for (let run = 0; run < runs; run++) {
                 if (abortController?.signal.aborted) break;
                 while (isPaused) await sleep(100);
-
-                // Check time budget before starting test
-                const elapsedMs = performance.now() - phase4StartTime;
-                if (elapsedMs >= timeBudgetMs) {
-                    console.log(`Upload: time budget exhausted (${(elapsedMs / 1000).toFixed(1)}s)`);
-                    timeExhausted = true;
-                    break;
-                }
 
                 try {
                     const sample = await runUpload(bytes, profileName, run);
@@ -694,8 +713,7 @@ const SpeedTest = (function() {
                     totalRuns++;
 
                     if (callbacks.onUploadProgress) {
-                        const progress = Math.min(1, (performance.now() - phase4StartTime) / timeBudgetMs);
-                        callbacks.onUploadProgress(profileName, run + 1, runs, sample, progress, 1);
+                        callbacks.onUploadProgress(profileName, run + 1, runs, sample, totalRuns, expectedTotal);
                     }
                 } catch (err) {
                     console.error(`Upload ${profileName} run ${run} failed:`, err);
