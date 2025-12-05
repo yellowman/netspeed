@@ -1242,17 +1242,21 @@
     function updatePacketLossDetails(packetLoss) {
         // Handle unavailable state (WebRTC failed)
         if (packetLoss.unavailable) {
+            const errorMsg = `Unable to perform measurement: ${packetLoss.reason || 'Unknown error'}`;
+            if (elements.packetLossValue) {
+                elements.packetLossValue.textContent = '--';
+            }
             if (elements.packetLossBadge) {
-                elements.packetLossBadge.textContent = 'N/A';
+                elements.packetLossBadge.textContent = 'Error';
             }
             if (elements.packetLossFill) {
                 elements.packetLossFill.style.width = '0%';
             }
             if (elements.packetLossDetail) {
-                elements.packetLossDetail.textContent = 'Unavailable';
+                elements.packetLossDetail.textContent = errorMsg;
             }
             if (elements.packetsReceived) {
-                elements.packetsReceived.textContent = packetLoss.reason || 'Test unavailable';
+                elements.packetsReceived.textContent = errorMsg;
             }
             const ph = '<span class="placeholder"></span>';
             if (elements.rttMin) elements.rttMin.innerHTML = ph;
