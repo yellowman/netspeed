@@ -543,7 +543,7 @@ const Charts = (function() {
 
         // Calculate display range with minimum visual width
         const dataRange = max - min;
-        const minDisplayRange = 30; // Minimum 30 units (Mbps, ms, etc.)
+        const minDisplayRange = 10; // Minimum 10 units (Mbps, ms, etc.)
         let displayMin, displayMax;
 
         if (dataRange < minDisplayRange) {
