@@ -602,9 +602,26 @@ const SpeedTest = (function() {
 
             const testId = answer.testId;
 
-            // Wait for data channel to open
+            // Wait for data channel to open with ICE connection monitoring
             await new Promise((resolve, reject) => {
-                const timeout = setTimeout(() => reject(new Error('Data channel timeout')), 15000);
+                const timeout = setTimeout(() => reject(new Error('ICE connection timeout')), 15000);
+
+                // Monitor ICE connection state for failures
+                pc.oniceconnectionstatechange = () => {
+                    const state = pc.iceConnectionState;
+                    if (state === 'failed') {
+                        clearTimeout(timeout);
+                        reject(new Error('ICE connection failed'));
+                    } else if (state === 'disconnected') {
+                        // Give it a moment to recover before failing
+                        setTimeout(() => {
+                            if (pc.iceConnectionState === 'disconnected' || pc.iceConnectionState === 'failed') {
+                                clearTimeout(timeout);
+                                reject(new Error('ICE connection disconnected'));
+                            }
+                        }, 2000);
+                    }
+                };
 
                 if (dc.readyState === 'open') {
                     clearTimeout(timeout);
@@ -616,7 +633,7 @@ const SpeedTest = (function() {
                     };
                     dc.onerror = (err) => {
                         clearTimeout(timeout);
-                        reject(err);
+                        reject(new Error('Data channel error: ' + (err.message || 'unknown')));
                     };
                 }
             });
@@ -820,12 +837,18 @@ const SpeedTest = (function() {
 
             // Determine reason for failure
             let reason = 'WebRTC connection failed';
-            if (err.message?.includes('ICE gathering timeout')) {
-                reason = 'ICE gathering timeout - check TURN server configuration';
-            } else if (err.message?.includes('Data channel timeout')) {
-                reason = 'Data channel timeout - connection may be blocked by firewall';
+            if (err.message?.includes('ICE connection timeout')) {
+                reason = 'ICE connection timeout';
+            } else if (err.message?.includes('ICE connection failed')) {
+                reason = 'ICE connection failed';
+            } else if (err.message?.includes('ICE connection disconnected')) {
+                reason = 'ICE connection disconnected';
+            } else if (err.message?.includes('ICE gathering timeout')) {
+                reason = 'ICE gathering timeout';
+            } else if (err.message?.includes('Data channel error')) {
+                reason = 'Data channel error';
             } else if (err.message?.includes('offer failed')) {
-                reason = 'Server rejected connection - WebRTC may not be configured';
+                reason = 'Server rejected connection';
             }
 
             const unavailableResult = {

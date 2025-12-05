@@ -541,11 +541,29 @@ const Charts = (function() {
         const p75 = percentile(sorted, 75);
         const avg = data.reduce((a, b) => a + b, 0) / data.length;
 
-        // If all values are the same, just show a point
-        if (min === max) {
-            container.innerHTML = `<span class="no-data">${formatNumber(min)} ${unit}</span>`;
-            return;
+        // Calculate display range with minimum visual width
+        const dataRange = max - min;
+        const minDisplayRange = 30; // Minimum 30 units (Mbps, ms, etc.)
+        let displayMin, displayMax;
+
+        if (dataRange < minDisplayRange) {
+            // Center the minimum range around the data
+            const center = (min + max) / 2;
+            displayMin = center - minDisplayRange / 2;
+            displayMax = center + minDisplayRange / 2;
+            // Don't go below 0
+            if (displayMin < 0) {
+                displayMin = 0;
+                displayMax = minDisplayRange;
+            }
+        } else {
+            // Add 20% padding on each side for larger ranges
+            const padding = dataRange * 0.2;
+            displayMin = Math.max(0, min - padding);
+            displayMax = max + padding;
         }
+
+        const displayRange = displayMax - displayMin;
 
         // Use fixed viewBox but responsive width/height via CSS
         const svg = createSVG('svg', {
@@ -554,12 +572,12 @@ const Charts = (function() {
             class: 'box-plot'
         });
 
-        const padding = showLabels ? 40 : 10;
-        const chartWidth = width - padding * 2;
+        const svgPadding = showLabels ? 40 : 10;
+        const chartWidth = width - svgPadding * 2;
         const centerY = height / 2;
 
-        // Scale function
-        const scale = (val) => padding + ((val - min) / (max - min)) * chartWidth;
+        // Scale function using display range
+        const scale = (val) => svgPadding + ((val - displayMin) / displayRange) * chartWidth;
 
         // Whisker line (min to max)
         const whiskerLine = createSVG('line', {
@@ -633,28 +651,28 @@ const Charts = (function() {
 
         // Labels
         if (showLabels) {
-            // Min label
+            // Display range min label (left edge)
             const minLabel = createSVG('text', {
-                x: scale(min),
+                x: svgPadding,
                 y: height - 4,
                 'text-anchor': 'middle',
                 'font-size': '11',
                 'font-weight': '500',
                 fill: 'var(--color-text-secondary)'
             });
-            minLabel.textContent = formatNumber(min);
+            minLabel.textContent = formatNumber(displayMin);
             svg.appendChild(minLabel);
 
-            // Max label
+            // Display range max label (right edge)
             const maxLabel = createSVG('text', {
-                x: scale(max),
+                x: width - svgPadding,
                 y: height - 4,
                 'text-anchor': 'middle',
                 'font-size': '11',
                 'font-weight': '500',
                 fill: 'var(--color-text-secondary)'
             });
-            maxLabel.textContent = formatNumber(max);
+            maxLabel.textContent = formatNumber(displayMax);
             svg.appendChild(maxLabel);
 
             // Median label (top)

@@ -1242,17 +1242,22 @@
     function updatePacketLossDetails(packetLoss) {
         // Handle unavailable state (WebRTC failed)
         if (packetLoss.unavailable) {
+            const errorMsg = `Unable to perform measurement: ${packetLoss.reason || 'Unknown error'}`;
+            if (elements.packetLossValue) {
+                elements.packetLossValue.innerHTML = '<span class="error-icon"></span>';
+                elements.packetLossValue.classList.add('error');
+            }
             if (elements.packetLossBadge) {
-                elements.packetLossBadge.textContent = 'N/A';
+                elements.packetLossBadge.textContent = 'Error';
             }
             if (elements.packetLossFill) {
                 elements.packetLossFill.style.width = '0%';
             }
             if (elements.packetLossDetail) {
-                elements.packetLossDetail.textContent = 'Unavailable';
+                elements.packetLossDetail.textContent = errorMsg;
             }
             if (elements.packetsReceived) {
-                elements.packetsReceived.textContent = packetLoss.reason || 'Test unavailable';
+                elements.packetsReceived.textContent = errorMsg;
             }
             const ph = '<span class="placeholder"></span>';
             if (elements.rttMin) elements.rttMin.innerHTML = ph;
@@ -1260,6 +1265,11 @@
             if (elements.rttP90) elements.rttP90.innerHTML = ph;
             if (elements.rttJitter) elements.rttJitter.innerHTML = ph;
             return;
+        }
+
+        // Clear error state if previously set
+        if (elements.packetLossValue) {
+            elements.packetLossValue.classList.remove('error');
         }
 
         // Update badge
@@ -1363,7 +1373,9 @@
                 encodeGrade(state.quality.videoChatting);
         }
 
-        // Pack small enums into single value: connType(0-4)*360 + proto(0-1)*180 + lossType(0-3)*45 + conf(0-2)*15 + dlTrend(0-2)*5 + ulTrend(0-2) + q*1620
+        // Pack small enums into single value
+        // Ranges: ulTrend(3) * dlTrend(3) * conf(3) * lossType(4) * proto(2) * connType(5) * q(125)
+        // Multipliers: dlTrend=3, conf=9, lossType=27, proto=108, connType=216, q=1080
         const dc = state.dataChannelStats;
         const lp = state.lossPattern;
         const bw = state.bandwidthEstimate;
@@ -1382,9 +1394,9 @@
         const dlTrend = trendMap[bw?.downloadTrend] ?? 0;
         const ulTrend = trendMap[bw?.uploadTrend] ?? 0;
 
-        // Pack: q*1620 + connType*324 + proto*162 + lossType*54 + conf*18 + dlTrend*3 + ulTrend
-        // Max: 124*1620 + 4*324 + 1*162 + 3*54 + 2*18 + 2*3 + 2 = 202806 (fits in 4 base36 chars)
-        const flags = q * 1620 + connType * 324 + proto * 162 + lossType * 54 + conf * 18 + dlTrend * 3 + ulTrend;
+        // Pack: q*1080 + connType*216 + proto*108 + lossType*27 + conf*9 + dlTrend*3 + ulTrend
+        // Max: 124*1080 + 4*216 + 1*108 + 3*27 + 2*9 + 2*3 + 2 = 134999 (fits in 4 base36 chars)
+        const flags = q * 1080 + connType * 216 + proto * 108 + lossType * 27 + conf * 9 + dlTrend * 3 + ulTrend;
 
         // All values to encode (delta-encoded as one array)
         const serverLoc = state.locations?.find(l => l.iata === state.meta?.colo);
@@ -1547,7 +1559,7 @@
 
     /**
      * Encode samples with compact delta + run-length compression
-     * Format: first.deltas where deltas use: a-z=1-26, A-Z=-1to-26, 0=0, Z{n}=n zeros, _{base36}=large
+     * Format: first.deltas where deltas use: a-z=1-26, A-Z=-1to-26, 0=0, ~{n}=n zeros, _{base36}=large
      */
     function encodeSamplesDelta(values) {
         if (!values || values.length === 0) return '';
@@ -1569,7 +1581,8 @@
                     zeroCount++;
                     i++;
                 }
-                result += zeroCount === 1 ? '0' : 'Z' + zeroCount.toString(36);
+                // Use ~ for RLE (not Z, which represents delta -26)
+                result += zeroCount === 1 ? '0' : '~' + zeroCount.toString(36);
             } else if (delta >= 1 && delta <= 26) {
                 result += String.fromCharCode(96 + delta); // a-z for 1-26
                 i++;
@@ -1590,14 +1603,8 @@
     function decodeSamplesDelta(encoded) {
         if (!encoded || encoded === '') return [];
 
-        // Find first non-base36 char to split first value
-        let firstEnd = 0;
-        while (firstEnd < encoded.length && /[0-9a-z]/i.test(encoded[firstEnd]) &&
-               !'ABCDEFGHIJKLMNOPQRSTUVWXYZ'.includes(encoded[firstEnd])) {
-            firstEnd++;
-        }
-        // Handle case where first char could be part of delta encoding
-        const firstMatch = encoded.match(/^[0-9a-z]+/i);
+        // Extract first base36 value (lowercase only - uppercase A-Z are negative deltas)
+        const firstMatch = encoded.match(/^[0-9a-z]+/);
         if (!firstMatch) return [];
 
         let prev = parseInt(firstMatch[0], 36);
@@ -1609,8 +1616,8 @@
             if (c === '0') {
                 result.push(prev / 10); // delta 0
                 i++;
-            } else if (c === 'Z') {
-                // Run of zeros: Z followed by count
+            } else if (c === '~') {
+                // Run of zeros: ~ followed by count
                 i++;
                 let countStr = '';
                 while (i < encoded.length && /[0-9a-z]/.test(encoded[i])) {
@@ -1666,17 +1673,17 @@
             const t = (v[6] * 60 + 1704067200) * 1000; // timestamp (from 2024-01-01 offset in minutes)
             const flags = v[7];   // packed enums
 
-            // Unpack flags: q*1620 + connType*324 + proto*162 + lossType*54 + conf*18 + dlTrend*3 + ulTrend
-            const q = Math.floor(flags / 1620);
-            const rem1 = flags % 1620;
-            const connType = Math.floor(rem1 / 324);
-            const rem2 = rem1 % 324;
-            const proto = Math.floor(rem2 / 162);
-            const rem3 = rem2 % 162;
-            const lossType = Math.floor(rem3 / 54);
-            const rem4 = rem3 % 54;
-            const conf = Math.floor(rem4 / 18);
-            const rem5 = rem4 % 18;
+            // Unpack flags: q*1080 + connType*216 + proto*108 + lossType*27 + conf*9 + dlTrend*3 + ulTrend
+            const q = Math.floor(flags / 1080);
+            const rem1 = flags % 1080;
+            const connType = Math.floor(rem1 / 216);
+            const rem2 = rem1 % 216;
+            const proto = Math.floor(rem2 / 108);
+            const rem3 = rem2 % 108;
+            const lossType = Math.floor(rem3 / 27);
+            const rem4 = rem3 % 27;
+            const conf = Math.floor(rem4 / 9);
+            const rem5 = rem4 % 9;
             const dlTrend = Math.floor(rem5 / 3);
             const ulTrend = rem5 % 3;
 
@@ -1790,7 +1797,7 @@
                 packetLoss: packetLoss,
                 coords: coords,
                 quality: {
-                    streaming: decodeGrade(qs),
+                    videoStreaming: decodeGrade(qs),
                     gaming: decodeGrade(qg),
                     videoChatting: decodeGrade(qv)
                 },
@@ -1996,11 +2003,7 @@
 
         // Update quality grades
         if (results.quality) {
-            updateQualityScores({
-                videoStreaming: results.quality.streaming,
-                gaming: results.quality.gaming,
-                videoChatting: results.quality.videoChatting
-            });
+            updateQualityScores(results.quality);
         }
 
         // Update data channel stats

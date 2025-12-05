@@ -1608,3 +1608,160 @@ type ThroughputSampleExtended = ThroughputSample & {
 
 **Note:** Sizes use decimal (kB/MB) notation: 1 kB = 1,000 bytes, 1 MB = 1,000,000 bytes.
 
+---
+
+## 16. packet loss error handling
+
+### 16.1 ICE connection failure detection
+
+the packet loss test monitors ICE connection state to detect failures:
+
+```ts
+pc.oniceconnectionstatechange = () => {
+  const state = pc.iceConnectionState;
+  if (state === 'failed') {
+    reject(new Error('ICE connection failed'));
+  } else if (state === 'disconnected') {
+    // Give 2 seconds to recover before failing
+    setTimeout(() => {
+      if (pc.iceConnectionState === 'disconnected' || pc.iceConnectionState === 'failed') {
+        reject(new Error('ICE connection disconnected'));
+      }
+    }, 2000);
+  }
+};
+```
+
+### 16.2 error types
+
+the packet loss test can fail with the following error types:
+
+| Error | Cause |
+|-------|-------|
+| `ICE connection timeout` | Connection setup took longer than 15 seconds |
+| `ICE connection failed` | ICE negotiation failed (firewall, network issue) |
+| `ICE connection disconnected` | Connection dropped during setup |
+| `ICE gathering timeout` | ICE candidate gathering took longer than 10 seconds |
+| `Data channel error` | WebRTC data channel failed to open |
+| `Server rejected connection` | `/api/packet-test/offer` returned error |
+| `TURN server not configured` | `/api/turn/credentials` returned 4xx/5xx |
+
+### 16.3 unavailable result type
+
+when an error occurs, return an unavailable result:
+
+```ts
+type PacketLossResultUnavailable = {
+  sent: 0;
+  received: 0;
+  lossPercent: 0;
+  rttStatsMs: { min: 0; median: 0; p90: 0 };
+  jitterMs: 0;
+  unavailable: true;
+  reason: string;  // human-readable error message
+};
+```
+
+### 16.4 UI display for errors
+
+when packet loss test is unavailable, display error state:
+
+**main value:**
+- show red circle with exclamation point icon (`<span class="error-icon"></span>`)
+- add `error` class to value element for red color styling
+
+**badge:**
+- show `Error` instead of `received/sent`
+
+**detail text:**
+- show `Unable to perform measurement: <reason>`
+- examples:
+  - `Unable to perform measurement: ICE connection timeout`
+  - `Unable to perform measurement: ICE connection failed`
+  - `Unable to perform measurement: TURN server not configured`
+
+**RTT stats:**
+- show shimmer placeholder spans (animated loading indicator)
+
+**css for error icon:**
+
+```css
+.error-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.5em;
+  height: 1.5em;
+  background-color: var(--color-danger, #dc3545);
+  border-radius: 50%;
+  color: white;
+  font-weight: bold;
+}
+
+.error-icon::before {
+  content: '!';
+}
+
+.metric-value.error {
+  color: var(--color-danger, #dc3545);
+}
+```
+
+**implementation:**
+
+```ts
+function updatePacketLossDetails(packetLoss: PacketLossResult) {
+  if (packetLoss.unavailable) {
+    const errorMsg = `Unable to perform measurement: ${packetLoss.reason || 'Unknown error'}`;
+
+    elements.packetLossValue.innerHTML = '<span class="error-icon"></span>';
+    elements.packetLossValue.classList.add('error');
+    elements.packetLossBadge.textContent = 'Error';
+    elements.packetLossDetail.textContent = errorMsg;
+    elements.packetsReceived.textContent = errorMsg;
+
+    // Show shimmer placeholders for RTT stats
+    const ph = '<span class="placeholder"></span>';
+    elements.rttMin.innerHTML = ph;
+    elements.rttMedian.innerHTML = ph;
+    elements.rttP90.innerHTML = ph;
+    elements.rttJitter.innerHTML = ph;
+    return;
+  }
+
+  // Clear error state if previously set
+  elements.packetLossValue.classList.remove('error');
+
+  // ... normal display logic
+}
+```
+
+### 16.5 connection issue detection
+
+detect connection failures vs actual packet loss by analyzing response patterns:
+
+```ts
+// No responses at all - connection failed
+if (received === 0) {
+  return { unavailable: true, reason: 'No responses received - connection failed' };
+}
+
+// High loss with pattern analysis
+if (lossPercent > 10) {
+  const lateAckPercent = calculateLateAckPercent(acks, sent);
+  const earlyAckPercent = calculateEarlyAckPercent(acks, sent);
+
+  // Early packets succeeded but late packets failed = connection died
+  if (earlyAckPercent > 80 && lateAckPercent < 50) {
+    return { unavailable: true, reason: `Connection died mid-test - last response at packet ${maxAckedSeq}/${sent}` };
+  }
+
+  // Very high loss throughout = unstable connection
+  if (lossPercent > 50) {
+    return { unavailable: true, reason: `Connection unstable - received only ${received}/${sent} responses` };
+  }
+}
+```
+
+this prevents misleading packet loss percentages when the issue is connection failure rather than network quality.
+
