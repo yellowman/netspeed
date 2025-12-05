@@ -1549,7 +1549,7 @@
 
     /**
      * Encode samples with compact delta + run-length compression
-     * Format: first.deltas where deltas use: a-z=1-26, A-Z=-1to-26, 0=0, Z{n}=n zeros, _{base36}=large
+     * Format: first.deltas where deltas use: a-z=1-26, A-Z=-1to-26, 0=0, ~{n}=n zeros, _{base36}=large
      */
     function encodeSamplesDelta(values) {
         if (!values || values.length === 0) return '';
@@ -1571,7 +1571,8 @@
                     zeroCount++;
                     i++;
                 }
-                result += zeroCount === 1 ? '0' : 'Z' + zeroCount.toString(36);
+                // Use ~ for RLE (not Z, which represents delta -26)
+                result += zeroCount === 1 ? '0' : '~' + zeroCount.toString(36);
             } else if (delta >= 1 && delta <= 26) {
                 result += String.fromCharCode(96 + delta); // a-z for 1-26
                 i++;
@@ -1605,8 +1606,8 @@
             if (c === '0') {
                 result.push(prev / 10); // delta 0
                 i++;
-            } else if (c === 'Z') {
-                // Run of zeros: Z followed by count
+            } else if (c === '~') {
+                // Run of zeros: ~ followed by count
                 i++;
                 let countStr = '';
                 while (i < encoded.length && /[0-9a-z]/.test(encoded[i])) {
