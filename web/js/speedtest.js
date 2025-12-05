@@ -568,6 +568,15 @@ const SpeedTest = (function() {
         const phase4StartTime = performance.now();
         const timeBudgetMs = TOTAL_DOWNLOAD_DURATION_SECONDS * 1000;
 
+        // Calculate expected total runs for progress reporting (baseline + selected larger profiles)
+        const baselineRuns = profile100k.runs + profile1m.runs;
+        let expectedTotal = baselineRuns;
+        for (const name of largerProfiles) {
+            if (DOWNLOAD_PROFILES[name]) {
+                expectedTotal += DOWNLOAD_PROFILES[name].runs;
+            }
+        }
+
         for (const profileName of largerProfiles) {
             if (abortController?.signal.aborted) break;
             if (!DOWNLOAD_PROFILES[profileName]) continue;
@@ -593,8 +602,7 @@ const SpeedTest = (function() {
                     totalRuns++;
 
                     if (callbacks.onDownloadProgress) {
-                        const progress = Math.min(1, (performance.now() - phase4StartTime) / timeBudgetMs);
-                        callbacks.onDownloadProgress(profileName, run + 1, runs, sample, progress, 1);
+                        callbacks.onDownloadProgress(profileName, run + 1, runs, sample, totalRuns, expectedTotal);
                     }
                 } catch (err) {
                     console.error(`Download ${profileName} run ${run} failed:`, err);
@@ -671,6 +679,15 @@ const SpeedTest = (function() {
         const phase4StartTime = performance.now();
         const timeBudgetMs = TOTAL_UPLOAD_DURATION_SECONDS * 1000;
 
+        // Calculate expected total runs for progress reporting (baseline + selected larger profiles)
+        const baselineRuns = profile100k.runs + profile1m.runs;
+        let expectedTotal = baselineRuns;
+        for (const name of largerProfiles) {
+            if (UPLOAD_PROFILES[name]) {
+                expectedTotal += UPLOAD_PROFILES[name].runs;
+            }
+        }
+
         for (const profileName of largerProfiles) {
             if (abortController?.signal.aborted) break;
             if (!UPLOAD_PROFILES[profileName]) continue;
@@ -696,8 +713,7 @@ const SpeedTest = (function() {
                     totalRuns++;
 
                     if (callbacks.onUploadProgress) {
-                        const progress = Math.min(1, (performance.now() - phase4StartTime) / timeBudgetMs);
-                        callbacks.onUploadProgress(profileName, run + 1, runs, sample, progress, 1);
+                        callbacks.onUploadProgress(profileName, run + 1, runs, sample, totalRuns, expectedTotal);
                     }
                 } catch (err) {
                     console.error(`Upload ${profileName} run ${run} failed:`, err);
