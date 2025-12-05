@@ -519,7 +519,7 @@ const SpeedTest = (function() {
         // Thresholds for batching decision
         const lowLatencyMs = 50;      // Below this: always parallel (fast/local)
         const highLatencyMs = 100;    // Above this: check bandwidth
-        const minBandwidthMbps = 10;  // Minimum bandwidth for parallel on high-latency
+        const minBandwidthMbps = 2;   // Minimum bandwidth for parallel on high-latency (probes are tiny)
 
         // Phase 1: Run initial probes sequentially to estimate connection quality
         for (let i = 0; i < Math.min(initialProbes, totalProbes); i++) {
