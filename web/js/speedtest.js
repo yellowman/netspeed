@@ -7,13 +7,17 @@ const SpeedTest = (function() {
     'use strict';
 
     // All available profile configurations
+    // Profiles scale from slow connections (128 Kbps) to extremely fast (1 Tbps)
     const ALL_DOWNLOAD_PROFILES = {
         '100kB': { bytes: 100 * 1000, runs: 10 },
         '1MB':   { bytes: 1 * 1000 * 1000, runs: 8 },
         '10MB':  { bytes: 10 * 1000 * 1000, runs: 6 },
         '25MB':  { bytes: 25 * 1000 * 1000, runs: 4 },
         '100MB': { bytes: 100 * 1000 * 1000, runs: 3 },
-        '250MB': { bytes: 250 * 1000 * 1000, runs: 2 }  // For very fast connections
+        '250MB': { bytes: 250 * 1000 * 1000, runs: 2 },
+        '500MB': { bytes: 500 * 1000 * 1000, runs: 2 },   // 1s at 4 Gbps
+        '1GB':   { bytes: 1000 * 1000 * 1000, runs: 2 },  // 1s at 8 Gbps
+        '2GB':   { bytes: 2000 * 1000 * 1000, runs: 2 }   // 1s at 16 Gbps
     };
 
     const ALL_UPLOAD_PROFILES = {
@@ -22,7 +26,10 @@ const SpeedTest = (function() {
         '10MB':  { bytes: 10 * 1000 * 1000, runs: 4 },
         '25MB':  { bytes: 25 * 1000 * 1000, runs: 4 },
         '50MB':  { bytes: 50 * 1000 * 1000, runs: 3 },
-        '100MB': { bytes: 100 * 1000 * 1000, runs: 2 }  // For very fast connections
+        '100MB': { bytes: 100 * 1000 * 1000, runs: 2 },
+        '250MB': { bytes: 250 * 1000 * 1000, runs: 2 },   // 1s at 2 Gbps
+        '500MB': { bytes: 500 * 1000 * 1000, runs: 2 },   // 1s at 4 Gbps
+        '1GB':   { bytes: 1000 * 1000 * 1000, runs: 2 }   // 1s at 8 Gbps
     };
 
     // Maximum duration (seconds) for a single test to be included
@@ -68,7 +75,7 @@ const SpeedTest = (function() {
         };
 
         // Check larger profiles based on estimated transfer time
-        const largerProfiles = ['10MB', '25MB', '100MB', '250MB'];
+        const largerProfiles = ['10MB', '25MB', '100MB', '250MB', '500MB', '1GB', '2GB'];
         for (const name of largerProfiles) {
             const profile = ALL_DOWNLOAD_PROFILES[name];
             if (!profile) continue;
@@ -95,7 +102,7 @@ const SpeedTest = (function() {
         };
 
         // Check larger profiles based on estimated transfer time
-        const largerProfiles = ['10MB', '25MB', '50MB', '100MB'];
+        const largerProfiles = ['10MB', '25MB', '50MB', '100MB', '250MB', '500MB', '1GB'];
         for (const name of largerProfiles) {
             const profile = ALL_UPLOAD_PROFILES[name];
             if (!profile) continue;
