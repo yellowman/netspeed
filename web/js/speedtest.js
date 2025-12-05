@@ -487,46 +487,101 @@ const SpeedTest = (function() {
     }
 
     /**
-     * Run unloaded latency tests in parallel batches for speed
+     * Run unloaded latency tests with adaptive batching
+     * Starts sequential to estimate connection quality, then batches on fast connections
      */
     async function runUnloadedLatency() {
         const samples = [];
-        const batchSize = 5; // Run 5 probes in parallel
         const totalProbes = CONFIG.latencyProbes;
+        const initialProbes = 5; // Run first 5 sequentially to estimate
+        const batchSize = 5; // Batch size for parallel mode
+        const latencyThresholdMs = 100; // Above this, stay sequential
 
-        for (let batchStart = 0; batchStart < totalProbes; batchStart += batchSize) {
+        // Phase 1: Run initial probes sequentially to estimate connection quality
+        for (let i = 0; i < Math.min(initialProbes, totalProbes); i++) {
             if (abortController?.signal.aborted) break;
             while (isPaused) await sleep(100);
 
-            // Launch batch of probes in parallel
-            const batchEnd = Math.min(batchStart + batchSize, totalProbes);
-            const batchPromises = [];
-            for (let i = batchStart; i < batchEnd; i++) {
-                batchPromises.push(
-                    runLatencyProbe('unloaded', i).catch(err => {
-                        console.error(`Latency probe ${i} failed:`, err);
-                        return null;
-                    })
-                );
-            }
+            try {
+                const sample = await runLatencyProbe('unloaded', i);
+                samples.push(sample);
+                results.latencySamples.push(sample);
 
-            const batchResults = await Promise.all(batchPromises);
-
-            // Process results
-            for (let i = 0; i < batchResults.length; i++) {
-                const sample = batchResults[i];
-                if (sample) {
-                    samples.push(sample);
-                    results.latencySamples.push(sample);
+                if (callbacks.onLatencyProgress) {
+                    callbacks.onLatencyProgress('unloaded', i + 1, totalProbes, sample);
                 }
-            }
-
-            // Report progress after each batch
-            if (callbacks.onLatencyProgress) {
-                const lastSample = batchResults.find(s => s) || { rttMs: 0 };
-                callbacks.onLatencyProgress('unloaded', batchEnd, totalProbes, lastSample);
+            } catch (err) {
+                console.error(`Latency probe ${i} failed:`, err);
             }
         }
+
+        if (samples.length === 0 || samples.length >= totalProbes) {
+            return samples;
+        }
+
+        // Calculate median RTT from initial probes
+        const sortedRtts = samples.map(s => s.rttMs).sort((a, b) => a - b);
+        const medianRtt = sortedRtts[Math.floor(sortedRtts.length / 2)];
+        const useParallel = medianRtt < latencyThresholdMs;
+
+        console.log(`Latency: median RTT ${medianRtt.toFixed(1)}ms, using ${useParallel ? 'parallel' : 'sequential'} mode`);
+
+        // Phase 2: Run remaining probes (parallel or sequential based on connection quality)
+        let probeIndex = initialProbes;
+
+        if (useParallel) {
+            // Fast connection: batch remaining probes
+            while (probeIndex < totalProbes) {
+                if (abortController?.signal.aborted) break;
+                while (isPaused) await sleep(100);
+
+                const batchEnd = Math.min(probeIndex + batchSize, totalProbes);
+                const batchPromises = [];
+                for (let i = probeIndex; i < batchEnd; i++) {
+                    batchPromises.push(
+                        runLatencyProbe('unloaded', i).catch(err => {
+                            console.error(`Latency probe ${i} failed:`, err);
+                            return null;
+                        })
+                    );
+                }
+
+                const batchResults = await Promise.all(batchPromises);
+
+                for (const sample of batchResults) {
+                    if (sample) {
+                        samples.push(sample);
+                        results.latencySamples.push(sample);
+                    }
+                }
+
+                if (callbacks.onLatencyProgress) {
+                    const lastSample = batchResults.find(s => s) || { rttMs: 0 };
+                    callbacks.onLatencyProgress('unloaded', batchEnd, totalProbes, lastSample);
+                }
+
+                probeIndex = batchEnd;
+            }
+        } else {
+            // Slow/high-latency connection: continue sequential
+            for (let i = probeIndex; i < totalProbes; i++) {
+                if (abortController?.signal.aborted) break;
+                while (isPaused) await sleep(100);
+
+                try {
+                    const sample = await runLatencyProbe('unloaded', i);
+                    samples.push(sample);
+                    results.latencySamples.push(sample);
+
+                    if (callbacks.onLatencyProgress) {
+                        callbacks.onLatencyProgress('unloaded', i + 1, totalProbes, sample);
+                    }
+                } catch (err) {
+                    console.error(`Latency probe ${i} failed:`, err);
+                }
+            }
+        }
+
         return samples;
     }
 
