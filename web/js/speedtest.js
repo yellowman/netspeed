@@ -6,22 +6,51 @@
 const SpeedTest = (function() {
     'use strict';
 
-    // Profile configurations: { name: { bytes, runs } }
-    const DOWNLOAD_PROFILES = {
-        '100kB': { bytes: 100 * 1000, runs: 10 },      // 10 × 100kB tests
-        '1MB':   { bytes: 1 * 1000 * 1000, runs: 8 },  // 8 × 1MB tests
-        '10MB':  { bytes: 10 * 1000 * 1000, runs: 6 }, // 6 × 10MB tests
-        '25MB':  { bytes: 25 * 1000 * 1000, runs: 4 }, // 4 × 25MB tests
-        '100MB': { bytes: 100 * 1000 * 1000, runs: 3 } // 3 × 100MB tests
+    // All available profile configurations
+    // Profiles scale from slow connections (128 Kbps) to extremely fast (1 Tbps)
+    const ALL_DOWNLOAD_PROFILES = {
+        '100kB': { bytes: 100 * 1000, runs: 10 },
+        '1MB':   { bytes: 1 * 1000 * 1000, runs: 8 },
+        '10MB':  { bytes: 10 * 1000 * 1000, runs: 6 },
+        '25MB':  { bytes: 25 * 1000 * 1000, runs: 4 },
+        '100MB': { bytes: 100 * 1000 * 1000, runs: 3 },
+        '250MB': { bytes: 250 * 1000 * 1000, runs: 2 },
+        '500MB': { bytes: 500 * 1000 * 1000, runs: 2 },    // 1s at 4 Gbps
+        '1GB':   { bytes: 1000 * 1000 * 1000, runs: 2 },   // 1s at 8 Gbps
+        '2GB':   { bytes: 2000 * 1000 * 1000, runs: 2 },   // 1s at 16 Gbps
+        '5GB':   { bytes: 5000 * 1000 * 1000, runs: 2 },   // 1s at 40 Gbps
+        '12GB':  { bytes: 12000 * 1000 * 1000, runs: 2 },  // 1s at ~100 Gbps
+        '50GB':  { bytes: 50000 * 1000 * 1000, runs: 2 },  // 1s at 400 Gbps
+        '100GB': { bytes: 100000 * 1000 * 1000, runs: 2 }, // 1s at 800 Gbps
+        '125GB': { bytes: 125000 * 1000 * 1000, runs: 2 }  // 1s at 1 Tbps
     };
 
-    const UPLOAD_PROFILES = {
-        '100kB': { bytes: 100 * 1000, runs: 8 },       // 8 × 100kB tests
-        '1MB':   { bytes: 1 * 1000 * 1000, runs: 6 },  // 6 × 1MB tests
-        '10MB':  { bytes: 10 * 1000 * 1000, runs: 4 }, // 4 × 10MB tests
-        '25MB':  { bytes: 25 * 1000 * 1000, runs: 4 }, // 4 × 25MB tests
-        '50MB':  { bytes: 50 * 1000 * 1000, runs: 3 }  // 3 × 50MB tests
+    const ALL_UPLOAD_PROFILES = {
+        '100kB': { bytes: 100 * 1000, runs: 8 },
+        '1MB':   { bytes: 1 * 1000 * 1000, runs: 6 },
+        '10MB':  { bytes: 10 * 1000 * 1000, runs: 4 },
+        '25MB':  { bytes: 25 * 1000 * 1000, runs: 4 },
+        '50MB':  { bytes: 50 * 1000 * 1000, runs: 3 },
+        '100MB': { bytes: 100 * 1000 * 1000, runs: 2 },
+        '250MB': { bytes: 250 * 1000 * 1000, runs: 2 },    // 1s at 2 Gbps
+        '500MB': { bytes: 500 * 1000 * 1000, runs: 2 },    // 1s at 4 Gbps
+        '1GB':   { bytes: 1000 * 1000 * 1000, runs: 2 },   // 1s at 8 Gbps
+        '2GB':   { bytes: 2000 * 1000 * 1000, runs: 2 },   // 1s at 16 Gbps
+        '5GB':   { bytes: 5000 * 1000 * 1000, runs: 2 },   // 1s at 40 Gbps
+        '12GB':  { bytes: 12000 * 1000 * 1000, runs: 2 },  // 1s at ~100 Gbps
+        '50GB':  { bytes: 50000 * 1000 * 1000, runs: 2 },  // 1s at 400 Gbps
+        '100GB': { bytes: 100000 * 1000 * 1000, runs: 2 }, // 1s at 800 Gbps
+        '125GB': { bytes: 125000 * 1000 * 1000, runs: 2 }  // 1s at 1 Tbps
     };
+
+    // Maximum duration (seconds) for a single test to be included
+    // Profiles are selected if their estimated transfer time is under this limit
+    // This scales linearly from 128 Kbps to 1 Tbps
+    const MAX_TEST_DURATION_SECONDS = 4;
+
+    // Active profiles (set dynamically based on detected speed)
+    let DOWNLOAD_PROFILES = {};
+    let UPLOAD_PROFILES = {};
 
     // Test configuration
     const CONFIG = {
@@ -29,8 +58,86 @@ const SpeedTest = (function() {
         loadedLatencyProbes: 5,
         packetLossPackets: 1000,
         packetLossInterval: 10,
-        packetLossExtraWait: 3000
+        packetLossExtraWait: 3000,
+        // Adaptive testing config
+        estimationRuns: 4,  // Number of runs for speed estimation
+        targetTestDuration: 60  // Target total test duration in seconds (not strict)
     };
+
+    /**
+     * Calculate estimated transfer time in seconds
+     */
+    function estimateTransferTime(bytes, speedMbps) {
+        if (speedMbps <= 0) return Infinity;
+        // time = bits / bits_per_second
+        // bits = bytes * 8, bits_per_second = speedMbps * 1,000,000
+        return (bytes * 8) / (speedMbps * 1e6);
+    }
+
+    /**
+     * Select appropriate download profiles based on estimated speed
+     * Uses linear scaling: include profiles where transfer time < MAX_TEST_DURATION_SECONDS
+     */
+    function selectDownloadProfiles(estimatedSpeedMbps) {
+        // Always include baseline profiles
+        const profiles = {
+            '100kB': ALL_DOWNLOAD_PROFILES['100kB'],
+            '1MB': ALL_DOWNLOAD_PROFILES['1MB']
+        };
+
+        // Check larger profiles based on estimated transfer time
+        const largerProfiles = ['10MB', '25MB', '100MB', '250MB', '500MB', '1GB', '2GB', '5GB', '12GB', '50GB', '100GB', '125GB'];
+        for (const name of largerProfiles) {
+            const profile = ALL_DOWNLOAD_PROFILES[name];
+            if (!profile) continue;
+
+            const estimatedSeconds = estimateTransferTime(profile.bytes, estimatedSpeedMbps);
+            if (estimatedSeconds <= MAX_TEST_DURATION_SECONDS) {
+                profiles[name] = profile;
+            }
+        }
+
+        console.log(`Download profiles for ${estimatedSpeedMbps.toFixed(1)} Mbps:`, Object.keys(profiles));
+        return profiles;
+    }
+
+    /**
+     * Select appropriate upload profiles based on estimated speed
+     * Uses linear scaling: include profiles where transfer time < MAX_TEST_DURATION_SECONDS
+     */
+    function selectUploadProfiles(estimatedSpeedMbps) {
+        // Always include baseline profiles
+        const profiles = {
+            '100kB': ALL_UPLOAD_PROFILES['100kB'],
+            '1MB': ALL_UPLOAD_PROFILES['1MB']
+        };
+
+        // Check larger profiles based on estimated transfer time
+        const largerProfiles = ['10MB', '25MB', '50MB', '100MB', '250MB', '500MB', '1GB', '2GB', '5GB', '12GB', '50GB', '100GB', '125GB'];
+        for (const name of largerProfiles) {
+            const profile = ALL_UPLOAD_PROFILES[name];
+            if (!profile) continue;
+
+            const estimatedSeconds = estimateTransferTime(profile.bytes, estimatedSpeedMbps);
+            if (estimatedSeconds <= MAX_TEST_DURATION_SECONDS) {
+                profiles[name] = profile;
+            }
+        }
+
+        console.log(`Upload profiles for ${estimatedSpeedMbps.toFixed(1)} Mbps:`, Object.keys(profiles));
+        return profiles;
+    }
+
+    /**
+     * Estimate speed from initial test samples
+     */
+    function estimateSpeed(samples) {
+        if (samples.length === 0) return 0;
+        // Use 75th percentile for a stable estimate
+        const sorted = [...samples].sort((a, b) => a - b);
+        const p75Index = Math.floor(sorted.length * 0.75);
+        return sorted[p75Index];
+    }
 
     // State
     let abortController = null;
@@ -341,10 +448,11 @@ const SpeedTest = (function() {
         // warm and cold connections during actual tests.
         try {
             // Run 6 parallel warmup downloads to prime multiple connections
+            // Use ALL_*_PROFILES since dynamic profiles aren't set until estimation phase
             const downloadPromises = [];
             for (let i = 0; i < 6; i++) {
                 downloadPromises.push(
-                    runDownload(DOWNLOAD_PROFILES['100kB'].bytes, 'warmup', i)
+                    runDownload(ALL_DOWNLOAD_PROFILES['100kB'].bytes, 'warmup', i)
                         .catch(() => {}) // Ignore individual failures
                 );
             }
@@ -354,7 +462,7 @@ const SpeedTest = (function() {
             const uploadPromises = [];
             for (let i = 0; i < 6; i++) {
                 uploadPromises.push(
-                    runUpload(UPLOAD_PROFILES['100kB'].bytes, 'warmup', i)
+                    runUpload(ALL_UPLOAD_PROFILES['100kB'].bytes, 'warmup', i)
                         .catch(() => {})
                 );
             }
@@ -386,15 +494,54 @@ const SpeedTest = (function() {
     }
 
     /**
-     * Run download tests for all profiles
+     * Run download tests with adaptive profile selection
      */
     async function runDownloadTests() {
+        // Phase 1: Run estimation tests with 1MB profile
+        const estimationSamples = [];
+        const estimationProfile = ALL_DOWNLOAD_PROFILES['1MB'];
+
+        console.log('Download speed estimation phase...');
+        for (let i = 0; i < CONFIG.estimationRuns; i++) {
+            if (abortController?.signal.aborted) break;
+            while (isPaused) await sleep(100);
+
+            try {
+                const sample = await runDownload(estimationProfile.bytes, '1MB-est', i);
+                estimationSamples.push(sample.mbps);
+                results.throughputSamples.push({ ...sample, profile: '1MB' });
+
+                if (callbacks.onDownloadProgress) {
+                    callbacks.onDownloadProgress('1MB', i + 1, CONFIG.estimationRuns, sample, i + 1, CONFIG.estimationRuns);
+                }
+            } catch (err) {
+                console.error(`Download estimation run ${i} failed:`, err);
+            }
+        }
+
+        // Phase 2: Select profiles based on estimated speed
+        const estimatedSpeed = estimateSpeed(estimationSamples);
+        DOWNLOAD_PROFILES = selectDownloadProfiles(estimatedSpeed);
+
+        // Phase 3: Run remaining tests (skip 1MB estimation runs already done)
         const profiles = Object.entries(DOWNLOAD_PROFILES);
-        let totalRuns = 0;
-        const totalExpected = profiles.reduce((sum, [, cfg]) => sum + cfg.runs, 0);
+        let totalRuns = CONFIG.estimationRuns;  // Already completed estimation runs
+        const totalExpected = profiles.reduce((sum, [name, cfg]) => {
+            // For 1MB, subtract estimation runs already done
+            if (name === '1MB') {
+                return sum + Math.max(0, cfg.runs - CONFIG.estimationRuns);
+            }
+            return sum + cfg.runs;
+        }, CONFIG.estimationRuns);
 
         for (const [profile, { bytes, runs }] of profiles) {
-            for (let run = 0; run < runs; run++) {
+            // For 1MB profile, skip runs already done in estimation
+            const startRun = (profile === '1MB') ? CONFIG.estimationRuns : 0;
+            const actualRuns = runs - startRun;
+
+            if (actualRuns <= 0) continue;
+
+            for (let run = startRun; run < runs; run++) {
                 if (abortController?.signal.aborted) break;
                 while (isPaused) await sleep(100);
 
@@ -404,7 +551,7 @@ const SpeedTest = (function() {
                     totalRuns++;
 
                     if (callbacks.onDownloadProgress) {
-                        callbacks.onDownloadProgress(profile, run + 1, runs, sample, totalRuns, totalExpected);
+                        callbacks.onDownloadProgress(profile, run + 1 - startRun, actualRuns, sample, totalRuns, totalExpected);
                     }
                 } catch (err) {
                     console.error(`Download ${profile} run ${run} failed:`, err);
@@ -417,15 +564,54 @@ const SpeedTest = (function() {
     }
 
     /**
-     * Run upload tests for all profiles
+     * Run upload tests with adaptive profile selection
      */
     async function runUploadTests() {
+        // Phase 1: Run estimation tests with 1MB profile
+        const estimationSamples = [];
+        const estimationProfile = ALL_UPLOAD_PROFILES['1MB'];
+
+        console.log('Upload speed estimation phase...');
+        for (let i = 0; i < CONFIG.estimationRuns; i++) {
+            if (abortController?.signal.aborted) break;
+            while (isPaused) await sleep(100);
+
+            try {
+                const sample = await runUpload(estimationProfile.bytes, '1MB-est', i);
+                estimationSamples.push(sample.mbps);
+                results.throughputSamples.push({ ...sample, profile: '1MB' });
+
+                if (callbacks.onUploadProgress) {
+                    callbacks.onUploadProgress('1MB', i + 1, CONFIG.estimationRuns, sample, i + 1, CONFIG.estimationRuns);
+                }
+            } catch (err) {
+                console.error(`Upload estimation run ${i} failed:`, err);
+            }
+        }
+
+        // Phase 2: Select profiles based on estimated speed
+        const estimatedSpeed = estimateSpeed(estimationSamples);
+        UPLOAD_PROFILES = selectUploadProfiles(estimatedSpeed);
+
+        // Phase 3: Run remaining tests (skip 1MB estimation runs already done)
         const profiles = Object.entries(UPLOAD_PROFILES);
-        let totalRuns = 0;
-        const totalExpected = profiles.reduce((sum, [, cfg]) => sum + cfg.runs, 0);
+        let totalRuns = CONFIG.estimationRuns;  // Already completed estimation runs
+        const totalExpected = profiles.reduce((sum, [name, cfg]) => {
+            // For 1MB, subtract estimation runs already done
+            if (name === '1MB') {
+                return sum + Math.max(0, cfg.runs - CONFIG.estimationRuns);
+            }
+            return sum + cfg.runs;
+        }, CONFIG.estimationRuns);
 
         for (const [profile, { bytes, runs }] of profiles) {
-            for (let run = 0; run < runs; run++) {
+            // For 1MB profile, skip runs already done in estimation
+            const startRun = (profile === '1MB') ? CONFIG.estimationRuns : 0;
+            const actualRuns = runs - startRun;
+
+            if (actualRuns <= 0) continue;
+
+            for (let run = startRun; run < runs; run++) {
                 if (abortController?.signal.aborted) break;
                 while (isPaused) await sleep(100);
 
@@ -435,7 +621,7 @@ const SpeedTest = (function() {
                     totalRuns++;
 
                     if (callbacks.onUploadProgress) {
-                        callbacks.onUploadProgress(profile, run + 1, runs, sample, totalRuns, totalExpected);
+                        callbacks.onUploadProgress(profile, run + 1 - startRun, actualRuns, sample, totalRuns, totalExpected);
                     }
                 } catch (err) {
                     console.error(`Upload ${profile} run ${run} failed:`, err);
@@ -448,11 +634,29 @@ const SpeedTest = (function() {
     }
 
     /**
+     * Get the largest available profile from a profiles object
+     */
+    function getLargestProfile(profiles, allProfiles) {
+        // Prefer profiles that exist in the dynamic set, falling back to ALL_*_PROFILES
+        const available = Object.keys(profiles).length > 0 ? profiles : allProfiles;
+        let largest = null;
+        let largestBytes = 0;
+        for (const [name, cfg] of Object.entries(available)) {
+            if (cfg.bytes > largestBytes) {
+                largest = { name, bytes: cfg.bytes };
+                largestBytes = cfg.bytes;
+            }
+        }
+        return largest || { name: '1MB', bytes: 1000000 };
+    }
+
+    /**
      * Run latency probes during download
      */
     async function runLatencyDuringDownload() {
-        // Start a medium download in background
-        const downloadPromise = runDownload(DOWNLOAD_PROFILES['10MB'].bytes, '10MB', 0, 'download');
+        // Use largest available profile to saturate connection
+        const profile = getLargestProfile(DOWNLOAD_PROFILES, ALL_DOWNLOAD_PROFILES);
+        const downloadPromise = runDownload(profile.bytes, profile.name, 0, 'download');
 
         // Run latency probes concurrently
         const probePromises = [];
@@ -475,8 +679,9 @@ const SpeedTest = (function() {
      * Run latency probes during upload
      */
     async function runLatencyDuringUpload() {
-        // Start a medium upload in background
-        const uploadPromise = runUpload(UPLOAD_PROFILES['10MB'].bytes, '10MB', 0, 'upload');
+        // Use largest available profile to saturate connection
+        const profile = getLargestProfile(UPLOAD_PROFILES, ALL_UPLOAD_PROFILES);
+        const uploadPromise = runUpload(profile.bytes, profile.name, 0, 'upload');
 
         // Run latency probes concurrently
         const probePromises = [];

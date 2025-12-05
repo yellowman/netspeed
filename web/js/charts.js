@@ -543,7 +543,7 @@ const Charts = (function() {
 
         // Calculate display range with minimum visual width
         const dataRange = max - min;
-        const minDisplayRange = 30; // Minimum 30 units (Mbps, ms, etc.)
+        const minDisplayRange = 10; // Minimum 10 units (Mbps, ms, etc.)
         let displayMin, displayMax;
 
         if (dataRange < minDisplayRange) {
@@ -572,7 +572,7 @@ const Charts = (function() {
             class: 'box-plot'
         });
 
-        const svgPadding = showLabels ? 40 : 10;
+        const svgPadding = showLabels ? 20 : 10;
         const chartWidth = width - svgPadding * 2;
         const centerY = height / 2;
 

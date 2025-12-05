@@ -1468,12 +1468,14 @@
 
     /**
      * Encode array of values with compact representation (supports signed)
-     * Format: first value base36, then deltas using compact encoding
+     * Format: first value base36 + '.', then deltas using compact encoding
+     * Large deltas use '_' + base36 + '.' terminator to avoid ambiguity
      */
     function encodeValueArray(values) {
         if (!values || values.length === 0) return '';
 
-        let result = encodeSignedInt(values[0]);
+        // First value with terminator (prevents ambiguity with following deltas)
+        let result = encodeSignedInt(values[0]) + '.';
         for (let i = 1; i < values.length; i++) {
             const delta = values[i] - values[i - 1];
             if (delta === 0) {
@@ -1483,7 +1485,8 @@
             } else if (delta >= -26 && delta <= -1) {
                 result += String.fromCharCode(64 - delta); // A-Z for -1 to -26
             } else {
-                result += '_' + encodeSignedInt(delta);
+                // Large delta with terminator to prevent ambiguity
+                result += '_' + encodeSignedInt(delta) + '.';
             }
         }
         return result;
@@ -1491,27 +1494,32 @@
 
     /**
      * Decode array of values with compact representation
+     * Format: first value + '.', then deltas (large deltas use '_' + value + '.')
      */
     function decodeValueArray(encoded, count) {
         if (!encoded || encoded === '') return new Array(count).fill(0);
 
-        // Parse first value (may be signed with 'n' prefix)
+        // Parse first value (ends at '.' terminator)
         let i = 0;
         let firstEnd = 0;
         if (encoded[0] === 'n') {
             firstEnd = 1;
-            while (firstEnd < encoded.length && /[0-9a-z]/.test(encoded[firstEnd])) firstEnd++;
-        } else {
-            while (firstEnd < encoded.length && /[0-9a-z]/.test(encoded[firstEnd])) firstEnd++;
         }
+        // Read until '.' terminator or non-base36 char
+        while (firstEnd < encoded.length && /[0-9a-z]/.test(encoded[firstEnd])) firstEnd++;
 
         let prev = decodeSignedInt(encoded.slice(0, firstEnd));
         const result = [prev];
         i = firstEnd;
+        // Skip '.' terminator if present
+        if (encoded[i] === '.') i++;
 
         while (i < encoded.length && result.length < count) {
             const c = encoded[i];
-            if (c === '0') {
+            if (c === '.') {
+                // Skip terminators
+                i++;
+            } else if (c === '0') {
                 result.push(prev);
                 i++;
             } else if (c >= 'a' && c <= 'z') {
@@ -1526,11 +1534,14 @@
                 i++;
                 let deltaEnd = i;
                 if (encoded[i] === 'n') deltaEnd++;
+                // Read until '.' terminator or non-base36 char
                 while (deltaEnd < encoded.length && /[0-9a-z]/.test(encoded[deltaEnd])) deltaEnd++;
                 const delta = decodeSignedInt(encoded.slice(i, deltaEnd));
                 prev += delta;
                 result.push(prev);
                 i = deltaEnd;
+                // Skip '.' terminator if present
+                if (encoded[i] === '.') i++;
             } else {
                 i++;
             }
@@ -1559,7 +1570,7 @@
 
     /**
      * Encode samples with compact delta + run-length compression
-     * Format: first.deltas where deltas use: a-z=1-26, A-Z=-1to-26, 0=0, ~{n}=n zeros, _{base36}=large
+     * Format: first.deltas where deltas use: a-z=1-26, A-Z=-1to-26, 0=0, ~{n}.=n zeros, _{base36}.=large
      */
     function encodeSamplesDelta(values) {
         if (!values || values.length === 0) return '';
@@ -1568,7 +1579,7 @@
 
         // Delta encode with compact representation
         const scaled = samples.map(v => Math.round(v * 10));
-        let result = scaled[0].toString(36);
+        let result = scaled[0].toString(36) + '.';  // Terminator after first value
 
         let i = 1;
         while (i < scaled.length) {
@@ -1581,8 +1592,8 @@
                     zeroCount++;
                     i++;
                 }
-                // Use ~ for RLE (not Z, which represents delta -26)
-                result += zeroCount === 1 ? '0' : '~' + zeroCount.toString(36);
+                // Use ~ for RLE with terminator
+                result += zeroCount === 1 ? '0' : '~' + zeroCount.toString(36) + '.';
             } else if (delta >= 1 && delta <= 26) {
                 result += String.fromCharCode(96 + delta); // a-z for 1-26
                 i++;
@@ -1590,7 +1601,7 @@
                 result += String.fromCharCode(64 - delta); // A-Z for -1 to -26
                 i++;
             } else {
-                result += '_' + encodeSignedInt(delta); // larger deltas
+                result += '_' + encodeSignedInt(delta) + '.'; // larger deltas with terminator
                 i++;
             }
         }
@@ -1599,6 +1610,7 @@
 
     /**
      * Decode compact delta-encoded samples
+     * Format: first. then deltas (large use _val., RLE uses ~count.)
      */
     function decodeSamplesDelta(encoded) {
         if (!encoded || encoded === '') return [];
@@ -1610,20 +1622,27 @@
         let prev = parseInt(firstMatch[0], 36);
         const result = [prev / 10];
         let i = firstMatch[0].length;
+        // Skip '.' terminator if present
+        if (encoded[i] === '.') i++;
 
         while (i < encoded.length) {
             const c = encoded[i];
-            if (c === '0') {
+            if (c === '.') {
+                // Skip terminators
+                i++;
+            } else if (c === '0') {
                 result.push(prev / 10); // delta 0
                 i++;
             } else if (c === '~') {
-                // Run of zeros: ~ followed by count
+                // Run of zeros: ~ followed by count then '.'
                 i++;
                 let countStr = '';
                 while (i < encoded.length && /[0-9a-z]/.test(encoded[i])) {
                     countStr += encoded[i];
                     i++;
                 }
+                // Skip '.' terminator if present
+                if (encoded[i] === '.') i++;
                 const count = parseInt(countStr, 36);
                 for (let j = 0; j < count; j++) result.push(prev / 10);
             } else if (c >= 'a' && c <= 'z') {
@@ -1635,13 +1654,19 @@
                 result.push(prev / 10);
                 i++;
             } else if (c === '_') {
-                // Large delta
+                // Large delta: _ followed by value then '.'
                 i++;
                 let deltaStr = '';
-                while (i < encoded.length && /[0-9a-zn]/.test(encoded[i])) {
+                if (encoded[i] === 'n') {
+                    deltaStr += 'n';
+                    i++;
+                }
+                while (i < encoded.length && /[0-9a-z]/.test(encoded[i])) {
                     deltaStr += encoded[i];
                     i++;
                 }
+                // Skip '.' terminator if present
+                if (encoded[i] === '.') i++;
                 prev += decodeSignedInt(deltaStr);
                 result.push(prev / 10);
             } else {
