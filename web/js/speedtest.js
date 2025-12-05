@@ -497,9 +497,9 @@ const SpeedTest = (function() {
      * Run download tests with adaptive profile selection
      */
     async function runDownloadTests() {
-        // Phase 1: Run estimation tests with 1MB profile
+        // Phase 1: Run estimation tests with 100kB profile (smallest, runs first)
         const estimationSamples = [];
-        const estimationProfile = ALL_DOWNLOAD_PROFILES['1MB'];
+        const estimationProfile = ALL_DOWNLOAD_PROFILES['100kB'];
 
         console.log('Download speed estimation phase...');
         for (let i = 0; i < CONFIG.estimationRuns; i++) {
@@ -507,12 +507,12 @@ const SpeedTest = (function() {
             while (isPaused) await sleep(100);
 
             try {
-                const sample = await runDownload(estimationProfile.bytes, '1MB-est', i);
+                const sample = await runDownload(estimationProfile.bytes, '100kB', i);
                 estimationSamples.push(sample.mbps);
-                results.throughputSamples.push({ ...sample, profile: '1MB' });
+                results.throughputSamples.push(sample);
 
                 if (callbacks.onDownloadProgress) {
-                    callbacks.onDownloadProgress('1MB', i + 1, CONFIG.estimationRuns, sample, i + 1, CONFIG.estimationRuns);
+                    callbacks.onDownloadProgress('100kB', i + 1, CONFIG.estimationRuns, sample, i + 1, CONFIG.estimationRuns);
                 }
             } catch (err) {
                 console.error(`Download estimation run ${i} failed:`, err);
@@ -523,20 +523,20 @@ const SpeedTest = (function() {
         const estimatedSpeed = estimateSpeed(estimationSamples);
         DOWNLOAD_PROFILES = selectDownloadProfiles(estimatedSpeed);
 
-        // Phase 3: Run remaining tests (skip 1MB estimation runs already done)
+        // Phase 3: Run remaining tests (skip 100kB estimation runs already done)
         const profiles = Object.entries(DOWNLOAD_PROFILES);
         let totalRuns = CONFIG.estimationRuns;  // Already completed estimation runs
         const totalExpected = profiles.reduce((sum, [name, cfg]) => {
-            // For 1MB, subtract estimation runs already done
-            if (name === '1MB') {
+            // For 100kB, subtract estimation runs already done
+            if (name === '100kB') {
                 return sum + Math.max(0, cfg.runs - CONFIG.estimationRuns);
             }
             return sum + cfg.runs;
         }, CONFIG.estimationRuns);
 
         for (const [profile, { bytes, runs }] of profiles) {
-            // For 1MB profile, skip runs already done in estimation
-            const startRun = (profile === '1MB') ? CONFIG.estimationRuns : 0;
+            // For 100kB profile, skip runs already done in estimation
+            const startRun = (profile === '100kB') ? CONFIG.estimationRuns : 0;
             const actualRuns = runs - startRun;
 
             if (actualRuns <= 0) continue;
@@ -567,9 +567,9 @@ const SpeedTest = (function() {
      * Run upload tests with adaptive profile selection
      */
     async function runUploadTests() {
-        // Phase 1: Run estimation tests with 1MB profile
+        // Phase 1: Run estimation tests with 100kB profile (smallest, runs first)
         const estimationSamples = [];
-        const estimationProfile = ALL_UPLOAD_PROFILES['1MB'];
+        const estimationProfile = ALL_UPLOAD_PROFILES['100kB'];
 
         console.log('Upload speed estimation phase...');
         for (let i = 0; i < CONFIG.estimationRuns; i++) {
@@ -577,12 +577,12 @@ const SpeedTest = (function() {
             while (isPaused) await sleep(100);
 
             try {
-                const sample = await runUpload(estimationProfile.bytes, '1MB-est', i);
+                const sample = await runUpload(estimationProfile.bytes, '100kB', i);
                 estimationSamples.push(sample.mbps);
-                results.throughputSamples.push({ ...sample, profile: '1MB' });
+                results.throughputSamples.push(sample);
 
                 if (callbacks.onUploadProgress) {
-                    callbacks.onUploadProgress('1MB', i + 1, CONFIG.estimationRuns, sample, i + 1, CONFIG.estimationRuns);
+                    callbacks.onUploadProgress('100kB', i + 1, CONFIG.estimationRuns, sample, i + 1, CONFIG.estimationRuns);
                 }
             } catch (err) {
                 console.error(`Upload estimation run ${i} failed:`, err);
@@ -593,20 +593,20 @@ const SpeedTest = (function() {
         const estimatedSpeed = estimateSpeed(estimationSamples);
         UPLOAD_PROFILES = selectUploadProfiles(estimatedSpeed);
 
-        // Phase 3: Run remaining tests (skip 1MB estimation runs already done)
+        // Phase 3: Run remaining tests (skip 100kB estimation runs already done)
         const profiles = Object.entries(UPLOAD_PROFILES);
         let totalRuns = CONFIG.estimationRuns;  // Already completed estimation runs
         const totalExpected = profiles.reduce((sum, [name, cfg]) => {
-            // For 1MB, subtract estimation runs already done
-            if (name === '1MB') {
+            // For 100kB, subtract estimation runs already done
+            if (name === '100kB') {
                 return sum + Math.max(0, cfg.runs - CONFIG.estimationRuns);
             }
             return sum + cfg.runs;
         }, CONFIG.estimationRuns);
 
         for (const [profile, { bytes, runs }] of profiles) {
-            // For 1MB profile, skip runs already done in estimation
-            const startRun = (profile === '1MB') ? CONFIG.estimationRuns : 0;
+            // For 100kB profile, skip runs already done in estimation
+            const startRun = (profile === '100kB') ? CONFIG.estimationRuns : 0;
             const actualRuns = runs - startRun;
 
             if (actualRuns <= 0) continue;
