@@ -614,6 +614,7 @@ const SpeedTest = (function() {
 
             if (estimatedBatchTime > remainingMs) {
                 console.log(`Download: skipping ${profileName} batch (${runs} runs, ~${(estimatedBatchTime / 1000).toFixed(1)}s) - only ${(remainingMs / 1000).toFixed(1)}s remaining`);
+                expectedTotal -= runs; // Adjust expected total for skipped batch
                 continue;
             }
 
@@ -726,6 +727,7 @@ const SpeedTest = (function() {
 
             if (estimatedBatchTime > remainingMs) {
                 console.log(`Upload: skipping ${profileName} batch (${runs} runs, ~${(estimatedBatchTime / 1000).toFixed(1)}s) - only ${(remainingMs / 1000).toFixed(1)}s remaining`);
+                expectedTotal -= runs; // Adjust expected total for skipped batch
                 continue;
             }
 
