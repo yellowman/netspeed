@@ -863,12 +863,8 @@ func (c *Client) measureUpload(ctx context.Context, profileName string, payload 
 
 // runPacketLossTest runs the WebRTC packet loss test.
 func (c *Client) runPacketLossTest(ctx context.Context) (*PacketLossResult, error) {
-	// WebRTC packet loss test requires pion/webrtc
-	// For now, return unavailable - full implementation would use pion/webrtc
-	return &PacketLossResult{
-		Unavailable: true,
-		Reason:      "WebRTC packet loss test not yet implemented in CLI",
-	}, nil
+	// Use WebRTC implementation with pion/webrtc
+	return c.runPacketLossTestWebRTC(ctx)
 }
 
 // calculateSummary computes summary statistics from samples.

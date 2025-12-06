@@ -9,6 +9,7 @@
 #include "json.h"
 #include "stats.h"
 #include "timing.h"
+#include "turn.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -456,10 +457,13 @@ int speedtest_upload(speedtest_t *st)
 
 int speedtest_packet_loss(speedtest_t *st)
 {
-    /* WebRTC packet loss not implemented in C client */
-    st->results.packet_loss.unavailable = true;
-    strncpy(st->results.packet_loss.reason, "WebRTC not available in CLI",
-            sizeof(st->results.packet_loss.reason) - 1);
+    /* Run TURN-based packet loss test */
+    int err = turn_run_packet_loss_test(st->config->server_url, &st->results.packet_loss);
+    if (err != TURN_OK) {
+        st->results.packet_loss.unavailable = true;
+        snprintf(st->results.packet_loss.reason, sizeof(st->results.packet_loss.reason),
+                 "TURN error: %s", turn_error_string(err));
+    }
     return ERR_OK;
 }
 
