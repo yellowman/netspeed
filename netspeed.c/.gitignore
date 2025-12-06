@@ -1,0 +1,8 @@
+# Build artifacts
+obj/
+netspeed
+
+# Editor files
+*.swp
+*~
+.vscode/
