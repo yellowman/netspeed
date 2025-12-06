@@ -278,7 +278,71 @@ CLI runs tests in this sequence:
 5. Loaded latency probes (during download/upload)
 6. Packet loss test (WebRTC)
 
-### 3.1 download speed tests
+### 3.1 precise timing methodology
+
+**CRITICAL: all timing measurements MUST exclude connection overhead.**
+
+the CLI uses `net/http/httptrace` to capture precise timing events:
+
+| Event | httptrace Hook | Description |
+|-------|----------------|-------------|
+| Connection Start | `ConnectStart` | TCP dial begins |
+| Connection Done | `ConnectDone` | TCP established |
+| TLS Start | `TLSHandshakeStart` | TLS negotiation begins |
+| TLS Done | `TLSHandshakeDone` | TLS established |
+| Request Written | `WroteRequest` | Request fully sent |
+| First Byte | `GotFirstResponseByte` | First response byte received |
+
+**download timing (throughput):**
+
+measure ONLY body transfer time, excluding connection setup, TLS, and headers:
+
+```
+Body Transfer Time = (body fully read) - GotFirstResponseByte
+```
+
+**latency timing:**
+
+measure network round-trip from request sent to first response byte:
+
+```
+RTT = GotFirstResponseByte - WroteRequest
+```
+
+**upload timing (throughput):**
+
+measure from request body write start to response received:
+
+```
+Upload Time = GotFirstResponseByte - (body write start)
+```
+
+**timing implementation:**
+
+```go
+import "net/http/httptrace"
+
+type timingInfo struct {
+    wroteRequest      time.Time
+    gotFirstByte      time.Time
+    bodyReadComplete  time.Time
+}
+
+func createTrace(t *timingInfo) *httptrace.ClientTrace {
+    return &httptrace.ClientTrace{
+        WroteRequest: func(info httptrace.WroteRequestInfo) {
+            t.wroteRequest = time.Now()
+        },
+        GotFirstResponseByte: func() {
+            t.gotFirstByte = time.Now()
+        },
+    }
+}
+```
+
+---
+
+### 3.2 download speed tests
 
 **profiles & sizes:**
 
@@ -291,52 +355,93 @@ CLI runs tests in this sequence:
 | 100MB | 100,000,000 | 3 |
 | ... | ... | ... |
 
-**per profile:**
+**per profile (with precise timing):**
 
 ```go
 url := fmt.Sprintf("%s/__down?bytes=%d&profile=%s&run=%d", baseURL, sizeBytes, profile, runIndex)
-start := time.Now()
-resp, _ := client.Get(url)
+
+var timing timingInfo
+trace := createTrace(&timing)
+ctx := httptrace.WithClientTrace(context.Background(), trace)
+
+req, _ := http.NewRequestWithContext(ctx, "GET", url, nil)
+resp, _ := client.Do(req)
+
+// Read body - timing.gotFirstByte is set when first byte arrives
 received, _ := io.Copy(io.Discard, resp.Body)
-duration := time.Since(start)
+bodyDone := time.Now()
+resp.Body.Close()
+
+// Body transfer time only (excludes connection, TLS, headers)
+duration := bodyDone.Sub(timing.gotFirstByte)
 mbps := float64(received*8) / duration.Seconds() / 1e6
 ```
 
 ---
 
-### 3.2 upload speed tests
+### 3.3 upload speed tests
 
 **profiles & sizes:**
 
 | Profile | Size (bytes) | Runs |
 |---------|--------------|------|
 | 100kB | 100,000 | 8 |
-| 1MB | 1,000,000 | 6 |
+| 1MB | 1,000_000 | 6 |
 | 10MB | 10,000,000 | 4 |
 | 25MB | 25,000,000 | 4 |
 | 50MB | 50,000,000 | 3 |
 | ... | ... | ... |
 
-**per profile:**
+**per profile (with precise timing):**
 
 ```go
 url := fmt.Sprintf("%s/__up?profile=%s&run=%d", baseURL, profile, runIndex)
-start := time.Now()
-resp, _ := client.Post(url, "application/octet-stream", bytes.NewReader(payload))
-_ = resp.Body.Close()
-duration := time.Since(start)
+
+var timing timingInfo
+trace := createTrace(&timing)
+ctx := httptrace.WithClientTrace(context.Background(), trace)
+
+// Track when body write starts
+bodyWriteStart := time.Now()
+req, _ := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(payload))
+req.Header.Set("Content-Type", "application/octet-stream")
+
+resp, _ := client.Do(req)
+resp.Body.Close()
+
+// Upload time: from body write start to response received
+duration := timing.gotFirstByte.Sub(bodyWriteStart)
 mbps := float64(len(payload)*8) / duration.Seconds() / 1e6
 ```
 
 ---
 
-### 3.3 latency tests
+### 3.4 latency tests
 
 **phases:**
 
 1. **unloaded latency** - 20 probes with adaptive batching
 2. **latency during download** - 5 probes during large download
 3. **latency during upload** - 5 probes during large upload
+
+**latency measurement (with precise timing):**
+
+```go
+url := fmt.Sprintf("%s/__down?bytes=0&phase=%s&seq=%d", baseURL, phase, seq)
+
+var timing timingInfo
+trace := createTrace(&timing)
+ctx := httptrace.WithClientTrace(context.Background(), trace)
+
+req, _ := http.NewRequestWithContext(ctx, "GET", url, nil)
+resp, _ := client.Do(req)
+io.Copy(io.Discard, resp.Body)
+resp.Body.Close()
+
+// RTT = time from request sent to first response byte
+// This excludes connection setup, TLS, and DNS
+rtt := timing.gotFirstByte.Sub(timing.wroteRequest)
+```
 
 **adaptive batching:**
 
@@ -371,7 +476,7 @@ if useParallel {
 
 ---
 
-### 3.4 packet loss test (WebRTC)
+### 3.5 packet loss test (WebRTC)
 
 **steps:**
 

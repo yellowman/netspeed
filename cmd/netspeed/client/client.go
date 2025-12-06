@@ -2,16 +2,36 @@
 package client
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net"
 	"net/http"
+	"net/http/httptrace"
 	"sort"
 	"sync"
 	"time"
 )
+
+// timingInfo captures precise HTTP timing events.
+type timingInfo struct {
+	wroteRequest time.Time
+	gotFirstByte time.Time
+}
+
+// createTrace creates an httptrace.ClientTrace for precise timing.
+func createTrace(t *timingInfo) *httptrace.ClientTrace {
+	return &httptrace.ClientTrace{
+		WroteRequest: func(info httptrace.WroteRequestInfo) {
+			t.wroteRequest = time.Now()
+		},
+		GotFirstResponseByte: func() {
+			t.gotFirstByte = time.Now()
+		},
+	}
+}
 
 // Config holds client configuration.
 type Config struct {
@@ -352,24 +372,37 @@ func (c *Client) quickBandwidthEstimate(ctx context.Context) float64 {
 	return float64(received*8) / duration.Seconds() / 1e6
 }
 
-// measureLatency measures a single latency probe.
+// measureLatency measures a single latency probe using precise timing.
+// RTT = GotFirstResponseByte - WroteRequest (excludes connection setup, TLS, DNS)
 func (c *Client) measureLatency(ctx context.Context, phase string, seq int) (time.Duration, error) {
 	url := fmt.Sprintf("%s/__down?bytes=0&phase=%s&seq=%d", c.cfg.ServerURL, phase, seq)
+
+	// Set up precise timing via httptrace
+	var timing timingInfo
+	trace := createTrace(&timing)
+	ctx = httptrace.WithClientTrace(ctx, trace)
+
 	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
 	if err != nil {
 		return 0, err
 	}
 	req.Header.Set("Cache-Control", "no-store")
 
-	start := time.Now()
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
 		return 0, err
 	}
 	defer resp.Body.Close()
 	io.Copy(io.Discard, resp.Body)
-	rtt := time.Since(start)
 
+	// RTT = time from request written to first response byte
+	// This excludes connection setup, TLS handshake, and DNS resolution
+	if timing.wroteRequest.IsZero() || timing.gotFirstByte.IsZero() {
+		// Fallback if trace didn't fire (shouldn't happen)
+		return 0, fmt.Errorf("timing trace failed")
+	}
+
+	rtt := timing.gotFirstByte.Sub(timing.wroteRequest)
 	return rtt, nil
 }
 
@@ -661,28 +694,49 @@ func (c *Client) runProfiles(ctx context.Context, profiles []profile, direction 
 	return samples, nil
 }
 
-// measureDownload measures a single download.
-func (c *Client) measureDownload(ctx context.Context, profileName string, bytes int64, run int) (ThroughputSample, error) {
-	url := fmt.Sprintf("%s/__down?bytes=%d&profile=%s&run=%d", c.cfg.ServerURL, bytes, profileName, run)
+// measureDownload measures a single download using precise timing.
+// Body transfer time = bodyDone - GotFirstResponseByte (excludes connection, TLS, headers)
+func (c *Client) measureDownload(ctx context.Context, profileName string, numBytes int64, run int) (ThroughputSample, error) {
+	url := fmt.Sprintf("%s/__down?bytes=%d&profile=%s&run=%d", c.cfg.ServerURL, numBytes, profileName, run)
+
+	// Set up precise timing via httptrace
+	var timing timingInfo
+	trace := createTrace(&timing)
+	ctx = httptrace.WithClientTrace(ctx, trace)
+
 	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
 	if err != nil {
 		return ThroughputSample{}, err
 	}
 	req.Header.Set("Cache-Control", "no-store")
 
-	start := time.Now()
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
 		return ThroughputSample{}, err
 	}
 	defer resp.Body.Close()
 
+	// Read body - timing.gotFirstByte is set when first byte arrives
 	received, err := io.Copy(io.Discard, resp.Body)
 	if err != nil {
 		return ThroughputSample{}, err
 	}
+	bodyDone := time.Now()
 
-	duration := time.Since(start)
+	// Body transfer time only (excludes connection setup, TLS, headers)
+	var duration time.Duration
+	if !timing.gotFirstByte.IsZero() {
+		duration = bodyDone.Sub(timing.gotFirstByte)
+	} else {
+		// Fallback to total time if trace didn't fire
+		duration = bodyDone.Sub(timing.wroteRequest)
+	}
+
+	// Protect against zero/negative duration
+	if duration <= 0 {
+		duration = time.Millisecond
+	}
+
 	mbps := float64(received*8) / duration.Seconds() / 1e6
 
 	return ThroughputSample{
@@ -753,19 +807,47 @@ func (c *Client) runUploadProfiles(ctx context.Context, profiles []profile) ([]T
 	return samples, nil
 }
 
-// measureUpload measures a single upload.
+// measureUpload measures a single upload using precise timing.
+// Upload time = GotFirstResponseByte - bodyWriteStart
 func (c *Client) measureUpload(ctx context.Context, profileName string, payload []byte, run int) (ThroughputSample, error) {
 	url := fmt.Sprintf("%s/__up?profile=%s&run=%d", c.cfg.ServerURL, profileName, run)
 
-	start := time.Now()
-	resp, err := c.httpClient.Post(url, "application/octet-stream", &payloadReader{data: payload})
+	// Set up precise timing via httptrace
+	var timing timingInfo
+	trace := createTrace(&timing)
+	ctx = httptrace.WithClientTrace(ctx, trace)
+
+	// Track when body write starts
+	bodyWriteStart := time.Now()
+
+	req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(payload))
+	if err != nil {
+		return ThroughputSample{}, err
+	}
+	req.Header.Set("Content-Type", "application/octet-stream")
+	req.ContentLength = int64(len(payload))
+
+	resp, err := c.httpClient.Do(req)
 	if err != nil {
 		return ThroughputSample{}, err
 	}
 	defer resp.Body.Close()
 	io.Copy(io.Discard, resp.Body)
 
-	duration := time.Since(start)
+	// Upload time = time from body write start to response received
+	var duration time.Duration
+	if !timing.gotFirstByte.IsZero() {
+		duration = timing.gotFirstByte.Sub(bodyWriteStart)
+	} else {
+		// Fallback
+		duration = time.Since(bodyWriteStart)
+	}
+
+	// Protect against zero/negative duration
+	if duration <= 0 {
+		duration = time.Millisecond
+	}
+
 	mbps := float64(len(payload)*8) / duration.Seconds() / 1e6
 
 	return ThroughputSample{
@@ -777,21 +859,6 @@ func (c *Client) measureUpload(ctx context.Context, profileName string, payload 
 		Profile:    profileName,
 		RunIndex:   run,
 	}, nil
-}
-
-// payloadReader implements io.Reader for upload payloads.
-type payloadReader struct {
-	data []byte
-	pos  int
-}
-
-func (r *payloadReader) Read(p []byte) (n int, err error) {
-	if r.pos >= len(r.data) {
-		return 0, io.EOF
-	}
-	n = copy(p, r.data[r.pos:])
-	r.pos += n
-	return n, nil
 }
 
 // runPacketLossTest runs the WebRTC packet loss test.
