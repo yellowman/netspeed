@@ -1817,8 +1817,8 @@ type PacketLossResultUnavailable = {
 when packet loss test is unavailable, display error state:
 
 **main value:**
-- show red circle with exclamation point icon (`<span class="error-icon"></span>`)
-- add `error` class to value element for red color styling
+- show styled N/A marker (`<span class="na-marker"></span>`)
+- add `error` class to value element
 
 **badge:**
 - show `Error` instead of `received/sent`
@@ -1831,25 +1831,26 @@ when packet loss test is unavailable, display error state:
   - `Unable to perform measurement: TURN server not configured`
 
 **RTT stats:**
-- show shimmer placeholder spans (animated loading indicator)
+- show N/A markers (not shimmer placeholders - data will never load)
 
-**css for error icon:**
+**css for N/A marker:**
 
 ```css
-.error-icon {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 1.5em;
-  height: 1.5em;
-  background-color: var(--color-danger, #dc3545);
-  border-radius: 50%;
-  color: white;
-  font-weight: bold;
+.na-marker {
+  display: inline-block;
+  padding: 0.15em 0.5em;
+  background-color: var(--color-text-tertiary);
+  border-radius: 4px;
+  color: var(--color-bg-primary);
+  font-weight: 600;
+  font-size: 0.85em;
+  letter-spacing: 0.02em;
+  vertical-align: middle;
+  opacity: 0.7;
 }
 
-.error-icon::before {
-  content: '!';
+.na-marker::before {
+  content: 'N/A';
 }
 
 .metric-value.error {
@@ -1863,19 +1864,19 @@ when packet loss test is unavailable, display error state:
 function updatePacketLossDetails(packetLoss: PacketLossResult) {
   if (packetLoss.unavailable) {
     const errorMsg = `Unable to perform measurement: ${packetLoss.reason || 'Unknown error'}`;
+    const naMarker = '<span class="na-marker"></span>';
 
-    elements.packetLossValue.innerHTML = '<span class="error-icon"></span>';
+    elements.packetLossValue.innerHTML = naMarker;
     elements.packetLossValue.classList.add('error');
     elements.packetLossBadge.textContent = 'Error';
     elements.packetLossDetail.textContent = errorMsg;
     elements.packetsReceived.textContent = errorMsg;
 
-    // Show shimmer placeholders for RTT stats
-    const ph = '<span class="placeholder"></span>';
-    elements.rttMin.innerHTML = ph;
-    elements.rttMedian.innerHTML = ph;
-    elements.rttP90.innerHTML = ph;
-    elements.rttJitter.innerHTML = ph;
+    // Show N/A markers for RTT stats (not shimmer - data will never load)
+    elements.rttMin.innerHTML = naMarker;
+    elements.rttMedian.innerHTML = naMarker;
+    elements.rttP90.innerHTML = naMarker;
+    elements.rttJitter.innerHTML = naMarker;
     return;
   }
 

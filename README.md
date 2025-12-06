@@ -3,10 +3,11 @@ netspeed
 
 a self-hosted network speed test. measures download, upload, latency, jitter, and packet loss.
 
-comes in two parts:
+comes in three parts:
 
 1. **netspeedd** - a go backend that handles the actual measurements
-2. **web ui** - a slick browser interface with dark/light mode
+2. **netspeed** - a command-line client with ascii spinners and progress bars
+3. **web ui** - a slick browser interface with dark/light mode
 
 inspired by speed.cloudflare.com but you run it yourself.
 
@@ -19,11 +20,15 @@ quick start
 # build the daemon
 go build -o netspeedd ./cmd/netspeedd
 
-# run it with the web ui
+# build the cli client
+go build -o netspeed ./cmd/netspeed
+
+# run the daemon with the web ui
 ./netspeedd -web-dir ./web
 
 # open http://localhost:8080 in your browser
-# click "start test" and watch the magic happen
+# or use the cli client
+./netspeed https://localhost:8080
 ```
 
 ---
@@ -82,6 +87,50 @@ for packet loss testing via webrtc, you'll also want:
 | `-turn-secret` | `NETSPEEDD_TURN_SECRET` | turn server shared secret |
 | `-turn-servers` | `NETSPEEDD_TURN_SERVERS` | turn server urls (comma-separated) |
 | `-turn-realm` | `NETSPEEDD_TURN_REALM` | turn realm |
+
+---
+
+using the cli client
+--------------------
+
+the cli client works with your own netspeedd server or cloudflare's:
+
+```bash
+# test against your server
+./netspeed https://speed.example.com
+
+# test against cloudflare (default)
+./netspeed
+
+# quick test (fewer samples)
+./netspeed --quick
+
+# json output for scripting
+./netspeed --json
+
+# verbose mode with detailed breakdown
+./netspeed -v
+
+# quiet mode (just the numbers)
+./netspeed --quiet
+# outputs: download_mbps  upload_mbps  latency_ms  loss_percent
+```
+
+**cli flags:**
+
+| flag | description |
+|------|-------------|
+| `-s, --server` | server url |
+| `-q, --quick` | quick test (fewer samples) |
+| `-j, --json` | output as json |
+| `--csv` | output as csv |
+| `-v, --verbose` | detailed output |
+| `--quiet` | minimal output |
+| `-d, --download-only` | skip upload tests |
+| `-u, --upload-only` | skip download tests |
+| `--no-packet-loss` | skip packet loss test |
+| `--no-color` | disable colors |
+| `-t, --timeout` | test timeout (default 60s) |
 
 ---
 
