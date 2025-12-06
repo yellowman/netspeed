@@ -346,14 +346,24 @@ func createTrace(t *timingInfo) *httptrace.ClientTrace {
 
 **profiles & sizes:**
 
-| Profile | Size (bytes) | Runs |
-|---------|--------------|------|
-| 100kB | 100,000 | 10 |
-| 1MB | 1,000,000 | 8 |
-| 10MB | 10,000,000 | 6 |
-| 25MB | 25,000,000 | 4 |
-| 100MB | 100,000,000 | 3 |
-| ... | ... | ... |
+| Profile | Size (bytes) | Runs | Notes |
+|---------|--------------|------|-------|
+| 100kB | 100,000 | 10 | baseline (always included) |
+| 1MB | 1,000,000 | 8 | baseline (always included) |
+| 10MB | 10,000,000 | 6 | |
+| 25MB | 25,000,000 | 4 | |
+| 100MB | 100,000,000 | 3 | |
+| 250MB | 250,000,000 | 2 | |
+| 500MB | 500,000,000 | 2 | 1s at 4 Gbps |
+| 1GB | 1,000,000,000 | 2 | 1s at 8 Gbps |
+| 2GB | 2,000,000,000 | 2 | 1s at 16 Gbps |
+| 5GB | 5,000,000,000 | 2 | 1s at 40 Gbps |
+| 12GB | 12,000,000,000 | 2 | 1s at ~100 Gbps |
+| 50GB | 50,000,000,000 | 2 | 1s at 400 Gbps |
+| 100GB | 100,000,000,000 | 2 | 1s at 800 Gbps |
+| 125GB | 125,000,000,000 | 2 | 1s at 1 Tbps |
+
+**Note:** Sizes use decimal (kB/MB/GB) notation: 1 kB = 1,000 bytes, 1 MB = 1,000,000 bytes, 1 GB = 1,000,000,000 bytes.
 
 **per profile (with precise timing):**
 
@@ -383,14 +393,25 @@ mbps := float64(received*8) / duration.Seconds() / 1e6
 
 **profiles & sizes:**
 
-| Profile | Size (bytes) | Runs |
-|---------|--------------|------|
-| 100kB | 100,000 | 8 |
-| 1MB | 1,000_000 | 6 |
-| 10MB | 10,000,000 | 4 |
-| 25MB | 25,000,000 | 4 |
-| 50MB | 50,000,000 | 3 |
-| ... | ... | ... |
+| Profile | Size (bytes) | Runs | Notes |
+|---------|--------------|------|-------|
+| 100kB | 100,000 | 8 | baseline (always included) |
+| 1MB | 1,000,000 | 6 | baseline (always included) |
+| 10MB | 10,000,000 | 4 | |
+| 25MB | 25,000,000 | 4 | |
+| 50MB | 50,000,000 | 3 | |
+| 100MB | 100,000,000 | 2 | |
+| 250MB | 250,000,000 | 2 | 1s at 2 Gbps |
+| 500MB | 500,000,000 | 2 | 1s at 4 Gbps |
+| 1GB | 1,000,000,000 | 2 | 1s at 8 Gbps |
+| 2GB | 2,000,000,000 | 2 | 1s at 16 Gbps |
+| 5GB | 5,000,000,000 | 2 | 1s at 40 Gbps |
+| 12GB | 12,000,000,000 | 2 | 1s at ~100 Gbps |
+| 50GB | 50,000,000,000 | 2 | 1s at 400 Gbps |
+| 100GB | 100,000,000,000 | 2 | 1s at 800 Gbps |
+| 125GB | 125,000,000,000 | 2 | 1s at 1 Tbps |
+
+**Note:** Sizes use decimal (kB/MB/GB) notation: 1 kB = 1,000 bytes, 1 MB = 1,000,000 bytes, 1 GB = 1,000,000,000 bytes.
 
 **per profile (with precise timing):**
 
