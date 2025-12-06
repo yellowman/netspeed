@@ -792,6 +792,11 @@ typedef struct {
     int64_t recv_at_ms;
 } __attribute__((packed)) ack_msg_t;
 
+/* STUN-based packet loss test
+ *
+ * Uses STUN Binding Requests to measure UDP packet loss.
+ * This tests the same network path that WebRTC would use.
+ */
 int turn_run_packet_loss_test(const char *base_url, packet_loss_result_t *result)
 {
     memset(result, 0, sizeof(*result));
@@ -827,35 +832,189 @@ int turn_run_packet_loss_test(const char *base_url, packet_loss_result_t *result
         return TURN_OK;
     }
 
-    /* Initialize TURN connection */
-    turn_conn_t conn;
-    err = turn_init(&conn, turn_url, creds.username, creds.credential);
-    if (err != TURN_OK) {
+    /* Parse TURN URL */
+    char host[256];
+    uint16_t port;
+    bool use_tls;
+    if (turn_parse_url(turn_url, host, sizeof(host), &port, &use_tls) < 0) {
         result->unavailable = true;
-        snprintf(result->reason, sizeof(result->reason), "TURN init failed: %s",
-                 turn_error_string(err));
+        strncpy(result->reason, "Invalid TURN URL", sizeof(result->reason) - 1);
         return TURN_OK;
     }
 
-    /* Allocate relay */
-    err = turn_allocate(&conn);
-    if (err != TURN_OK) {
-        turn_close(&conn);
+    /* DTLS not supported for packet loss test */
+    if (use_tls) {
         result->unavailable = true;
-        snprintf(result->reason, sizeof(result->reason), "TURN allocate failed: %s",
-                 turn_error_string(err));
+        strncpy(result->reason, "DTLS TURN not supported in C client",
+                sizeof(result->reason) - 1);
         return TURN_OK;
     }
 
-    /*
-     * Note: Full WebRTC packet loss requires signaling with server to get peer address.
-     * This simplified implementation would need the server to support a custom protocol.
-     * For now, mark as unavailable with reason.
-     */
-    turn_close(&conn);
-    result->unavailable = true;
-    strncpy(result->reason, "Full WebRTC not implemented in C client - use Go client",
-            sizeof(result->reason) - 1);
+    /* Resolve server address */
+    struct hostent *he = gethostbyname(host);
+    if (!he) {
+        result->unavailable = true;
+        strncpy(result->reason, "DNS resolution failed", sizeof(result->reason) - 1);
+        return TURN_OK;
+    }
 
+    struct sockaddr_in server_addr;
+    server_addr.sin_family = AF_INET;
+    server_addr.sin_port = htons(port);
+    memcpy(&server_addr.sin_addr, he->h_addr_list[0], he->h_length);
+
+    /* Create UDP socket */
+    int sock = socket(AF_INET, SOCK_DGRAM, 0);
+    if (sock < 0) {
+        result->unavailable = true;
+        strncpy(result->reason, "Socket creation failed", sizeof(result->reason) - 1);
+        return TURN_OK;
+    }
+
+    /* Set non-blocking */
+    int flags = fcntl(sock, F_GETFL, 0);
+    fcntl(sock, F_SETFL, flags | O_NONBLOCK);
+
+    /* Connect socket to server */
+    if (connect(sock, (struct sockaddr *)&server_addr, sizeof(server_addr)) < 0) {
+        close(sock);
+        result->unavailable = true;
+        strncpy(result->reason, "UDP connect failed", sizeof(result->reason) - 1);
+        return TURN_OK;
+    }
+
+    /* Test parameters */
+    const int num_packets = 100;
+    const int interval_ms = 10;
+    const int timeout_ms = 3000;
+
+    /* Track sent packets and RTTs */
+    int64_t send_times[num_packets];
+    double rtts[num_packets];
+    int rtt_count = 0;
+    int sent = 0;
+    int received = 0;
+
+    /* Transaction IDs for tracking responses */
+    uint8_t txn_ids[num_packets][12];
+
+    /* Send STUN Binding Requests */
+    for (int i = 0; i < num_packets; i++) {
+        uint8_t req[20];
+
+        /* Generate transaction ID */
+        stun_generate_txn_id(txn_ids[i]);
+
+        /* Build STUN Binding Request */
+        stun_build_header(req, STUN_BINDING_REQUEST, txn_ids[i]);
+        stun_update_length(req, 20);
+
+        send_times[i] = timing_now_ms();
+
+        if (send(sock, req, 20, 0) == 20) {
+            sent++;
+        }
+
+        /* Check for responses (non-blocking) */
+        struct pollfd pfd = {.fd = sock, .events = POLLIN};
+        while (poll(&pfd, 1, 0) > 0) {
+            uint8_t resp[512];
+            ssize_t n = recv(sock, resp, sizeof(resp), 0);
+            if (n >= 20) {
+                /* Parse response */
+                uint16_t msg_len;
+                uint8_t resp_txn_id[12];
+                int msg_type = stun_parse_header(resp, n, &msg_len, resp_txn_id);
+
+                if (msg_type == STUN_BINDING_RESPONSE) {
+                    /* Match transaction ID to find which packet this responds to */
+                    for (int j = 0; j < i; j++) {
+                        if (memcmp(resp_txn_id, txn_ids[j], 12) == 0) {
+                            received++;
+                            int64_t now = timing_now_ms();
+                            double rtt = (double)(now - send_times[j]);
+                            if (rtt > 0 && rtt < 30000) {
+                                rtts[rtt_count++] = rtt;
+                            }
+                            /* Mark as received */
+                            send_times[j] = -1;
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+
+        /* Wait before next packet */
+        struct timespec ts = {.tv_sec = 0, .tv_nsec = interval_ms * 1000000L};
+        nanosleep(&ts, NULL);
+    }
+
+    /* Wait for remaining responses */
+    int64_t wait_start = timing_now_ms();
+    while (timing_now_ms() - wait_start < timeout_ms) {
+        struct pollfd pfd = {.fd = sock, .events = POLLIN};
+        int remaining_wait = timeout_ms - (int)(timing_now_ms() - wait_start);
+        if (remaining_wait <= 0) break;
+
+        if (poll(&pfd, 1, remaining_wait > 100 ? 100 : remaining_wait) > 0) {
+            uint8_t resp[512];
+            ssize_t n = recv(sock, resp, sizeof(resp), 0);
+            if (n >= 20) {
+                uint16_t msg_len;
+                uint8_t resp_txn_id[12];
+                int msg_type = stun_parse_header(resp, n, &msg_len, resp_txn_id);
+
+                if (msg_type == STUN_BINDING_RESPONSE) {
+                    for (int j = 0; j < num_packets; j++) {
+                        if (send_times[j] > 0 && memcmp(resp_txn_id, txn_ids[j], 12) == 0) {
+                            received++;
+                            int64_t now = timing_now_ms();
+                            double rtt = (double)(now - send_times[j]);
+                            if (rtt > 0 && rtt < 30000) {
+                                rtts[rtt_count++] = rtt;
+                            }
+                            send_times[j] = -1;
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    close(sock);
+
+    /* Calculate results */
+    if (sent == 0) {
+        result->unavailable = true;
+        strncpy(result->reason, "Failed to send packets", sizeof(result->reason) - 1);
+        return TURN_OK;
+    }
+
+    result->sent = sent;
+    result->received = received;
+    result->loss_percent = (double)(sent - received) / (double)sent * 100.0;
+
+    /* Calculate RTT statistics */
+    if (rtt_count > 0) {
+        /* Sort RTTs for percentile calculations */
+        for (int i = 0; i < rtt_count - 1; i++) {
+            for (int j = i + 1; j < rtt_count; j++) {
+                if (rtts[i] > rtts[j]) {
+                    double tmp = rtts[i];
+                    rtts[i] = rtts[j];
+                    rtts[j] = tmp;
+                }
+            }
+        }
+
+        result->rtt_stats_ms.min = rtts[0];
+        result->rtt_stats_ms.median = rtts[rtt_count / 2];
+        result->rtt_stats_ms.p90 = rtts[(int)(rtt_count * 0.9)];
+        result->jitter_ms = result->rtt_stats_ms.p90 - result->rtt_stats_ms.median;
+    }
+
+    result->unavailable = false;
     return TURN_OK;
 }
