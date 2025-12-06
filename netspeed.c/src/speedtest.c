@@ -16,29 +16,58 @@
 #include <string.h>
 #include <math.h>
 
-/* Default profiles */
+/* All download profiles matching web client (up to 1 Tbps)
+ * Sizes use decimal notation: 1 kB = 1000 bytes, 1 MB = 1,000,000 bytes */
 static const profile_t download_profiles[] = {
-    {"100k",   100 * 1024,        4},
-    {"1m",     1024 * 1024,       4},
-    {"10m",    10 * 1024 * 1024,  4},
-    {"25m",    25 * 1024 * 1024,  4},
-    {"100m",   100 * 1024 * 1024, 2},
+    {"100kB",  100000LL,              10},  /* baseline */
+    {"1MB",    1000000LL,             8},   /* baseline */
+    {"10MB",   10000000LL,            6},
+    {"25MB",   25000000LL,            4},
+    {"100MB",  100000000LL,           3},
+    {"250MB",  250000000LL,           2},
+    {"500MB",  500000000LL,           2},   /* 1s at 4 Gbps */
+    {"1GB",    1000000000LL,          2},   /* 1s at 8 Gbps */
+    {"2GB",    2000000000LL,          2},   /* 1s at 16 Gbps */
+    {"5GB",    5000000000LL,          2},   /* 1s at 40 Gbps */
+    {"12GB",   12000000000LL,         2},   /* 1s at ~100 Gbps */
+    {"50GB",   50000000000LL,         2},   /* 1s at 400 Gbps */
+    {"100GB",  100000000000LL,        2},   /* 1s at 800 Gbps */
+    {"125GB",  125000000000LL,        2},   /* 1s at 1 Tbps */
 };
 #define NUM_DOWNLOAD_PROFILES (sizeof(download_profiles) / sizeof(download_profiles[0]))
 
+/* All upload profiles matching web client (up to 1 Tbps) */
 static const profile_t upload_profiles[] = {
-    {"100k",   100 * 1024,        4},
-    {"1m",     1024 * 1024,       4},
-    {"10m",    10 * 1024 * 1024,  4},
+    {"100kB",  100000LL,              8},   /* baseline */
+    {"1MB",    1000000LL,             6},   /* baseline */
+    {"10MB",   10000000LL,            4},
+    {"25MB",   25000000LL,            4},
+    {"50MB",   50000000LL,            3},
+    {"100MB",  100000000LL,           2},
+    {"250MB",  250000000LL,           2},   /* 1s at 2 Gbps */
+    {"500MB",  500000000LL,           2},   /* 1s at 4 Gbps */
+    {"1GB",    1000000000LL,          2},   /* 1s at 8 Gbps */
+    {"2GB",    2000000000LL,          2},   /* 1s at 16 Gbps */
+    {"5GB",    5000000000LL,          2},   /* 1s at 40 Gbps */
+    {"12GB",   12000000000LL,         2},   /* 1s at ~100 Gbps */
+    {"50GB",   50000000000LL,         2},   /* 1s at 400 Gbps */
+    {"100GB",  100000000000LL,        2},   /* 1s at 800 Gbps */
+    {"125GB",  125000000000LL,        2},   /* 1s at 1 Tbps */
 };
 #define NUM_UPLOAD_PROFILES (sizeof(upload_profiles) / sizeof(upload_profiles[0]))
 
 /* Baseline profiles for quick test */
-static const profile_t baseline_profiles[] = {
-    {"100k",   100 * 1024,        2},
-    {"1m",     1024 * 1024,       2},
+static const profile_t baseline_download[] = {
+    {"100kB",  100000LL,              10},
+    {"1MB",    1000000LL,             8},
 };
-#define NUM_BASELINE_PROFILES (sizeof(baseline_profiles) / sizeof(baseline_profiles[0]))
+#define NUM_BASELINE_DOWNLOAD (sizeof(baseline_download) / sizeof(baseline_download[0]))
+
+static const profile_t baseline_upload[] = {
+    {"100kB",  100000LL,              8},
+    {"1MB",    1000000LL,             6},
+};
+#define NUM_BASELINE_UPLOAD (sizeof(baseline_upload) / sizeof(baseline_upload[0]))
 
 /* Static upload payload buffer */
 static char *upload_payload = NULL;
@@ -211,7 +240,7 @@ double measure_upload(http_conn_t *conn, const char *base_url,
 double quick_bandwidth_estimate(http_conn_t *conn, const char *base_url)
 {
     throughput_sample_t sample;
-    return measure_download(conn, base_url, "100k", 100 * 1024, 0, &sample);
+    return measure_download(conn, base_url, "100kB", 100000LL, 0, &sample);
 }
 
 double estimate_transfer_time_ms(int64_t bytes, double speed_mbps)
@@ -302,8 +331,8 @@ int speedtest_download(speedtest_t *st)
     int num_profiles;
 
     if (st->config->quick) {
-        profiles = baseline_profiles;
-        num_profiles = NUM_BASELINE_PROFILES;
+        profiles = baseline_download;
+        num_profiles = NUM_BASELINE_DOWNLOAD;
     } else {
         profiles = download_profiles;
         num_profiles = NUM_DOWNLOAD_PROFILES;
@@ -385,8 +414,8 @@ int speedtest_upload(speedtest_t *st)
     int num_profiles;
 
     if (st->config->quick) {
-        profiles = baseline_profiles;
-        num_profiles = NUM_BASELINE_PROFILES;
+        profiles = baseline_upload;
+        num_profiles = NUM_BASELINE_UPLOAD;
     } else {
         profiles = upload_profiles;
         num_profiles = NUM_UPLOAD_PROFILES;

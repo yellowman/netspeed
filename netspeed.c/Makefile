@@ -1,5 +1,11 @@
 # netspeed - C speed test client
 # Targets: Linux, FreeBSD, OpenBSD, NetBSD
+#
+# Crypto support:
+# - OpenBSD: Uses LibreSSL from base system (default)
+# - Linux/FreeBSD/NetBSD: Uses OpenSSL or LibreSSL from ports/packages
+#
+# The crypto_compat.h header provides compatibility between OpenSSL and LibreSSL.
 
 CC ?= cc
 CFLAGS = -Wall -Wextra -Werror -O2 -std=c11 -D_POSIX_C_SOURCE=200809L
@@ -12,12 +18,14 @@ ifeq ($(UNAME),Linux)
     LDFLAGS += -lpthread
 endif
 ifeq ($(UNAME),FreeBSD)
+    # OpenSSL/LibreSSL from ports
     CFLAGS += -I/usr/local/include
     LDFLAGS += -L/usr/local/lib -lpthread
 endif
 ifeq ($(UNAME),OpenBSD)
-    CFLAGS += -I/usr/local/include
-    LDFLAGS += -L/usr/local/lib -lpthread
+    # LibreSSL is in base system (/usr/include, /usr/lib)
+    # No -I or -L flags needed for crypto
+    LDFLAGS += -lpthread
 endif
 ifeq ($(UNAME),NetBSD)
     CFLAGS += -I/usr/pkg/include

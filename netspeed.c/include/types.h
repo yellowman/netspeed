@@ -17,7 +17,7 @@
 #define MAX_URL_LEN         2048
 #define MAX_HOSTNAME_LEN    256
 #define MAX_SAMPLES         256
-#define MAX_PROFILES        16
+#define MAX_PROFILES        20   /* Up to 125GB profiles */
 
 /* Buffer sizes for high-speed transfers */
 #define READ_BUFFER_SIZE    (4 * 1024 * 1024)  /* 4MB */

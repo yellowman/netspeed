@@ -21,9 +21,7 @@
 #include <netinet/in.h>
 #include <arpa/inet.h>
 #include <netdb.h>
-#include <openssl/evp.h>
-#include <openssl/hmac.h>
-#include <openssl/rand.h>
+#include "crypto_compat.h"
 
 /* ===================== Error Handling ===================== */
 
@@ -171,7 +169,7 @@ int turn_fetch_credentials(const char *base_url, turn_creds_t *creds)
 
 void stun_generate_txn_id(uint8_t txn_id[12])
 {
-    RAND_bytes(txn_id, 12);
+    crypto_random_bytes(txn_id, 12);
 }
 
 size_t stun_build_header(uint8_t *buf, uint16_t msg_type, const uint8_t txn_id[12])
@@ -282,12 +280,8 @@ void turn_compute_key(const char *username, const char *realm,
     char concat[512];
     snprintf(concat, sizeof(concat), "%s:%s:%s", username, realm, password);
 
-    /* Use EVP interface for MD5 (non-deprecated) */
-    EVP_MD_CTX *ctx = EVP_MD_CTX_new();
-    EVP_DigestInit_ex(ctx, EVP_md5(), NULL);
-    EVP_DigestUpdate(ctx, concat, strlen(concat));
-    EVP_DigestFinal_ex(ctx, key, NULL);
-    EVP_MD_CTX_free(ctx);
+    /* Use compatibility wrapper for MD5 (works with OpenSSL and LibreSSL) */
+    crypto_md5(concat, strlen(concat), key);
 }
 
 size_t stun_add_message_integrity(uint8_t *buf, size_t len, const uint8_t key[16])
@@ -297,10 +291,9 @@ size_t stun_add_message_integrity(uint8_t *buf, size_t len, const uint8_t key[16
     buf[2] = (new_len >> 8) & 0xFF;
     buf[3] = new_len & 0xFF;
 
-    /* Compute HMAC-SHA1 */
+    /* Compute HMAC-SHA1 using compatibility wrapper */
     unsigned char hmac[20];
-    unsigned int hmac_len;
-    HMAC(EVP_sha1(), key, 16, buf, len, hmac, &hmac_len);
+    crypto_hmac_sha1(key, 16, buf, len, hmac);
 
     /* Append MESSAGE-INTEGRITY attribute */
     buf[len] = 0x00;

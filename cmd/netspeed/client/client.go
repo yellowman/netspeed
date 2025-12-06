@@ -413,7 +413,7 @@ type profile struct {
 	Runs  int
 }
 
-// All download profiles matching web client
+// All download profiles matching web client (up to 1 Tbps)
 var allDownloadProfiles = []profile{
 	{"100kB", 100_000, 10},
 	{"1MB", 1_000_000, 8},
@@ -421,11 +421,17 @@ var allDownloadProfiles = []profile{
 	{"25MB", 25_000_000, 4},
 	{"100MB", 100_000_000, 3},
 	{"250MB", 250_000_000, 2},
-	{"500MB", 500_000_000, 2},
-	{"1GB", 1_000_000_000, 2},
+	{"500MB", 500_000_000, 2},     // 1s at 4 Gbps
+	{"1GB", 1_000_000_000, 2},     // 1s at 8 Gbps
+	{"2GB", 2_000_000_000, 2},     // 1s at 16 Gbps
+	{"5GB", 5_000_000_000, 2},     // 1s at 40 Gbps
+	{"12GB", 12_000_000_000, 2},   // 1s at ~100 Gbps
+	{"50GB", 50_000_000_000, 2},   // 1s at 400 Gbps
+	{"100GB", 100_000_000_000, 2}, // 1s at 800 Gbps
+	{"125GB", 125_000_000_000, 2}, // 1s at 1 Tbps
 }
 
-// All upload profiles matching web client
+// All upload profiles matching web client (up to 1 Tbps)
 var allUploadProfiles = []profile{
 	{"100kB", 100_000, 8},
 	{"1MB", 1_000_000, 6},
@@ -433,8 +439,15 @@ var allUploadProfiles = []profile{
 	{"25MB", 25_000_000, 4},
 	{"50MB", 50_000_000, 3},
 	{"100MB", 100_000_000, 2},
-	{"250MB", 250_000_000, 2},
-	{"500MB", 500_000_000, 2},
+	{"250MB", 250_000_000, 2},    // 1s at 2 Gbps
+	{"500MB", 500_000_000, 2},    // 1s at 4 Gbps
+	{"1GB", 1_000_000_000, 2},    // 1s at 8 Gbps
+	{"2GB", 2_000_000_000, 2},    // 1s at 16 Gbps
+	{"5GB", 5_000_000_000, 2},    // 1s at 40 Gbps
+	{"12GB", 12_000_000_000, 2},  // 1s at ~100 Gbps
+	{"50GB", 50_000_000_000, 2},  // 1s at 400 Gbps
+	{"100GB", 100_000_000_000, 2}, // 1s at 800 Gbps
+	{"125GB", 125_000_000_000, 2}, // 1s at 1 Tbps
 }
 
 var quickDownloadProfiles = []profile{
