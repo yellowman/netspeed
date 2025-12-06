@@ -252,6 +252,7 @@ static int send_request(http_conn_t *conn, const char *method,
         header_len = snprintf(header, sizeof(header),
             "%s %s HTTP/1.1\r\n"
             "Host: %s\r\n"
+            "User-Agent: netspeed-cli/1.0\r\n"
             "Connection: keep-alive\r\n"
             "Content-Type: application/octet-stream\r\n"
             "Content-Length: %zu\r\n"
@@ -262,6 +263,7 @@ static int send_request(http_conn_t *conn, const char *method,
         header_len = snprintf(header, sizeof(header),
             "%s %s HTTP/1.1\r\n"
             "Host: %s\r\n"
+            "User-Agent: netspeed-cli/1.0\r\n"
             "Connection: keep-alive\r\n"
             "Cache-Control: no-store\r\n"
             "\r\n",

@@ -55,6 +55,7 @@ func (c *Client) fetchTURNCredentials(ctx context.Context) (*turnCredentials, er
 	if err != nil {
 		return nil, err
 	}
+	req.Header.Set("User-Agent", UserAgent)
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
@@ -95,6 +96,7 @@ func (c *Client) exchangeOffer(ctx context.Context, offerSDP string) (*signaling
 	if err != nil {
 		return nil, err
 	}
+	req.Header.Set("User-Agent", UserAgent)
 	req.Header.Set("Content-Type", "application/json")
 
 	resp, err := c.httpClient.Do(req)

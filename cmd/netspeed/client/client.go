@@ -50,6 +50,9 @@ const (
 	WriteBufferSize = 4 * 1024 * 1024 // 4MB write buffer
 )
 
+// UserAgent identifies the client to servers (required by Cloudflare)
+const UserAgent = "netspeed-cli/1.0"
+
 // Time budget constants (matching web client)
 const (
 	MaxTestDuration     = 4 * time.Second  // Max time for single profile to be selected
@@ -178,6 +181,7 @@ func (c *Client) fetchMeta(ctx context.Context) (*Meta, error) {
 	if err != nil {
 		return nil, err
 	}
+	req.Header.Set("User-Agent", UserAgent)
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
@@ -354,6 +358,7 @@ func (c *Client) quickBandwidthEstimate(ctx context.Context) float64 {
 	if err != nil {
 		return 0
 	}
+	req.Header.Set("User-Agent", UserAgent)
 	req.Header.Set("Cache-Control", "no-store")
 
 	start := time.Now()
@@ -386,6 +391,7 @@ func (c *Client) measureLatency(ctx context.Context, phase string, seq int) (tim
 	if err != nil {
 		return 0, err
 	}
+	req.Header.Set("User-Agent", UserAgent)
 	req.Header.Set("Cache-Control", "no-store")
 
 	resp, err := c.httpClient.Do(req)
@@ -721,6 +727,7 @@ func (c *Client) measureDownload(ctx context.Context, profileName string, numByt
 	if err != nil {
 		return ThroughputSample{}, err
 	}
+	req.Header.Set("User-Agent", UserAgent)
 	req.Header.Set("Cache-Control", "no-store")
 
 	resp, err := c.httpClient.Do(req)
@@ -837,6 +844,7 @@ func (c *Client) measureUpload(ctx context.Context, profileName string, payload 
 	if err != nil {
 		return ThroughputSample{}, err
 	}
+	req.Header.Set("User-Agent", UserAgent)
 	req.Header.Set("Content-Type", "application/octet-stream")
 	req.ContentLength = int64(len(payload))
 
