@@ -105,6 +105,10 @@ func (m *Manager) cleanupExpired() {
 		lastActivity := session.LastActivity
 		session.mu.Unlock()
 
+		session.Stats.mu.Lock()
+		totalRecv := session.Stats.TotalRecv
+		session.Stats.mu.Unlock()
+
 		sessionAge := now.Sub(session.CreatedAt)
 		idleTime := now.Sub(lastActivity)
 
@@ -117,7 +121,7 @@ func (m *Manager) cleanupExpired() {
 			delete(m.sessions, id)
 		} else if idleTime > m.config.IdleTimeout {
 			log.Printf("Cleaning up session %s: idle timeout (%v since last activity, received %d packets)",
-				id, idleTime, session.Stats.TotalRecv)
+				id, idleTime, totalRecv)
 			session.Close()
 			delete(m.sessions, id)
 		}

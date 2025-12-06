@@ -1243,8 +1243,9 @@
         // Handle unavailable state (WebRTC failed)
         if (packetLoss.unavailable) {
             const errorMsg = `Unable to perform measurement: ${packetLoss.reason || 'Unknown error'}`;
+            const naMarker = '<span class="na-marker"></span>';
             if (elements.packetLossValue) {
-                elements.packetLossValue.innerHTML = '<span class="error-icon"></span>';
+                elements.packetLossValue.innerHTML = naMarker;
                 elements.packetLossValue.classList.add('error');
             }
             if (elements.packetLossBadge) {
@@ -1259,11 +1260,10 @@
             if (elements.packetsReceived) {
                 elements.packetsReceived.textContent = errorMsg;
             }
-            const ph = '<span class="placeholder"></span>';
-            if (elements.rttMin) elements.rttMin.innerHTML = ph;
-            if (elements.rttMedian) elements.rttMedian.innerHTML = ph;
-            if (elements.rttP90) elements.rttP90.innerHTML = ph;
-            if (elements.rttJitter) elements.rttJitter.innerHTML = ph;
+            if (elements.rttMin) elements.rttMin.innerHTML = naMarker;
+            if (elements.rttMedian) elements.rttMedian.innerHTML = naMarker;
+            if (elements.rttP90) elements.rttP90.innerHTML = naMarker;
+            if (elements.rttJitter) elements.rttJitter.innerHTML = naMarker;
             return;
         }
 
