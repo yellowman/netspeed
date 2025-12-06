@@ -439,45 +439,47 @@ type ThroughputSample struct {
     RunIndex   int
 }
 
+type RTTStats struct {
+    Min    float64 `json:"min"`
+    Median float64 `json:"median"`
+    P90    float64 `json:"p90"`
+}
+
 type PacketLossResult struct {
-    Sent        int
-    Received    int
-    LossPercent float64
-    RTTStats    struct {
-        Min    time.Duration
-        Median time.Duration
-        P90    time.Duration
-    }
-    Jitter      time.Duration
-    TestID      string
-    Unavailable bool
-    Reason      string
+    Sent        int      `json:"sent"`
+    Received    int      `json:"received"`
+    LossPercent float64  `json:"lossPercent"`
+    RTTStatsMs  RTTStats `json:"rttStatsMs"`
+    JitterMs    float64  `json:"jitterMs"`
+    TestID      string   `json:"testId,omitempty"`
+    Unavailable bool     `json:"unavailable,omitempty"`
+    Reason      string   `json:"reason,omitempty"`
 }
 
 type Summary struct {
-    DownloadMbps       float64
-    UploadMbps         float64
-    LatencyUnloaded    time.Duration
-    LatencyDownload    time.Duration
-    LatencyUpload      time.Duration
-    Jitter             time.Duration
-    PacketLossPercent  float64
+    DownloadMbps      float64 `json:"downloadMbps"`
+    UploadMbps        float64 `json:"uploadMbps"`
+    LatencyUnloadedMs float64 `json:"latencyUnloadedMs"`
+    LatencyDownloadMs float64 `json:"latencyDownloadMs"`
+    LatencyUploadMs   float64 `json:"latencyUploadMs"`
+    JitterMs          float64 `json:"jitterMs"`
+    PacketLossPercent float64 `json:"packetLossPercent"`
 }
 
 type Meta struct {
-    Hostname       string
-    ClientIP       string
-    HTTPProtocol   string
-    ASN            int
-    ASOrganization string
-    Colo           string
-    Country        string
-    City           string
-    Region         string
-    PostalCode     string
-    Latitude       float64
-    Longitude      float64
-    Timezone       string
+    Hostname       string  `json:"hostname"`
+    ClientIP       string  `json:"clientIp"`
+    HTTPProtocol   string  `json:"httpProtocol"`
+    ASN            int     `json:"asn"`
+    ASOrganization string  `json:"asOrganization"`
+    Colo           string  `json:"colo"`
+    Country        string  `json:"country"`
+    City           string  `json:"city"`
+    Region         string  `json:"region"`
+    PostalCode     string  `json:"postalCode"`
+    Latitude       float64 `json:"latitude"`
+    Longitude      float64 `json:"longitude"`
+    Timezone       string  `json:"timezone,omitempty"`
 }
 ```
 
@@ -656,53 +658,90 @@ format: `download_mbps upload_mbps latency_ms loss_percent`
 
 ### 5.6 JSON output format
 
-with `--json` flag:
+with `--json` flag, output matches the web client format exactly:
 
 ```json
 {
-  "timestamp": "2024-01-15T10:23:45Z",
-  "server": {
+  "meta": {
     "hostname": "speed.example.com",
-    "colo": "PDX",
-    "city": "Portland",
-    "country": "US"
-  },
-  "client": {
-    "ip": "203.0.113.42",
+    "clientIp": "203.0.113.42",
+    "httpProtocol": "HTTP/2.0",
     "asn": 13254,
-    "organization": "Example ISP, Inc.",
+    "asOrganization": "Example ISP, Inc.",
+    "colo": "PDX",
+    "country": "US",
     "city": "Bend",
     "region": "Oregon",
-    "country": "US"
+    "postalCode": "97701",
+    "latitude": 44.0582,
+    "longitude": -121.3153,
+    "timezone": "America/Los_Angeles"
   },
-  "results": {
-    "download": {
-      "mbps": 892.4,
-      "samples": 31
-    },
-    "upload": {
-      "mbps": 634.2,
-      "samples": 25
-    },
-    "latency": {
-      "unloaded_ms": 6.2,
-      "download_ms": 14.3,
-      "upload_ms": 18.7,
-      "jitter_ms": 1.4
-    },
-    "packet_loss": {
-      "percent": 0.2,
-      "sent": 1000,
-      "received": 998,
-      "rtt_min_ms": 12.3,
-      "rtt_median_ms": 15.6,
-      "rtt_p90_ms": 21.2
-    }
+  "summary": {
+    "downloadMbps": 892.4,
+    "uploadMbps": 634.2,
+    "latencyUnloadedMs": 6.2,
+    "latencyDownloadMs": 14.3,
+    "latencyUploadMs": 18.7,
+    "jitterMs": 1.4,
+    "packetLossPercent": 0.2
   },
   "quality": {
-    "video_streaming": "Great",
-    "online_gaming": "Great",
-    "video_chatting": "Great"
+    "videoStreaming": "Great",
+    "gaming": "Great",
+    "videoChatting": "Great"
+  },
+  "throughputSamples": [
+    {
+      "ts": 1705315425123,
+      "direction": "download",
+      "sizeBytes": 100000,
+      "durationMs": 12.5,
+      "mbps": 64.0,
+      "profile": "100kB",
+      "runIndex": 0
+    }
+  ],
+  "latencySamples": [
+    {
+      "ts": 1705315420456,
+      "rttMs": 6.2,
+      "phase": "unloaded"
+    }
+  ],
+  "packetLoss": {
+    "sent": 1000,
+    "received": 998,
+    "lossPercent": 0.2,
+    "rttStatsMs": {
+      "min": 12.3,
+      "median": 15.6,
+      "p90": 21.2
+    },
+    "jitterMs": 3.4,
+    "testId": "c65b0b1d-6f7f-4a9a-9f2b-7c9d3c5f0c3a"
+  },
+  "startTime": "2024-01-15T10:23:40.123456789Z",
+  "endTime": "2024-01-15T10:24:25.987654321Z"
+}
+```
+
+**when packet loss test is unavailable:**
+
+```json
+{
+  "packetLoss": {
+    "sent": 0,
+    "received": 0,
+    "lossPercent": 0,
+    "rttStatsMs": {
+      "min": 0,
+      "median": 0,
+      "p90": 0
+    },
+    "jitterMs": 0,
+    "unavailable": true,
+    "reason": "WebRTC packet loss test not yet implemented in CLI"
   }
 }
 ```
@@ -899,9 +938,9 @@ const (
 )
 
 type NetworkQuality struct {
-    VideoStreaming Grade
-    OnlineGaming   Grade
-    VideoChatting  Grade
+    VideoStreaming string `json:"videoStreaming"`
+    Gaming         string `json:"gaming"`
+    VideoChatting  string `json:"videoChatting"`
 }
 ```
 

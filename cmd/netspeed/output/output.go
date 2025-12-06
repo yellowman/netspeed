@@ -173,7 +173,7 @@ func (o *Output) Results(r *client.Results) {
 	// Network Quality
 	fmt.Printf("  %s\n", o.color(ColorBold, "Network Quality:"))
 	fmt.Printf("    Video Streaming:  %s\n", o.gradeColor(r.Quality.VideoStreaming))
-	fmt.Printf("    Online Gaming:    %s\n", o.gradeColor(r.Quality.OnlineGaming))
+	fmt.Printf("    Online Gaming:    %s\n", o.gradeColor(r.Quality.Gaming))
 	fmt.Printf("    Video Chatting:   %s\n", o.gradeColor(r.Quality.VideoChatting))
 
 	fmt.Println(strings.Repeat("─", 48))
@@ -261,7 +261,7 @@ func (o *Output) verboseDetails(r *client.Results) {
 		fmt.Printf("  Received:   %d packets\n", r.PacketLoss.Received)
 		fmt.Printf("  Loss:       %.2f%%\n", r.PacketLoss.LossPercent)
 		fmt.Printf("  RTT:        min %.1f ms, median %.1f ms, p90 %.1f ms\n",
-			r.PacketLoss.RTTStats.MinMs, r.PacketLoss.RTTStats.MedianMs, r.PacketLoss.RTTStats.P90Ms)
+			r.PacketLoss.RTTStatsMs.Min, r.PacketLoss.RTTStatsMs.Median, r.PacketLoss.RTTStatsMs.P90)
 		fmt.Printf("  Jitter:     %.1f ms\n", r.PacketLoss.JitterMs)
 	}
 }

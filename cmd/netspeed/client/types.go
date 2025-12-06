@@ -4,7 +4,7 @@ import (
 	"time"
 )
 
-// Meta holds server and client metadata.
+// Meta holds server and client metadata (matches web client format).
 type Meta struct {
 	Hostname       string  `json:"hostname"`
 	ClientIP       string  `json:"clientIp"`
@@ -18,41 +18,84 @@ type Meta struct {
 	PostalCode     string  `json:"postalCode"`
 	Latitude       float64 `json:"latitude"`
 	Longitude      float64 `json:"longitude"`
-	Timezone       string  `json:"timezone"`
+	Timezone       string  `json:"timezone,omitempty"`
 }
 
-// LatencySample represents a single latency measurement.
+// LatencySample represents a single latency measurement (internal format).
 type LatencySample struct {
-	Timestamp time.Time     `json:"timestamp"`
-	RTT       time.Duration `json:"rtt"`
-	Phase     string        `json:"phase"` // "unloaded", "download", "upload"
+	Timestamp time.Time     `json:"-"`
+	RTT       time.Duration `json:"-"`
+	Phase     string        `json:"-"` // "unloaded", "download", "upload"
 }
 
-// ThroughputSample represents a single throughput measurement.
+// LatencySampleJSON is the JSON format matching the web client.
+type LatencySampleJSON struct {
+	Ts    int64   `json:"ts"`
+	RttMs float64 `json:"rttMs"`
+	Phase string  `json:"phase"`
+}
+
+// ToJSON converts LatencySample to JSON format.
+func (s *LatencySample) ToJSON() LatencySampleJSON {
+	return LatencySampleJSON{
+		Ts:    s.Timestamp.UnixMilli(),
+		RttMs: float64(s.RTT.Microseconds()) / 1000.0,
+		Phase: s.Phase,
+	}
+}
+
+// ThroughputSample represents a single throughput measurement (internal format).
 type ThroughputSample struct {
-	Timestamp  time.Time     `json:"timestamp"`
-	Direction  string        `json:"direction"` // "download", "upload"
-	SizeBytes  int64         `json:"sizeBytes"`
-	Duration   time.Duration `json:"duration"`
-	Mbps       float64       `json:"mbps"`
-	Profile    string        `json:"profile"`
-	RunIndex   int           `json:"runIndex"`
+	Timestamp  time.Time     `json:"-"`
+	Direction  string        `json:"-"` // "download", "upload"
+	SizeBytes  int64         `json:"-"`
+	Duration   time.Duration `json:"-"`
+	Mbps       float64       `json:"-"`
+	Profile    string        `json:"-"`
+	RunIndex   int           `json:"-"`
+}
+
+// ThroughputSampleJSON is the JSON format matching the web client.
+type ThroughputSampleJSON struct {
+	Ts         int64   `json:"ts"`
+	Direction  string  `json:"direction"`
+	SizeBytes  int64   `json:"sizeBytes"`
+	DurationMs float64 `json:"durationMs"`
+	Mbps       float64 `json:"mbps"`
+	Profile    string  `json:"profile"`
+	RunIndex   int     `json:"runIndex"`
+}
+
+// ToJSON converts ThroughputSample to JSON format.
+func (s *ThroughputSample) ToJSON() ThroughputSampleJSON {
+	return ThroughputSampleJSON{
+		Ts:         s.Timestamp.UnixMilli(),
+		Direction:  s.Direction,
+		SizeBytes:  s.SizeBytes,
+		DurationMs: float64(s.Duration.Microseconds()) / 1000.0,
+		Mbps:       s.Mbps,
+		Profile:    s.Profile,
+		RunIndex:   s.RunIndex,
+	}
+}
+
+// RTTStats holds RTT statistics for packet loss test.
+type RTTStats struct {
+	Min    float64 `json:"min"`
+	Median float64 `json:"median"`
+	P90    float64 `json:"p90"`
 }
 
 // PacketLossResult holds packet loss test results.
 type PacketLossResult struct {
-	Sent        int     `json:"sent"`
-	Received    int     `json:"received"`
-	LossPercent float64 `json:"lossPercent"`
-	RTTStats    struct {
-		MinMs    float64 `json:"min"`
-		MedianMs float64 `json:"median"`
-		P90Ms    float64 `json:"p90"`
-	} `json:"rttStatsMs"`
-	JitterMs    float64 `json:"jitterMs"`
-	TestID      string  `json:"testId,omitempty"`
-	Unavailable bool    `json:"unavailable,omitempty"`
-	Reason      string  `json:"reason,omitempty"`
+	Sent        int      `json:"sent"`
+	Received    int      `json:"received"`
+	LossPercent float64  `json:"lossPercent"`
+	RTTStatsMs  RTTStats `json:"rttStatsMs"`
+	JitterMs    float64  `json:"jitterMs"`
+	TestID      string   `json:"testId,omitempty"`
+	Unavailable bool     `json:"unavailable,omitempty"`
+	Reason      string   `json:"reason,omitempty"`
 }
 
 // Summary holds computed summary statistics.
@@ -67,128 +110,61 @@ type Summary struct {
 }
 
 // NetworkQuality holds quality grades for different use cases.
+// Note: field names match web client exactly ("gaming" not "onlineGaming").
 type NetworkQuality struct {
 	VideoStreaming string `json:"videoStreaming"`
-	OnlineGaming   string `json:"onlineGaming"`
+	Gaming         string `json:"gaming"`
 	VideoChatting  string `json:"videoChatting"`
 }
 
-// Results holds all test results.
+// Results holds all test results (internal format).
 type Results struct {
-	Timestamp         time.Time          `json:"timestamp"`
-	ServerURL         string             `json:"serverUrl"`
-	Meta              *Meta              `json:"meta"`
-	ThroughputSamples []ThroughputSample `json:"throughputSamples"`
-	LatencySamples    []LatencySample    `json:"latencySamples"`
-	PacketLoss        *PacketLossResult  `json:"packetLoss"`
-	Summary           Summary            `json:"summary"`
-	Quality           NetworkQuality     `json:"quality"`
+	Timestamp         time.Time
+	ServerURL         string
+	StartTime         time.Time
+	EndTime           time.Time
+	Meta              *Meta
+	ThroughputSamples []ThroughputSample
+	LatencySamples    []LatencySample
+	PacketLoss        *PacketLossResult
+	Summary           Summary
+	Quality           NetworkQuality
 }
 
-// JSONOutput represents the JSON output format matching the web client.
+// JSONOutput represents the JSON output format matching the web client exactly.
 type JSONOutput struct {
-	Timestamp string `json:"timestamp"`
-	Server    struct {
-		Hostname string `json:"hostname"`
-		Colo     string `json:"colo"`
-		City     string `json:"city"`
-		Country  string `json:"country"`
-	} `json:"server"`
-	Client struct {
-		IP           string `json:"ip"`
-		ASN          int    `json:"asn"`
-		Organization string `json:"organization"`
-		City         string `json:"city"`
-		Region       string `json:"region"`
-		Country      string `json:"country"`
-	} `json:"client"`
-	Results struct {
-		Download struct {
-			Mbps    float64 `json:"mbps"`
-			Samples int     `json:"samples"`
-		} `json:"download"`
-		Upload struct {
-			Mbps    float64 `json:"mbps"`
-			Samples int     `json:"samples"`
-		} `json:"upload"`
-		Latency struct {
-			UnloadedMs float64 `json:"unloaded_ms"`
-			DownloadMs float64 `json:"download_ms"`
-			UploadMs   float64 `json:"upload_ms"`
-			JitterMs   float64 `json:"jitter_ms"`
-		} `json:"latency"`
-		PacketLoss struct {
-			Percent     float64 `json:"percent"`
-			Sent        int     `json:"sent"`
-			Received    int     `json:"received"`
-			RTTMinMs    float64 `json:"rtt_min_ms"`
-			RTTMedianMs float64 `json:"rtt_median_ms"`
-			RTTP90Ms    float64 `json:"rtt_p90_ms"`
-			Unavailable bool    `json:"unavailable,omitempty"`
-			Reason      string  `json:"reason,omitempty"`
-		} `json:"packet_loss"`
-	} `json:"results"`
-	Quality struct {
-		VideoStreaming string `json:"video_streaming"`
-		OnlineGaming   string `json:"online_gaming"`
-		VideoChatting  string `json:"video_chatting"`
-	} `json:"quality"`
+	Meta              *Meta                  `json:"meta"`
+	Summary           Summary                `json:"summary"`
+	Quality           NetworkQuality         `json:"quality"`
+	ThroughputSamples []ThroughputSampleJSON `json:"throughputSamples"`
+	LatencySamples    []LatencySampleJSON    `json:"latencySamples"`
+	PacketLoss        *PacketLossResult      `json:"packetLoss"`
+	StartTime         string                 `json:"startTime"`
+	EndTime           string                 `json:"endTime"`
 }
 
-// ToJSON converts Results to the JSON output format.
+// ToJSON converts Results to the JSON output format matching the web client.
 func (r *Results) ToJSON() JSONOutput {
-	var out JSONOutput
-
-	out.Timestamp = r.Timestamp.UTC().Format(time.RFC3339)
-
-	if r.Meta != nil {
-		out.Server.Hostname = r.Meta.Hostname
-		out.Server.Colo = r.Meta.Colo
-		out.Server.City = r.Meta.City
-		out.Server.Country = r.Meta.Country
-
-		out.Client.IP = r.Meta.ClientIP
-		out.Client.ASN = r.Meta.ASN
-		out.Client.Organization = r.Meta.ASOrganization
-		out.Client.City = r.Meta.City
-		out.Client.Region = r.Meta.Region
-		out.Client.Country = r.Meta.Country
+	out := JSONOutput{
+		Meta:       r.Meta,
+		Summary:    r.Summary,
+		Quality:    r.Quality,
+		PacketLoss: r.PacketLoss,
+		StartTime:  r.StartTime.UTC().Format(time.RFC3339Nano),
+		EndTime:    r.EndTime.UTC().Format(time.RFC3339Nano),
 	}
 
-	// Count samples
-	dlCount := 0
-	ulCount := 0
-	for _, s := range r.ThroughputSamples {
-		if s.Direction == "download" {
-			dlCount++
-		} else {
-			ulCount++
-		}
+	// Convert throughput samples
+	out.ThroughputSamples = make([]ThroughputSampleJSON, len(r.ThroughputSamples))
+	for i, s := range r.ThroughputSamples {
+		out.ThroughputSamples[i] = s.ToJSON()
 	}
 
-	out.Results.Download.Mbps = r.Summary.DownloadMbps
-	out.Results.Download.Samples = dlCount
-	out.Results.Upload.Mbps = r.Summary.UploadMbps
-	out.Results.Upload.Samples = ulCount
-	out.Results.Latency.UnloadedMs = r.Summary.LatencyUnloadedMs
-	out.Results.Latency.DownloadMs = r.Summary.LatencyDownloadMs
-	out.Results.Latency.UploadMs = r.Summary.LatencyUploadMs
-	out.Results.Latency.JitterMs = r.Summary.JitterMs
-
-	if r.PacketLoss != nil {
-		out.Results.PacketLoss.Percent = r.PacketLoss.LossPercent
-		out.Results.PacketLoss.Sent = r.PacketLoss.Sent
-		out.Results.PacketLoss.Received = r.PacketLoss.Received
-		out.Results.PacketLoss.RTTMinMs = r.PacketLoss.RTTStats.MinMs
-		out.Results.PacketLoss.RTTMedianMs = r.PacketLoss.RTTStats.MedianMs
-		out.Results.PacketLoss.RTTP90Ms = r.PacketLoss.RTTStats.P90Ms
-		out.Results.PacketLoss.Unavailable = r.PacketLoss.Unavailable
-		out.Results.PacketLoss.Reason = r.PacketLoss.Reason
+	// Convert latency samples
+	out.LatencySamples = make([]LatencySampleJSON, len(r.LatencySamples))
+	for i, s := range r.LatencySamples {
+		out.LatencySamples[i] = s.ToJSON()
 	}
-
-	out.Quality.VideoStreaming = r.Quality.VideoStreaming
-	out.Quality.OnlineGaming = r.Quality.OnlineGaming
-	out.Quality.VideoChatting = r.Quality.VideoChatting
 
 	return out
 }
