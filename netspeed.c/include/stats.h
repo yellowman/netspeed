@@ -10,51 +10,51 @@
 /*
  * Sort array of doubles in-place.
  */
-void stats_sort(double *arr, int n);
+void stats_sort(double *arr, size_t n);
 
 /*
  * Calculate percentile of sorted array.
  * Array must be sorted.
  */
-double stats_percentile(const double *sorted, int n, double p);
+double stats_percentile(const double *sorted, size_t n, double p);
 
 /*
  * Calculate median of sorted array.
  */
-double stats_median(const double *sorted, int n);
+double stats_median(const double *sorted, size_t n);
 
 /*
  * Calculate minimum of array.
  */
-double stats_min(const double *arr, int n);
+double stats_min(const double *arr, size_t n);
 
 /*
  * Calculate maximum of array.
  */
-double stats_max(const double *arr, int n);
+double stats_max(const double *arr, size_t n);
 
 /*
  * Calculate mean of array.
  */
-double stats_mean(const double *arr, int n);
+double stats_mean(const double *arr, size_t n);
 
 /*
  * Calculate jitter (p90 - p50).
  * Array must be sorted.
  */
-double stats_jitter(const double *sorted, int n);
+double stats_jitter(const double *sorted, size_t n);
 
 /*
  * Calculate interquartile range (p75 - p25).
  * Sorts array in-place.
  */
-double stats_iqr(double *arr, int n);
+double stats_iqr(double *arr, size_t n);
 
 /*
  * Calculate p90 (90th percentile).
  * Sorts array in-place.
  */
-double stats_p90(double *arr, int n);
+double stats_p90(double *arr, size_t n);
 
 /*
  * Convert bytes and duration to Mbps.

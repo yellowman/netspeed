@@ -459,9 +459,13 @@ static void maybe_comma(json_writer_t *w)
 void json_writer_init(json_writer_t *w)
 {
     w->buf = malloc(INITIAL_BUF_SIZE);
-    w->buf[0] = '\0';
+    if (w->buf) {
+        w->buf[0] = '\0';
+        w->cap = INITIAL_BUF_SIZE;
+    } else {
+        w->cap = 0;
+    }
     w->len = 0;
-    w->cap = INITIAL_BUF_SIZE;
     w->depth = 0;
     w->need_comma = false;
 }
