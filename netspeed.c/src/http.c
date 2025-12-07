@@ -248,26 +248,37 @@ static int send_request(http_conn_t *conn, const char *method,
     char header[4096];
     int header_len;
 
+    /* Browser-like User-Agent to pass Cloudflare bot detection */
+    static const char *user_agent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                                    "AppleWebKit/537.36 (KHTML, like Gecko) "
+                                    "Chrome/120.0.0.0 Safari/537.36";
+
     if (body && body_len > 0) {
         header_len = snprintf(header, sizeof(header),
             "%s %s HTTP/1.1\r\n"
             "Host: %s\r\n"
-            "User-Agent: netspeed-cli/1.0\r\n"
+            "User-Agent: %s\r\n"
+            "Accept: text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8\r\n"
+            "Accept-Language: en-US,en;q=0.9\r\n"
+            "Accept-Encoding: gzip, deflate, br\r\n"
             "Connection: keep-alive\r\n"
             "Content-Type: application/octet-stream\r\n"
             "Content-Length: %zu\r\n"
             "Cache-Control: no-store\r\n"
             "\r\n",
-            method, path, conn->host, body_len);
+            method, path, conn->host, user_agent, body_len);
     } else {
         header_len = snprintf(header, sizeof(header),
             "%s %s HTTP/1.1\r\n"
             "Host: %s\r\n"
-            "User-Agent: netspeed-cli/1.0\r\n"
+            "User-Agent: %s\r\n"
+            "Accept: text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8\r\n"
+            "Accept-Language: en-US,en;q=0.9\r\n"
+            "Accept-Encoding: gzip, deflate, br\r\n"
             "Connection: keep-alive\r\n"
             "Cache-Control: no-store\r\n"
             "\r\n",
-            method, path, conn->host);
+            method, path, conn->host, user_agent);
     }
 
     /* Send headers */
