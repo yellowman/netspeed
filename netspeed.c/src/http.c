@@ -279,6 +279,9 @@ static int send_request(http_conn_t *conn, const char *method,
         return ERR_NETWORK;
     }
 
+    /* Mark when we start sending body (for upload timing) */
+    timing_mark_wrote_request(timing);
+
     /* Send body if present */
     if (body && body_len > 0) {
         size_t sent = 0;
@@ -290,9 +293,6 @@ static int send_request(http_conn_t *conn, const char *method,
             sent += n;
         }
     }
-
-    /* Mark request written */
-    timing_mark_wrote_request(timing);
 
     return ERR_OK;
 }
