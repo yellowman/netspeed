@@ -290,7 +290,7 @@ static int send_request(http_conn_t *conn, const char *method,
             if (n <= 0) {
                 return ERR_NETWORK;
             }
-            sent += n;
+            sent += (size_t)n;
         }
     }
 
@@ -375,15 +375,16 @@ static int receive_response(http_conn_t *conn, http_response_t *response,
 
     /* Read body */
     if (content_length > 0) {
-        response->body = malloc(content_length + 1);
+        size_t body_size = (size_t)content_length;
+        response->body = malloc(body_size + 1);
         if (!response->body) {
             return ERR_MEMORY;
         }
-        response->body_cap = content_length + 1;
+        response->body_cap = body_size + 1;
 
         size_t total = 0;
-        while (total < (size_t)content_length) {
-            size_t to_read = content_length - total;
+        while (total < body_size) {
+            size_t to_read = body_size - total;
             if (to_read > sizeof(read_buf)) {
                 to_read = sizeof(read_buf);
             }
@@ -393,8 +394,8 @@ static int receive_response(http_conn_t *conn, http_response_t *response,
                 break;
             }
 
-            memcpy(response->body + total, read_buf, n);
-            total += n;
+            memcpy(response->body + total, read_buf, (size_t)n);
+            total += (size_t)n;
         }
 
         response->body_len = total;

@@ -221,12 +221,12 @@ double measure_upload(http_conn_t *conn, const char *base_url,
         return -1;
     }
 
-    double mbps = bytes_to_mbps(payload_len, duration_ms);
+    double mbps = bytes_to_mbps((int64_t)payload_len, duration_ms);
 
     if (sample) {
         sample->ts = timing_now_ms();
         sample->direction = "upload";
-        sample->size_bytes = payload_len;
+        sample->size_bytes = (int64_t)payload_len;
         sample->duration_ms = duration_ms;
         sample->mbps = mbps;
         sample->profile = profile;
