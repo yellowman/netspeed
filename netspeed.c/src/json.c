@@ -411,22 +411,29 @@ bool json_get_bool(json_value_t *obj, const char *key, bool default_val)
 
 /* ===================== Writer ===================== */
 
-static void writer_grow(json_writer_t *w, size_t need)
+static bool writer_grow(json_writer_t *w, size_t need)
 {
     if (w->len + need + 1 > w->cap) {
         size_t new_cap = w->cap * 2;
         if (new_cap < w->len + need + 1) {
             new_cap = w->len + need + 1;
         }
-        w->buf = realloc(w->buf, new_cap);
+        char *new_buf = realloc(w->buf, new_cap);
+        if (!new_buf) {
+            return false; /* Keep original buffer intact */
+        }
+        w->buf = new_buf;
         w->cap = new_cap;
     }
+    return true;
 }
 
 static void writer_append(json_writer_t *w, const char *str)
 {
     size_t len = strlen(str);
-    writer_grow(w, len);
+    if (!writer_grow(w, len) || !w->buf) {
+        return; /* Silently fail if allocation failed */
+    }
     memcpy(w->buf + w->len, str, len);
     w->len += len;
     w->buf[w->len] = '\0';
@@ -434,7 +441,9 @@ static void writer_append(json_writer_t *w, const char *str)
 
 static void writer_append_char(json_writer_t *w, char c)
 {
-    writer_grow(w, 1);
+    if (!writer_grow(w, 1) || !w->buf) {
+        return; /* Silently fail if allocation failed */
+    }
     w->buf[w->len++] = c;
     w->buf[w->len] = '\0';
 }
