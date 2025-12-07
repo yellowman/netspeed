@@ -20,6 +20,9 @@ typedef struct {
     timing_info_t timing;
 } http_response_t;
 
+/* Read buffer size for header parsing (64KB for large headers) */
+#define CONN_READ_BUF_SIZE 65536
+
 /* HTTP connection (persistent) */
 typedef struct {
     int sockfd;
@@ -29,6 +32,10 @@ typedef struct {
     int port;
     bool is_https;
     bool connected;
+    /* Buffered reader for efficient header parsing */
+    char read_buf[CONN_READ_BUF_SIZE];
+    size_t read_pos;   /* Current position in buffer */
+    size_t read_len;   /* Amount of data in buffer */
 } http_conn_t;
 
 /* URL components */
