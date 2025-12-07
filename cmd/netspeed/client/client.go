@@ -385,7 +385,8 @@ func (c *Client) quickBandwidthEstimate(ctx context.Context) float64 {
 // measureLatency measures a single latency probe using precise timing.
 // RTT = GotFirstResponseByte - WroteRequest (excludes connection setup, TLS, DNS)
 func (c *Client) measureLatency(ctx context.Context, phase string, seq int) (time.Duration, error) {
-	url := fmt.Sprintf("%s/__down?bytes=0&phase=%s&seq=%d", c.cfg.ServerURL, phase, seq)
+	// cloudflarepycli uses just bytes=0 for latency
+	url := fmt.Sprintf("%s/__down?bytes=0", c.cfg.ServerURL)
 
 	// Set up precise timing via httptrace
 	var timing timingInfo
@@ -721,7 +722,8 @@ func (c *Client) runProfiles(ctx context.Context, profiles []profile, direction 
 // measureDownload measures a single download using precise timing.
 // Body transfer time = bodyDone - GotFirstResponseByte (excludes connection, TLS, headers)
 func (c *Client) measureDownload(ctx context.Context, profileName string, numBytes int64, run int) (ThroughputSample, error) {
-	url := fmt.Sprintf("%s/__down?bytes=%d&profile=%s&run=%d", c.cfg.ServerURL, numBytes, profileName, run)
+	// cloudflarepycli uses just bytes parameter
+	url := fmt.Sprintf("%s/__down?bytes=%d", c.cfg.ServerURL, numBytes)
 
 	// Set up precise timing via httptrace
 	var timing timingInfo
@@ -835,7 +837,8 @@ func (c *Client) runUploadProfiles(ctx context.Context, profiles []profile) ([]T
 // measureUpload measures a single upload using precise timing.
 // Upload time = GotFirstResponseByte - bodyWriteStart
 func (c *Client) measureUpload(ctx context.Context, profileName string, payload []byte, run int) (ThroughputSample, error) {
-	url := fmt.Sprintf("%s/__up?profile=%s&run=%d", c.cfg.ServerURL, profileName, run)
+	// cloudflarepycli uses just POST /__up with no query params
+	url := fmt.Sprintf("%s/__up", c.cfg.ServerURL)
 
 	// Set up precise timing via httptrace
 	var timing timingInfo
