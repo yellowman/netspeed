@@ -50,15 +50,12 @@ const (
 	WriteBufferSize = 4 * 1024 * 1024 // 4MB write buffer
 )
 
-// UserAgent mimics a browser to pass Cloudflare bot detection
-const UserAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+// UserAgent identifies the client (cloudflarepycli uses default python-requests UA)
+const UserAgent = "netspeed/1.0"
 
-// setBrowserHeaders adds browser-like headers to bypass Cloudflare bot detection
-func setBrowserHeaders(req *http.Request) {
+// setRequestHeaders adds minimal headers like cloudflarepycli does
+func setRequestHeaders(req *http.Request) {
 	req.Header.Set("User-Agent", UserAgent)
-	req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8")
-	req.Header.Set("Accept-Language", "en-US,en;q=0.9")
-	req.Header.Set("Accept-Encoding", "gzip, deflate, br")
 }
 
 // Time budget constants (matching web client)
@@ -189,7 +186,7 @@ func (c *Client) fetchMeta(ctx context.Context) (*Meta, error) {
 	if err != nil {
 		return nil, err
 	}
-	setBrowserHeaders(req)
+	setRequestHeaders(req)
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
@@ -366,7 +363,7 @@ func (c *Client) quickBandwidthEstimate(ctx context.Context) float64 {
 	if err != nil {
 		return 0
 	}
-	setBrowserHeaders(req)
+	setRequestHeaders(req)
 	req.Header.Set("Cache-Control", "no-store")
 
 	start := time.Now()
@@ -388,7 +385,8 @@ func (c *Client) quickBandwidthEstimate(ctx context.Context) float64 {
 // measureLatency measures a single latency probe using precise timing.
 // RTT = GotFirstResponseByte - WroteRequest (excludes connection setup, TLS, DNS)
 func (c *Client) measureLatency(ctx context.Context, phase string, seq int) (time.Duration, error) {
-	url := fmt.Sprintf("%s/__down?bytes=0&phase=%s&seq=%d", c.cfg.ServerURL, phase, seq)
+	// cloudflarepycli uses just bytes=0 for latency
+	url := fmt.Sprintf("%s/__down?bytes=0", c.cfg.ServerURL)
 
 	// Set up precise timing via httptrace
 	var timing timingInfo
@@ -399,7 +397,7 @@ func (c *Client) measureLatency(ctx context.Context, phase string, seq int) (tim
 	if err != nil {
 		return 0, err
 	}
-	setBrowserHeaders(req)
+	setRequestHeaders(req)
 	req.Header.Set("Cache-Control", "no-store")
 
 	resp, err := c.httpClient.Do(req)
@@ -724,7 +722,8 @@ func (c *Client) runProfiles(ctx context.Context, profiles []profile, direction 
 // measureDownload measures a single download using precise timing.
 // Body transfer time = bodyDone - GotFirstResponseByte (excludes connection, TLS, headers)
 func (c *Client) measureDownload(ctx context.Context, profileName string, numBytes int64, run int) (ThroughputSample, error) {
-	url := fmt.Sprintf("%s/__down?bytes=%d&profile=%s&run=%d", c.cfg.ServerURL, numBytes, profileName, run)
+	// cloudflarepycli uses just bytes parameter
+	url := fmt.Sprintf("%s/__down?bytes=%d", c.cfg.ServerURL, numBytes)
 
 	// Set up precise timing via httptrace
 	var timing timingInfo
@@ -735,7 +734,7 @@ func (c *Client) measureDownload(ctx context.Context, profileName string, numByt
 	if err != nil {
 		return ThroughputSample{}, err
 	}
-	setBrowserHeaders(req)
+	setRequestHeaders(req)
 	req.Header.Set("Cache-Control", "no-store")
 
 	resp, err := c.httpClient.Do(req)
@@ -838,7 +837,8 @@ func (c *Client) runUploadProfiles(ctx context.Context, profiles []profile) ([]T
 // measureUpload measures a single upload using precise timing.
 // Upload time = GotFirstResponseByte - bodyWriteStart
 func (c *Client) measureUpload(ctx context.Context, profileName string, payload []byte, run int) (ThroughputSample, error) {
-	url := fmt.Sprintf("%s/__up?profile=%s&run=%d", c.cfg.ServerURL, profileName, run)
+	// cloudflarepycli uses just POST /__up with no query params
+	url := fmt.Sprintf("%s/__up", c.cfg.ServerURL)
 
 	// Set up precise timing via httptrace
 	var timing timingInfo
@@ -852,7 +852,7 @@ func (c *Client) measureUpload(ctx context.Context, profileName string, payload 
 	if err != nil {
 		return ThroughputSample{}, err
 	}
-	setBrowserHeaders(req)
+	setRequestHeaders(req)
 	req.Header.Set("Content-Type", "application/octet-stream")
 	req.ContentLength = int64(len(payload))
 
