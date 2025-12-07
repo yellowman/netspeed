@@ -374,6 +374,7 @@ int speedtest_download(speedtest_t *st)
             double mbps = measure_download(&st->conn, st->config->server_url,
                                           prof->name, prof->bytes, r, &sample);
 
+            current_run++;
             if (mbps > 0) {
                 /* Record sample */
                 if (st->results.throughput_count < MAX_SAMPLES) {
@@ -387,9 +388,11 @@ int speedtest_download(speedtest_t *st)
                     estimated_speed = stats_p90(all_speeds, speed_count);
                 }
 
-                report_progress(st, "download", ++current_run, total_runs, mbps);
+                report_progress(st, "download", current_run, total_runs, mbps);
             } else {
-                current_run++;
+                /* Still report progress on failure so UI doesn't appear stuck */
+                report_progress(st, "download", current_run, total_runs,
+                               speed_count > 0 ? estimated_speed : 0);
             }
         }
     }
@@ -439,8 +442,9 @@ int speedtest_upload(speedtest_t *st)
         const profile_t *prof = &profiles[p];
 
         /* Get upload payload */
-        char *payload = get_upload_payload(prof->bytes);
+        char *payload = get_upload_payload((size_t)prof->bytes);
         if (!payload) {
+            current_run += prof->runs;
             continue;
         }
 
@@ -460,6 +464,7 @@ int speedtest_upload(speedtest_t *st)
             double mbps = measure_upload(&st->conn, st->config->server_url,
                                         prof->name, payload, prof->bytes, r, &sample);
 
+            current_run++;
             if (mbps > 0) {
                 if (st->results.throughput_count < MAX_SAMPLES) {
                     st->results.throughput_samples[st->results.throughput_count++] = sample;
@@ -471,9 +476,11 @@ int speedtest_upload(speedtest_t *st)
                     estimated_speed = stats_p90(all_speeds, speed_count);
                 }
 
-                report_progress(st, "upload", ++current_run, total_runs, mbps);
+                report_progress(st, "upload", current_run, total_runs, mbps);
             } else {
-                current_run++;
+                /* Still report progress on failure so UI doesn't appear stuck */
+                report_progress(st, "upload", current_run, total_runs,
+                               speed_count > 0 ? estimated_speed : 0);
             }
         }
     }
