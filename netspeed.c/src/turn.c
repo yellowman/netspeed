@@ -679,7 +679,7 @@ int turn_send(turn_conn_t *conn, const void *data, size_t len)
 
     /* Channel data format: 4-byte header + data */
     size_t padded_len = (len + 3) & ~3;
-    uint8_t *buf = malloc(4 + padded_len);
+    uint8_t *buf = calloc(1, 4 + padded_len);  /* Zero-init to avoid leaking heap data in padding */
     if (!buf) {
         return TURN_ERR_NETWORK;
     }
