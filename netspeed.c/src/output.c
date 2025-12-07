@@ -127,7 +127,7 @@ void output_progress(const output_t *out, const char *phase,
         return;
     }
 
-    double percent = (double)current / (double)total;
+    double percent = (total > 0) ? (double)current / (double)total : 0.0;
     char bar[32];
     progress_bar(percent, 20, bar, sizeof(bar));
 

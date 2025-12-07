@@ -454,9 +454,9 @@ static int receive_response(http_conn_t *conn, http_response_t *response,
                 ssize_t n = conn_read(conn, read_buf, to_read);
                 if (n <= 0) break;
 
-                memcpy(response->body + response->body_len, read_buf, n);
-                response->body_len += n;
-                read_total += n;
+                memcpy(response->body + response->body_len, read_buf, (size_t)n);
+                response->body_len += (size_t)n;
+                read_total += (size_t)n;
             }
 
             /* Read trailing CRLF */
