@@ -50,15 +50,12 @@ const (
 	WriteBufferSize = 4 * 1024 * 1024 // 4MB write buffer
 )
 
-// UserAgent mimics a browser to pass Cloudflare bot detection
-const UserAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+// UserAgent identifies the client (cloudflarepycli uses default python-requests UA)
+const UserAgent = "netspeed/1.0"
 
-// setBrowserHeaders adds browser-like headers to bypass Cloudflare bot detection
-func setBrowserHeaders(req *http.Request) {
+// setRequestHeaders adds minimal headers like cloudflarepycli does
+func setRequestHeaders(req *http.Request) {
 	req.Header.Set("User-Agent", UserAgent)
-	req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8")
-	req.Header.Set("Accept-Language", "en-US,en;q=0.9")
-	req.Header.Set("Accept-Encoding", "gzip, deflate, br")
 }
 
 // Time budget constants (matching web client)
@@ -189,7 +186,7 @@ func (c *Client) fetchMeta(ctx context.Context) (*Meta, error) {
 	if err != nil {
 		return nil, err
 	}
-	setBrowserHeaders(req)
+	setRequestHeaders(req)
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
@@ -366,7 +363,7 @@ func (c *Client) quickBandwidthEstimate(ctx context.Context) float64 {
 	if err != nil {
 		return 0
 	}
-	setBrowserHeaders(req)
+	setRequestHeaders(req)
 	req.Header.Set("Cache-Control", "no-store")
 
 	start := time.Now()
@@ -399,7 +396,7 @@ func (c *Client) measureLatency(ctx context.Context, phase string, seq int) (tim
 	if err != nil {
 		return 0, err
 	}
-	setBrowserHeaders(req)
+	setRequestHeaders(req)
 	req.Header.Set("Cache-Control", "no-store")
 
 	resp, err := c.httpClient.Do(req)
@@ -735,7 +732,7 @@ func (c *Client) measureDownload(ctx context.Context, profileName string, numByt
 	if err != nil {
 		return ThroughputSample{}, err
 	}
-	setBrowserHeaders(req)
+	setRequestHeaders(req)
 	req.Header.Set("Cache-Control", "no-store")
 
 	resp, err := c.httpClient.Do(req)
@@ -852,7 +849,7 @@ func (c *Client) measureUpload(ctx context.Context, profileName string, payload 
 	if err != nil {
 		return ThroughputSample{}, err
 	}
-	setBrowserHeaders(req)
+	setRequestHeaders(req)
 	req.Header.Set("Content-Type", "application/octet-stream")
 	req.ContentLength = int64(len(payload))
 
