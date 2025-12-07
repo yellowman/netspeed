@@ -57,7 +57,8 @@ const UserAgent = "python-requests/2.32.0"
 func setRequestHeaders(req *http.Request) {
 	req.Header.Set("User-Agent", UserAgent)
 	req.Header.Set("Accept", "*/*")
-	req.Header.Set("Accept-Encoding", "gzip, deflate")
+	req.Header.Set("Accept-Encoding", "identity")
+	req.Header.Set("Connection", "keep-alive")
 }
 
 // Time budget constants (matching web client)
@@ -106,8 +107,8 @@ func New(cfg Config) *Client {
 				MaxIdleConnsPerHost:   100,
 				MaxConnsPerHost:       100,
 				IdleConnTimeout:       90 * time.Second,
-				DisableCompression:    true, // Important for accurate bandwidth measurement
-				ForceAttemptHTTP2:     true,
+				DisableCompression:    true,  // Important for accurate bandwidth measurement
+				ForceAttemptHTTP2:     false, // Use HTTP/1.1 like python-requests
 				ReadBufferSize:        ReadBufferSize,
 				WriteBufferSize:       WriteBufferSize,
 				ResponseHeaderTimeout: 30 * time.Second,
