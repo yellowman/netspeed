@@ -303,6 +303,9 @@ int speedtest_latency(speedtest_t *st, const char *phase, int count)
         return ERR_NETWORK;
     }
 
+    /* Sort array for statistics (stats_median expects sorted array) */
+    stats_sort(rtts, valid_count);
+
     /* Compute statistics */
     double median = stats_median(rtts, valid_count);
 

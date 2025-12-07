@@ -269,6 +269,7 @@ func (c *Client) runPacketLossTestWebRTC(ctx context.Context) (*PacketLossResult
 	// Step 8: Send packets
 	const numPackets = 1000
 	const intervalMs = 10
+	actualSent := 0
 
 	for seq := 0; seq < numPackets; seq++ {
 		select {
@@ -300,6 +301,7 @@ func (c *Client) runPacketLossTestWebRTC(ctx context.Context) (*PacketLossResult
 			continue
 		}
 		sendTimes[seq] = time.Now()
+		actualSent++
 
 		if c.cfg.OnProgress != nil {
 			c.cfg.OnProgress("packet-loss", seq+1, numPackets, 0)
@@ -316,9 +318,11 @@ calculateResults:
 	ackMu.Lock()
 	defer ackMu.Unlock()
 
-	result.Sent = numPackets
+	result.Sent = actualSent
 	result.Received = len(acks)
-	result.LossPercent = float64(numPackets-len(acks)) / float64(numPackets) * 100
+	if actualSent > 0 {
+		result.LossPercent = float64(actualSent-len(acks)) / float64(actualSent) * 100
+	}
 
 	// Calculate RTT statistics
 	var rtts []float64

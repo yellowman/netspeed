@@ -428,11 +428,14 @@ static int receive_response(http_conn_t *conn, http_response_t *response,
 
             /* Grow buffer if needed */
             while (response->body_len + chunk_size + 1 > response->body_cap) {
-                response->body_cap *= 2;
-                response->body = realloc(response->body, response->body_cap);
-                if (!response->body) {
+                size_t new_cap = response->body_cap * 2;
+                char *new_body = realloc(response->body, new_cap);
+                if (!new_body) {
+                    /* Keep original buffer for cleanup by caller */
                     return ERR_MEMORY;
                 }
+                response->body = new_body;
+                response->body_cap = new_cap;
             }
 
             /* Read chunk data */

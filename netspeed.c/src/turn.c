@@ -672,9 +672,17 @@ int turn_send(turn_conn_t *conn, const void *data, size_t len)
         return TURN_ERR_PROTOCOL;
     }
 
+    /* Limit max send size to prevent excessive allocation */
+    if (len > 65535) {
+        return TURN_ERR_PROTOCOL;
+    }
+
     /* Channel data format: 4-byte header + data */
-    uint8_t buf[4 + len];
     size_t padded_len = (len + 3) & ~3;
+    uint8_t *buf = malloc(4 + padded_len);
+    if (!buf) {
+        return TURN_ERR_NETWORK;
+    }
 
     buf[0] = (conn->channel >> 8) & 0xFF;
     buf[1] = conn->channel & 0xFF;
@@ -683,6 +691,7 @@ int turn_send(turn_conn_t *conn, const void *data, size_t len)
     memcpy(buf + 4, data, len);
 
     ssize_t n = send(conn->sock, buf, 4 + padded_len, 0);
+    free(buf);
     return (n > 0) ? TURN_OK : TURN_ERR_NETWORK;
 }
 
@@ -698,11 +707,23 @@ ssize_t turn_recv(turn_conn_t *conn, void *data, size_t max_len, int timeout_ms)
         return 0;
     }
 
-    uint8_t buf[4 + max_len];
-    ssize_t n = recv(conn->sock, buf, sizeof(buf), 0);
-    if (n < 4) {
+    /* Limit max receive size to prevent excessive allocation */
+    if (max_len > 65535) {
+        max_len = 65535;
+    }
+
+    uint8_t *buf = malloc(4 + max_len);
+    if (!buf) {
         return -1;
     }
+
+    ssize_t n = recv(conn->sock, buf, 4 + max_len, 0);
+    if (n < 4) {
+        free(buf);
+        return -1;
+    }
+
+    ssize_t result = -1;
 
     /* Check if this is channel data or STUN message */
     if ((buf[0] & 0xC0) == 0x40) {
@@ -710,7 +731,7 @@ ssize_t turn_recv(turn_conn_t *conn, void *data, size_t max_len, int timeout_ms)
         uint16_t len = (buf[2] << 8) | buf[3];
         if (len > max_len) len = max_len;
         memcpy(data, buf + 4, len);
-        return len;
+        result = len;
     } else if ((buf[0] & 0xC0) == 0x00) {
         /* STUN message - could be Data indication */
         if (n >= 20) {
@@ -720,12 +741,13 @@ ssize_t turn_recv(turn_conn_t *conn, void *data, size_t max_len, int timeout_ms)
                 size_t copy_len = attr_len;
                 if (copy_len > max_len) copy_len = max_len;
                 memcpy(data, attr, copy_len);
-                return copy_len;
+                result = copy_len;
             }
         }
     }
 
-    return -1;
+    free(buf);
+    return result;
 }
 
 int turn_refresh(turn_conn_t *conn)
