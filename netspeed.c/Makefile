@@ -8,13 +8,13 @@
 # The crypto_compat.h header provides compatibility between OpenSSL and LibreSSL.
 
 CC ?= cc
-CFLAGS = -Wall -Wextra -Werror -O2 -std=c11 -D_POSIX_C_SOURCE=200809L
+CFLAGS = -Wall -Wextra -Werror -O2 -std=c11
 LDFLAGS = -lssl -lcrypto -lm
 
 # Platform detection
 UNAME := $(shell uname -s)
 ifeq ($(UNAME),Linux)
-    CFLAGS += -D_GNU_SOURCE
+    CFLAGS += -D_POSIX_C_SOURCE=200809L -D_GNU_SOURCE
     LDFLAGS += -lpthread
 endif
 ifeq ($(UNAME),FreeBSD)
@@ -24,7 +24,7 @@ ifeq ($(UNAME),FreeBSD)
 endif
 ifeq ($(UNAME),OpenBSD)
     # LibreSSL is in base system (/usr/include, /usr/lib)
-    # No -I or -L flags needed for crypto
+    # Don't define _POSIX_C_SOURCE - it hides BSD functions like gethostbyname
     LDFLAGS += -lpthread
 endif
 ifeq ($(UNAME),NetBSD)
