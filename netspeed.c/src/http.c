@@ -248,25 +248,27 @@ static int send_request(http_conn_t *conn, const char *method,
     char header[4096];
     int header_len;
 
-    /* Simple User-Agent like cloudflarepycli uses */
+    /* Headers matching python-requests library defaults */
     if (body && body_len > 0) {
         header_len = snprintf(header, sizeof(header),
             "%s %s HTTP/1.1\r\n"
             "Host: %s\r\n"
-            "User-Agent: netspeed/1.0\r\n"
+            "User-Agent: python-requests/2.32.0\r\n"
+            "Accept: */*\r\n"
+            "Accept-Encoding: identity\r\n"
             "Connection: keep-alive\r\n"
             "Content-Type: application/octet-stream\r\n"
             "Content-Length: %zu\r\n"
-            "Cache-Control: no-store\r\n"
             "\r\n",
             method, path, conn->host, body_len);
     } else {
         header_len = snprintf(header, sizeof(header),
             "%s %s HTTP/1.1\r\n"
             "Host: %s\r\n"
-            "User-Agent: netspeed/1.0\r\n"
+            "User-Agent: python-requests/2.32.0\r\n"
+            "Accept: */*\r\n"
+            "Accept-Encoding: identity\r\n"
             "Connection: keep-alive\r\n"
-            "Cache-Control: no-store\r\n"
             "\r\n",
             method, path, conn->host);
     }

@@ -50,12 +50,14 @@ const (
 	WriteBufferSize = 4 * 1024 * 1024 // 4MB write buffer
 )
 
-// UserAgent identifies the client (cloudflarepycli uses default python-requests UA)
-const UserAgent = "netspeed/1.0"
+// UserAgent matches python-requests default format
+const UserAgent = "python-requests/2.32.0"
 
-// setRequestHeaders adds minimal headers like cloudflarepycli does
+// setRequestHeaders adds headers matching python requests library defaults
 func setRequestHeaders(req *http.Request) {
 	req.Header.Set("User-Agent", UserAgent)
+	req.Header.Set("Accept", "*/*")
+	req.Header.Set("Accept-Encoding", "gzip, deflate")
 }
 
 // Time budget constants (matching web client)
