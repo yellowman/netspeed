@@ -173,14 +173,17 @@ func (c *Client) runPacketLossTestWebRTC(ctx context.Context) (*PacketLossResult
 	// Step 4: Set up ack collection
 	result := &PacketLossResult{}
 	sendTimes := make(map[int]time.Time)
+	recvTimes := make(map[int]time.Time) // Record when each ack was received
 	acks := make(map[int]ackMessage)
 	var ackMu sync.Mutex
 
 	dc.OnMessage(func(msg webrtc.DataChannelMessage) {
+		recvTime := time.Now() // Capture receive time immediately
 		var ack ackMessage
 		if err := json.Unmarshal(msg.Data, &ack); err == nil {
 			ackMu.Lock()
 			acks[ack.Seq] = ack
+			recvTimes[ack.Seq] = recvTime
 			ackMu.Unlock()
 		}
 	})
@@ -319,20 +322,13 @@ calculateResults:
 
 	// Calculate RTT statistics
 	var rtts []float64
-	for seq, ack := range acks {
-		if sendTime, ok := sendTimes[seq]; ok {
-			// Calculate RTT from local send time to local receive time of ack
-			rtt := float64(time.Now().UnixMilli()-ack.SentAt) / 2 // Approximate
-			// Better: use the difference between send and receive at server
-			if ack.RecvAt > 0 {
-				// Server-measured RTT approximation
-				rtt = float64(ack.RecvAt-ack.SentAt) * 2
-			}
-			// Even better: use actual round-trip
-			actualRTT := float64(time.Since(sendTime).Milliseconds())
-			if actualRTT > 0 && actualRTT < 30000 { // Sanity check
-				rtts = append(rtts, actualRTT)
-			} else if rtt > 0 {
+	for seq := range acks {
+		sendTime, hasSend := sendTimes[seq]
+		recvTime, hasRecv := recvTimes[seq]
+		if hasSend && hasRecv {
+			// RTT = receive time - send time (actual round-trip measurement)
+			rtt := float64(recvTime.Sub(sendTime).Milliseconds())
+			if rtt > 0 && rtt < 30000 { // Sanity check
 				rtts = append(rtts, rtt)
 			}
 		}

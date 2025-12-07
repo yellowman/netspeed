@@ -1,6 +1,6 @@
 # Binaries
 netspeedd
-netspeed
+/netspeed
 *.exe
 
 # IDE
