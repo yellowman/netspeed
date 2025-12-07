@@ -30,9 +30,9 @@ type packetMessage struct {
 
 // Ack message format (received from server)
 type ackMessage struct {
-	Seq    int   `json:"seq"`
+	Seq    int   `json:"ack"`        // Server sends "ack" field
 	SentAt int64 `json:"sentAt"`
-	RecvAt int64 `json:"recvAt"`
+	RecvAt int64 `json:"receivedAt"` // Server sends "receivedAt" field
 }
 
 // Signaling request/response
