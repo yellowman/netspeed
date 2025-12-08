@@ -114,6 +114,7 @@ int turn_fetch_credentials(const char *base_url, turn_creds_t *creds)
     int err = http_connect(&conn, parsed.host, parsed.port,
                            strcmp(parsed.scheme, "https") == 0);
     if (err != 0) {
+        http_conn_cleanup(&conn);
         return err;
     }
 
@@ -122,7 +123,7 @@ int turn_fetch_credentials(const char *base_url, turn_creds_t *creds)
     char path[512];
     snprintf(path, sizeof(path), "/api/turn/credentials");
     err = http_get(&conn, path, &resp);
-    http_disconnect(&conn);
+    http_conn_cleanup(&conn);
 
     if (err != 0 || resp.status_code != 200) {
         http_response_free(&resp);
