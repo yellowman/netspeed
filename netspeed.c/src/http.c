@@ -27,8 +27,8 @@
 /* Initial response buffer size */
 #define INITIAL_BUF_SIZE 4096
 
-/* Read buffer for body transfer */
-static char read_buf[READ_BUFFER_SIZE];
+/* Read buffer for body transfer (static, used for large reads) */
+static char body_read_buf[READ_BUFFER_SIZE];
 
 void ssl_init(void)
 {
@@ -113,6 +113,17 @@ void http_conn_init(http_conn_t *conn)
 {
     memset(conn, 0, sizeof(*conn));
     conn->sockfd = -1;
+
+    /* Allocate read buffer matching system buffer size for optimal performance */
+    conn->read_buf_size = READ_BUFFER_SIZE;  /* 4MB - matches SO_RCVBUF */
+    conn->read_buf = malloc(conn->read_buf_size);
+    if (!conn->read_buf) {
+        /* Fallback to smaller buffer if allocation fails */
+        conn->read_buf_size = 64 * 1024;  /* 64KB fallback */
+        conn->read_buf = malloc(conn->read_buf_size);
+    }
+    conn->read_pos = 0;
+    conn->read_len = 0;
 }
 
 int http_connect(http_conn_t *conn, const char *host, int port, bool https)
@@ -123,6 +134,19 @@ int http_connect(http_conn_t *conn, const char *host, int port, bool https)
 
     /* Disconnect if already connected */
     http_disconnect(conn);
+
+    /* Ensure read buffer is allocated (may have been freed by disconnect) */
+    if (!conn->read_buf) {
+        conn->read_buf_size = READ_BUFFER_SIZE;
+        conn->read_buf = malloc(conn->read_buf_size);
+        if (!conn->read_buf) {
+            conn->read_buf_size = 64 * 1024;
+            conn->read_buf = malloc(conn->read_buf_size);
+            if (!conn->read_buf) {
+                return ERR_MEMORY;
+            }
+        }
+    }
 
     snprintf(port_str, sizeof(port_str), "%d", port);
 
@@ -220,9 +244,21 @@ void http_disconnect(http_conn_t *conn)
 
     conn->connected = false;
 
-    /* Clear read buffer */
+    /* Clear buffer state but keep buffer allocated for reuse */
     conn->read_pos = 0;
     conn->read_len = 0;
+}
+
+/* Free all resources including read buffer (call when done with connection) */
+void http_conn_cleanup(http_conn_t *conn)
+{
+    http_disconnect(conn);
+
+    if (conn->read_buf) {
+        free(conn->read_buf);
+        conn->read_buf = NULL;
+        conn->read_buf_size = 0;
+    }
 }
 
 /* Write data to connection */
@@ -245,28 +281,15 @@ static ssize_t conn_read_raw(http_conn_t *conn, void *buf, size_t len)
     }
 }
 
-/* Read data from connection (buffered for header parsing, then raw for body) */
-static ssize_t conn_read(http_conn_t *conn, void *buf, size_t len)
-{
-    /* If buffer has data, use it first */
-    if (conn->read_pos < conn->read_len) {
-        size_t avail = conn->read_len - conn->read_pos;
-        size_t to_copy = (len < avail) ? len : avail;
-        memcpy(buf, conn->read_buf + conn->read_pos, to_copy);
-        conn->read_pos += to_copy;
-        return (ssize_t)to_copy;
-    }
-
-    /* Buffer empty, read directly for large reads */
-    return conn_read_raw(conn, buf, len);
-}
-
-/* Read a single byte from buffered connection (for header parsing) */
+/* Read a single byte using buffered I/O (for efficient header parsing) */
 static int conn_read_byte(http_conn_t *conn, char *c)
 {
     /* Refill buffer if empty */
     if (conn->read_pos >= conn->read_len) {
-        ssize_t n = conn_read_raw(conn, conn->read_buf, CONN_READ_BUF_SIZE);
+        if (!conn->read_buf) {
+            return -1;
+        }
+        ssize_t n = conn_read_raw(conn, conn->read_buf, conn->read_buf_size);
         if (n <= 0) {
             return -1;
         }
@@ -278,6 +301,22 @@ static int conn_read_byte(http_conn_t *conn, char *c)
     return 0;
 }
 
+/* Read from connection buffer first, then raw (for body after headers) */
+static ssize_t conn_read(http_conn_t *conn, void *buf, size_t len)
+{
+    /* If connection buffer has leftover data, use it first */
+    if (conn->read_pos < conn->read_len) {
+        size_t avail = conn->read_len - conn->read_pos;
+        size_t to_copy = (len < avail) ? len : avail;
+        memcpy(buf, conn->read_buf + conn->read_pos, to_copy);
+        conn->read_pos += to_copy;
+        return (ssize_t)to_copy;
+    }
+
+    /* Buffer empty, read directly */
+    return conn_read_raw(conn, buf, len);
+}
+
 /* Send HTTP request */
 static int send_request(http_conn_t *conn, const char *method,
                         const char *path, const void *body, size_t body_len,
@@ -286,7 +325,7 @@ static int send_request(http_conn_t *conn, const char *method,
     char header[4096];
     int header_len;
 
-    /* Clear read buffer before new request to discard any stale data */
+    /* Clear read buffer to discard any stale data from previous response */
     conn->read_pos = 0;
     conn->read_len = 0;
 
@@ -425,16 +464,17 @@ static int receive_response(http_conn_t *conn, http_response_t *response,
         size_t total = 0;
         while (total < body_size) {
             size_t to_read = body_size - total;
-            if (to_read > sizeof(read_buf)) {
-                to_read = sizeof(read_buf);
+            if (to_read > sizeof(body_read_buf)) {
+                to_read = sizeof(body_read_buf);
             }
 
-            ssize_t n = conn_read(conn, read_buf, to_read);
+            /* Use conn_read to drain any leftover header buffer data first */
+            ssize_t n = conn_read(conn, body_read_buf, to_read);
             if (n <= 0) {
                 break;
             }
 
-            memcpy(response->body + total, read_buf, (size_t)n);
+            memcpy(response->body + total, body_read_buf, (size_t)n);
             total += (size_t)n;
         }
 
@@ -486,22 +526,22 @@ static int receive_response(http_conn_t *conn, http_response_t *response,
             size_t read_total = 0;
             while (read_total < chunk_size) {
                 size_t to_read = chunk_size - read_total;
-                if (to_read > sizeof(read_buf)) {
-                    to_read = sizeof(read_buf);
+                if (to_read > sizeof(body_read_buf)) {
+                    to_read = sizeof(body_read_buf);
                 }
 
-                ssize_t n = conn_read(conn, read_buf, to_read);
+                ssize_t n = conn_read(conn, body_read_buf, to_read);
                 if (n <= 0) break;
 
-                memcpy(response->body + response->body_len, read_buf, (size_t)n);
+                memcpy(response->body + response->body_len, body_read_buf, (size_t)n);
                 response->body_len += (size_t)n;
                 read_total += (size_t)n;
             }
 
             /* Read trailing CRLF (use conn_read_byte to handle buffer boundaries) */
             char c;
-            conn_read_byte(conn, &c);  /* \r */
-            conn_read_byte(conn, &c);  /* \n */
+            if (conn_read_byte(conn, &c) < 0) break;  /* \r */
+            if (conn_read_byte(conn, &c) < 0) break;  /* \n */
         }
 
         if (response->body) {

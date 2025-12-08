@@ -104,7 +104,7 @@ void speedtest_set_progress(speedtest_t *st, progress_fn fn)
 
 void speedtest_cleanup(speedtest_t *st)
 {
-    http_disconnect(&st->conn);
+    http_conn_cleanup(&st->conn);
 }
 
 const results_t *speedtest_results(const speedtest_t *st)
