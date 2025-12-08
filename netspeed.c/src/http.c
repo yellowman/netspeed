@@ -219,6 +219,10 @@ void http_disconnect(http_conn_t *conn)
     }
 
     conn->connected = false;
+
+    /* Clear read buffer */
+    conn->read_pos = 0;
+    conn->read_len = 0;
 }
 
 /* Write data to connection */
@@ -231,14 +235,47 @@ static ssize_t conn_write(http_conn_t *conn, const void *buf, size_t len)
     }
 }
 
-/* Read data from connection */
-static ssize_t conn_read(http_conn_t *conn, void *buf, size_t len)
+/* Read data from connection (raw, unbuffered) */
+static ssize_t conn_read_raw(http_conn_t *conn, void *buf, size_t len)
 {
     if (conn->is_https) {
         return SSL_read(conn->ssl, buf, len);
     } else {
         return read(conn->sockfd, buf, len);
     }
+}
+
+/* Read data from connection (buffered for header parsing, then raw for body) */
+static ssize_t conn_read(http_conn_t *conn, void *buf, size_t len)
+{
+    /* If buffer has data, use it first */
+    if (conn->read_pos < conn->read_len) {
+        size_t avail = conn->read_len - conn->read_pos;
+        size_t to_copy = (len < avail) ? len : avail;
+        memcpy(buf, conn->read_buf + conn->read_pos, to_copy);
+        conn->read_pos += to_copy;
+        return (ssize_t)to_copy;
+    }
+
+    /* Buffer empty, read directly for large reads */
+    return conn_read_raw(conn, buf, len);
+}
+
+/* Read a single byte from buffered connection (for header parsing) */
+static int conn_read_byte(http_conn_t *conn, char *c)
+{
+    /* Refill buffer if empty */
+    if (conn->read_pos >= conn->read_len) {
+        ssize_t n = conn_read_raw(conn, conn->read_buf, CONN_READ_BUF_SIZE);
+        if (n <= 0) {
+            return -1;
+        }
+        conn->read_pos = 0;
+        conn->read_len = (size_t)n;
+    }
+
+    *c = conn->read_buf[conn->read_pos++];
+    return 0;
 }
 
 /* Send HTTP request */
@@ -248,6 +285,10 @@ static int send_request(http_conn_t *conn, const char *method,
 {
     char header[4096];
     int header_len;
+
+    /* Clear read buffer before new request to discard any stale data */
+    conn->read_pos = 0;
+    conn->read_len = 0;
 
     /* Headers matching python-requests library defaults */
     if (body && body_len > 0) {
@@ -328,11 +369,10 @@ static int receive_response(http_conn_t *conn, http_response_t *response,
     response->body_len = 0;
     response->body_cap = 0;
 
-    /* Read headers byte by byte until we get to body */
+    /* Read headers using buffered I/O (much faster than byte-by-byte syscalls) */
     while (in_headers) {
         char c;
-        ssize_t n = conn_read(conn, &c, 1);
-        if (n <= 0) {
+        if (conn_read_byte(conn, &c) < 0) {
             return ERR_NETWORK;
         }
 
@@ -414,12 +454,11 @@ static int receive_response(http_conn_t *conn, http_response_t *response,
         response->body_len = 0;
 
         while (1) {
-            /* Read chunk size line */
+            /* Read chunk size line using buffered I/O */
             line_len = 0;
             while (1) {
                 char c;
-                ssize_t n = conn_read(conn, &c, 1);
-                if (n <= 0) break;
+                if (conn_read_byte(conn, &c) < 0) break;
                 if (c == '\r') continue;
                 if (c == '\n') break;
                 if (line_len < sizeof(line) - 1) {
