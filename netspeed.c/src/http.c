@@ -27,7 +27,7 @@
 /* Initial response buffer size */
 #define INITIAL_BUF_SIZE 4096
 
-/* Read buffer for body transfer (static, used for large reads) */
+/* Read buffer for body transfer */
 static char body_read_buf[READ_BUFFER_SIZE];
 
 void ssl_init(void)
