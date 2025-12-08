@@ -73,8 +73,16 @@ static const profile_t baseline_upload[] = {
 static char *upload_payload = NULL;
 static size_t upload_payload_size = 0;
 
+/* Maximum upload payload size (1GB) - prevents memory exhaustion */
+#define MAX_UPLOAD_PAYLOAD (1024 * 1024 * 1024)
+
 static char *get_upload_payload(size_t size)
 {
+    /* Cap payload size to prevent memory exhaustion */
+    if (size > MAX_UPLOAD_PAYLOAD) {
+        size = MAX_UPLOAD_PAYLOAD;
+    }
+
     if (upload_payload_size < size) {
         free(upload_payload);
         upload_payload = malloc(size);
@@ -175,9 +183,15 @@ double measure_download(http_conn_t *conn, const char *base_url,
     double duration_ms = timing_diff_ms(&resp.timing.got_first_byte,
                                         &resp.timing.body_done);
 
-    if (duration_ms <= 0) {
-        http_response_free(&resp);
-        return -1;
+    /* Sanity check: with buffered I/O, very small durations are unreliable */
+    if (duration_ms < 1.0) {
+        /* Fall back to full RTT timing for small/fast transfers */
+        duration_ms = timing_diff_ms(&resp.timing.wrote_request,
+                                     &resp.timing.body_done);
+        if (duration_ms <= 0) {
+            http_response_free(&resp);
+            return -1;
+        }
     }
 
     double mbps = bytes_to_mbps(bytes, duration_ms);
@@ -441,15 +455,19 @@ int speedtest_upload(speedtest_t *st)
     for (int p = 0; p < num_profiles && !st->aborted; p++) {
         const profile_t *prof = &profiles[p];
 
-        /* Get upload payload */
-        char *payload = get_upload_payload((size_t)prof->bytes);
+        /* Get upload payload (capped to MAX_UPLOAD_PAYLOAD) */
+        size_t actual_bytes = (size_t)prof->bytes;
+        if (actual_bytes > MAX_UPLOAD_PAYLOAD) {
+            actual_bytes = MAX_UPLOAD_PAYLOAD;
+        }
+        char *payload = get_upload_payload(actual_bytes);
         if (!payload) {
             current_run += prof->runs;
             continue;
         }
 
         /* Check if transfer would exceed time budget */
-        double est_time = estimate_transfer_time_ms(prof->bytes, estimated_speed);
+        double est_time = estimate_transfer_time_ms((int64_t)actual_bytes, estimated_speed);
         if (est_time > MAX_TEST_DURATION_MS * 2) {
             current_run += prof->runs;
             continue;
@@ -462,7 +480,7 @@ int speedtest_upload(speedtest_t *st)
 
             throughput_sample_t sample;
             double mbps = measure_upload(&st->conn, st->config->server_url,
-                                        prof->name, payload, prof->bytes, r, &sample);
+                                        prof->name, payload, actual_bytes, r, &sample);
 
             current_run++;
             if (mbps > 0) {
