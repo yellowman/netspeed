@@ -20,9 +20,6 @@ typedef struct {
     timing_info_t timing;
 } http_response_t;
 
-/* Read buffer size for header parsing (64KB for large headers) */
-#define CONN_READ_BUF_SIZE 65536
-
 /* HTTP connection (persistent) */
 typedef struct {
     int sockfd;
@@ -32,10 +29,11 @@ typedef struct {
     int port;
     bool is_https;
     bool connected;
-    /* Buffered reader for efficient header parsing */
-    char read_buf[CONN_READ_BUF_SIZE];
-    size_t read_pos;   /* Current position in buffer */
-    size_t read_len;   /* Amount of data in buffer */
+    /* Heap-allocated buffered reader (matches system buffer size, thread-safe) */
+    char *read_buf;        /* Allocated in http_conn_init, freed in http_disconnect */
+    size_t read_buf_size;  /* Size of allocated buffer */
+    size_t read_pos;       /* Current position in buffer */
+    size_t read_len;       /* Amount of data in buffer */
 } http_conn_t;
 
 /* URL components */
@@ -65,9 +63,14 @@ void http_conn_init(http_conn_t *conn);
 int http_connect(http_conn_t *conn, const char *host, int port, bool https);
 
 /*
- * Disconnect and cleanup.
+ * Disconnect from server (keeps buffer allocated for reconnect).
  */
 void http_disconnect(http_conn_t *conn);
+
+/*
+ * Full cleanup including freeing read buffer (call when done with connection).
+ */
+void http_conn_cleanup(http_conn_t *conn);
 
 /*
  * HTTP GET request with precise timing.
