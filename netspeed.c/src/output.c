@@ -146,7 +146,7 @@ void output_progress(const output_t *out, const char *phase,
         label[0] -= 32;
     }
 
-    printf("\r%-12s [%s] %3.0f%% %.1f%s", label, bar, percent * 100, value, unit);
+    printf("\r%-12s [%s] %3.0f%% %.1f%s\033[K", label, bar, percent * 100, value, unit);
     fflush(stdout);
 }
 

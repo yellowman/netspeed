@@ -10,6 +10,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 #include <unistd.h>
 #include <errno.h>
 #include <fcntl.h>
@@ -28,6 +29,12 @@
 
 /* Read buffer for body transfer */
 static char read_buf[READ_BUFFER_SIZE];
+
+/* Buffered reader for efficient header parsing (avoids byte-by-byte syscalls) */
+#define HDR_BUF_SIZE 8192
+static char hdr_buf[HDR_BUF_SIZE];
+static size_t hdr_buf_pos = 0;
+static size_t hdr_buf_len = 0;
 
 void ssl_init(void)
 {
@@ -240,6 +247,46 @@ static ssize_t conn_read(http_conn_t *conn, void *buf, size_t len)
     }
 }
 
+/* Clear header buffer (call before each new request) */
+static void hdr_buf_clear(void)
+{
+    hdr_buf_pos = 0;
+    hdr_buf_len = 0;
+}
+
+/* Read a single byte using buffered I/O (for efficient header parsing) */
+static int hdr_read_byte(http_conn_t *conn, char *c)
+{
+    /* Refill buffer if empty */
+    if (hdr_buf_pos >= hdr_buf_len) {
+        ssize_t n = conn_read(conn, hdr_buf, HDR_BUF_SIZE);
+        if (n <= 0) {
+            return -1;
+        }
+        hdr_buf_pos = 0;
+        hdr_buf_len = (size_t)n;
+    }
+
+    *c = hdr_buf[hdr_buf_pos++];
+    return 0;
+}
+
+/* Read from header buffer first, then connection (for body after headers) */
+static ssize_t hdr_buf_read(http_conn_t *conn, void *buf, size_t len)
+{
+    /* If header buffer has leftover data, use it first */
+    if (hdr_buf_pos < hdr_buf_len) {
+        size_t avail = hdr_buf_len - hdr_buf_pos;
+        size_t to_copy = (len < avail) ? len : avail;
+        memcpy(buf, hdr_buf + hdr_buf_pos, to_copy);
+        hdr_buf_pos += to_copy;
+        return (ssize_t)to_copy;
+    }
+
+    /* Buffer empty, read directly */
+    return conn_read(conn, buf, len);
+}
+
 /* Send HTTP request */
 static int send_request(http_conn_t *conn, const char *method,
                         const char *path, const void *body, size_t body_len,
@@ -247,6 +294,9 @@ static int send_request(http_conn_t *conn, const char *method,
 {
     char header[4096];
     int header_len;
+
+    /* Clear header buffer to discard any stale data from previous response */
+    hdr_buf_clear();
 
     if (body && body_len > 0) {
         header_len = snprintf(header, sizeof(header),
@@ -322,11 +372,10 @@ static int receive_response(http_conn_t *conn, http_response_t *response,
     response->body_len = 0;
     response->body_cap = 0;
 
-    /* Read headers byte by byte until we get to body */
+    /* Read headers using buffered I/O (much faster than byte-by-byte syscalls) */
     while (in_headers) {
         char c;
-        ssize_t n = conn_read(conn, &c, 1);
-        if (n <= 0) {
+        if (hdr_read_byte(conn, &c) < 0) {
             return ERR_NETWORK;
         }
 
@@ -377,18 +426,19 @@ static int receive_response(http_conn_t *conn, http_response_t *response,
 
         size_t total = 0;
         while (total < (size_t)content_length) {
-            size_t to_read = content_length - total;
+            size_t to_read = (size_t)content_length - total;
             if (to_read > sizeof(read_buf)) {
                 to_read = sizeof(read_buf);
             }
 
-            ssize_t n = conn_read(conn, read_buf, to_read);
+            /* Use hdr_buf_read to drain any leftover header buffer data first */
+            ssize_t n = hdr_buf_read(conn, read_buf, to_read);
             if (n <= 0) {
                 break;
             }
 
-            memcpy(response->body + total, read_buf, n);
-            total += n;
+            memcpy(response->body + total, read_buf, (size_t)n);
+            total += (size_t)n;
         }
 
         response->body_len = total;
@@ -407,12 +457,11 @@ static int receive_response(http_conn_t *conn, http_response_t *response,
         response->body_len = 0;
 
         while (1) {
-            /* Read chunk size line */
+            /* Read chunk size line using buffered I/O */
             line_len = 0;
             while (1) {
                 char c;
-                ssize_t n = conn_read(conn, &c, 1);
-                if (n <= 0) break;
+                if (hdr_read_byte(conn, &c) < 0) break;
                 if (c == '\r') continue;
                 if (c == '\n') break;
                 if (line_len < sizeof(line) - 1) {
@@ -441,17 +490,18 @@ static int receive_response(http_conn_t *conn, http_response_t *response,
                     to_read = sizeof(read_buf);
                 }
 
-                ssize_t n = conn_read(conn, read_buf, to_read);
+                ssize_t n = hdr_buf_read(conn, read_buf, to_read);
                 if (n <= 0) break;
 
-                memcpy(response->body + response->body_len, read_buf, n);
-                response->body_len += n;
-                read_total += n;
+                memcpy(response->body + response->body_len, read_buf, (size_t)n);
+                response->body_len += (size_t)n;
+                read_total += (size_t)n;
             }
 
-            /* Read trailing CRLF */
-            char crlf[2];
-            conn_read(conn, crlf, 2);
+            /* Read trailing CRLF (use hdr_read_byte to handle buffer boundaries) */
+            char c;
+            if (hdr_read_byte(conn, &c) < 0) break;  /* \r */
+            if (hdr_read_byte(conn, &c) < 0) break;  /* \n */
         }
 
         if (response->body) {

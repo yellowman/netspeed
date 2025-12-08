@@ -120,7 +120,7 @@ func (o *Output) Progress(phase string, current, total int, value float64) {
 	}
 
 	label := strings.Title(phase)
-	fmt.Printf("\r%-12s [%s] %3.0f%% %s", label+":", bar, percent*100, valueStr)
+	fmt.Printf("\r%-12s [%s] %3.0f%% %s\033[K", label+":", bar, percent*100, valueStr)
 }
 
 // ClearProgress clears the progress line.
