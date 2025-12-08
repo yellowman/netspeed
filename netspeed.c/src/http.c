@@ -498,9 +498,10 @@ static int receive_response(http_conn_t *conn, http_response_t *response,
                 read_total += (size_t)n;
             }
 
-            /* Read trailing CRLF */
-            char crlf[2];
-            conn_read(conn, crlf, 2);
+            /* Read trailing CRLF (use conn_read_byte to handle buffer boundaries) */
+            char c;
+            conn_read_byte(conn, &c);  /* \r */
+            conn_read_byte(conn, &c);  /* \n */
         }
 
         if (response->body) {
