@@ -16,70 +16,70 @@ static int cmp_double(const void *a, const void *b)
     return 0;
 }
 
-void stats_sort(double *arr, int n)
+void stats_sort(double *arr, size_t n)
 {
     if (n > 1) {
         qsort(arr, n, sizeof(double), cmp_double);
     }
 }
 
-double stats_percentile(const double *sorted, int n, double p)
+double stats_percentile(const double *sorted, size_t n, double p)
 {
     if (n == 0) return 0.0;
     if (n == 1) return sorted[0];
 
-    double idx = (n - 1) * p / 100.0;
-    int lo = (int)idx;
-    int hi = lo + 1;
+    double idx = (double)(n - 1) * p / 100.0;
+    size_t lo = (size_t)idx;
+    size_t hi = lo + 1;
     if (hi >= n) hi = n - 1;
 
-    double frac = idx - lo;
+    double frac = idx - (double)lo;
     return sorted[lo] * (1.0 - frac) + sorted[hi] * frac;
 }
 
-double stats_median(const double *sorted, int n)
+double stats_median(const double *sorted, size_t n)
 {
     return stats_percentile(sorted, n, 50.0);
 }
 
-double stats_min(const double *arr, int n)
+double stats_min(const double *arr, size_t n)
 {
     if (n == 0) return 0.0;
     double m = arr[0];
-    for (int i = 1; i < n; i++) {
+    for (size_t i = 1; i < n; i++) {
         if (arr[i] < m) m = arr[i];
     }
     return m;
 }
 
-double stats_max(const double *arr, int n)
+double stats_max(const double *arr, size_t n)
 {
     if (n == 0) return 0.0;
     double m = arr[0];
-    for (int i = 1; i < n; i++) {
+    for (size_t i = 1; i < n; i++) {
         if (arr[i] > m) m = arr[i];
     }
     return m;
 }
 
-double stats_mean(const double *arr, int n)
+double stats_mean(const double *arr, size_t n)
 {
     if (n == 0) return 0.0;
     double sum = 0.0;
-    for (int i = 0; i < n; i++) {
+    for (size_t i = 0; i < n; i++) {
         sum += arr[i];
     }
-    return sum / n;
+    return sum / (double)n;
 }
 
-double stats_jitter(const double *sorted, int n)
+double stats_jitter(const double *sorted, size_t n)
 {
     double p90 = stats_percentile(sorted, n, 90.0);
     double p50 = stats_percentile(sorted, n, 50.0);
     return p90 - p50;
 }
 
-double stats_iqr(double *arr, int n)
+double stats_iqr(double *arr, size_t n)
 {
     if (n == 0) return 0.0;
     stats_sort(arr, n);
@@ -88,7 +88,7 @@ double stats_iqr(double *arr, int n)
     return p75 - p25;
 }
 
-double stats_p90(double *arr, int n)
+double stats_p90(double *arr, size_t n)
 {
     if (n == 0) return 0.0;
     stats_sort(arr, n);
@@ -109,7 +109,7 @@ void calculate_summary(results_t *r)
 
     /* Collect download speeds */
     double dl_speeds[MAX_SAMPLES];
-    int dl_count = 0;
+    size_t dl_count = 0;
     for (int i = 0; i < r->throughput_count; i++) {
         if (strcmp(r->throughput_samples[i].direction, "download") == 0) {
             /* Filter samples with duration >= 10ms */
@@ -126,7 +126,7 @@ void calculate_summary(results_t *r)
 
     /* Collect upload speeds */
     double ul_speeds[MAX_SAMPLES];
-    int ul_count = 0;
+    size_t ul_count = 0;
     for (int i = 0; i < r->throughput_count; i++) {
         if (strcmp(r->throughput_samples[i].direction, "upload") == 0) {
             if (r->throughput_samples[i].duration_ms >= 10.0) {
@@ -144,7 +144,7 @@ void calculate_summary(results_t *r)
     double unloaded[MAX_SAMPLES];
     double download_lat[MAX_SAMPLES];
     double upload_lat[MAX_SAMPLES];
-    int unloaded_count = 0, dl_lat_count = 0, ul_lat_count = 0;
+    size_t unloaded_count = 0, dl_lat_count = 0, ul_lat_count = 0;
 
     for (int i = 0; i < r->latency_count; i++) {
         double rtt = r->latency_samples[i].rtt_ms;
@@ -160,9 +160,9 @@ void calculate_summary(results_t *r)
     }
 
     /* Skip first 2 unloaded probes (cold start) */
-    int skip = 2;
+    size_t skip = 2;
     double *unloaded_filtered = unloaded_count > skip ? unloaded + skip : unloaded;
-    int unloaded_filtered_count = unloaded_count > skip ? unloaded_count - skip : unloaded_count;
+    size_t unloaded_filtered_count = unloaded_count > skip ? unloaded_count - skip : unloaded_count;
 
     if (unloaded_filtered_count > 0) {
         stats_sort(unloaded_filtered, unloaded_filtered_count);

@@ -4,6 +4,7 @@ package output
 import (
 	"fmt"
 	"os"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -213,9 +214,10 @@ func (o *Output) verboseDetails(r *client.Results) {
 	}
 
 	if len(unloaded) > 0 {
-		min, max, median := stats(unloaded)
+		min, max, _ := stats(unloaded)
+		med := median(unloaded)
 		fmt.Printf("  Unloaded:   %.1f ms (min: %.1f, max: %.1f, median: %.1f)\n",
-			r.Summary.LatencyUnloadedMs, min, max, median)
+			r.Summary.LatencyUnloadedMs, min, max, med)
 	}
 
 	fmt.Println()
@@ -287,6 +289,22 @@ func stats(values []float64) (min, max, avg float64) {
 
 	avg = sum / float64(len(values))
 	return
+}
+
+func median(values []float64) float64 {
+	if len(values) == 0 {
+		return 0
+	}
+
+	sorted := make([]float64, len(values))
+	copy(sorted, values)
+	sort.Float64s(sorted)
+
+	n := len(sorted)
+	if n%2 == 0 {
+		return (sorted[n/2-1] + sorted[n/2]) / 2
+	}
+	return sorted[n/2]
 }
 
 // Quiet prints minimal output.

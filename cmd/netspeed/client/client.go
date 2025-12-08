@@ -50,6 +50,17 @@ const (
 	WriteBufferSize = 4 * 1024 * 1024 // 4MB write buffer
 )
 
+// UserAgent matches python-requests default format
+const UserAgent = "python-requests/2.32.0"
+
+// setRequestHeaders adds headers matching python requests library defaults
+func setRequestHeaders(req *http.Request) {
+	req.Header.Set("User-Agent", UserAgent)
+	req.Header.Set("Accept", "*/*")
+	req.Header.Set("Accept-Encoding", "identity")
+	req.Header.Set("Connection", "keep-alive")
+}
+
 // Time budget constants (matching web client)
 const (
 	MaxTestDuration     = 4 * time.Second  // Max time for single profile to be selected
@@ -96,8 +107,8 @@ func New(cfg Config) *Client {
 				MaxIdleConnsPerHost:   100,
 				MaxConnsPerHost:       100,
 				IdleConnTimeout:       90 * time.Second,
-				DisableCompression:    true, // Important for accurate bandwidth measurement
-				ForceAttemptHTTP2:     true,
+				DisableCompression:    true,  // Important for accurate bandwidth measurement
+				ForceAttemptHTTP2:     false, // Use HTTP/1.1 like python-requests
 				ReadBufferSize:        ReadBufferSize,
 				WriteBufferSize:       WriteBufferSize,
 				ResponseHeaderTimeout: 30 * time.Second,
@@ -178,6 +189,7 @@ func (c *Client) fetchMeta(ctx context.Context) (*Meta, error) {
 	if err != nil {
 		return nil, err
 	}
+	setRequestHeaders(req)
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
@@ -354,6 +366,7 @@ func (c *Client) quickBandwidthEstimate(ctx context.Context) float64 {
 	if err != nil {
 		return 0
 	}
+	setRequestHeaders(req)
 	req.Header.Set("Cache-Control", "no-store")
 
 	start := time.Now()
@@ -375,7 +388,8 @@ func (c *Client) quickBandwidthEstimate(ctx context.Context) float64 {
 // measureLatency measures a single latency probe using precise timing.
 // RTT = GotFirstResponseByte - WroteRequest (excludes connection setup, TLS, DNS)
 func (c *Client) measureLatency(ctx context.Context, phase string, seq int) (time.Duration, error) {
-	url := fmt.Sprintf("%s/__down?bytes=0&phase=%s&seq=%d", c.cfg.ServerURL, phase, seq)
+	// cloudflarepycli uses just bytes=0 for latency
+	url := fmt.Sprintf("%s/__down?bytes=0", c.cfg.ServerURL)
 
 	// Set up precise timing via httptrace
 	var timing timingInfo
@@ -386,6 +400,7 @@ func (c *Client) measureLatency(ctx context.Context, phase string, seq int) (tim
 	if err != nil {
 		return 0, err
 	}
+	setRequestHeaders(req)
 	req.Header.Set("Cache-Control", "no-store")
 
 	resp, err := c.httpClient.Do(req)
@@ -710,7 +725,8 @@ func (c *Client) runProfiles(ctx context.Context, profiles []profile, direction 
 // measureDownload measures a single download using precise timing.
 // Body transfer time = bodyDone - GotFirstResponseByte (excludes connection, TLS, headers)
 func (c *Client) measureDownload(ctx context.Context, profileName string, numBytes int64, run int) (ThroughputSample, error) {
-	url := fmt.Sprintf("%s/__down?bytes=%d&profile=%s&run=%d", c.cfg.ServerURL, numBytes, profileName, run)
+	// cloudflarepycli uses just bytes parameter
+	url := fmt.Sprintf("%s/__down?bytes=%d", c.cfg.ServerURL, numBytes)
 
 	// Set up precise timing via httptrace
 	var timing timingInfo
@@ -721,6 +737,7 @@ func (c *Client) measureDownload(ctx context.Context, profileName string, numByt
 	if err != nil {
 		return ThroughputSample{}, err
 	}
+	setRequestHeaders(req)
 	req.Header.Set("Cache-Control", "no-store")
 
 	resp, err := c.httpClient.Do(req)
@@ -823,7 +840,8 @@ func (c *Client) runUploadProfiles(ctx context.Context, profiles []profile) ([]T
 // measureUpload measures a single upload using precise timing.
 // Upload time = GotFirstResponseByte - bodyWriteStart
 func (c *Client) measureUpload(ctx context.Context, profileName string, payload []byte, run int) (ThroughputSample, error) {
-	url := fmt.Sprintf("%s/__up?profile=%s&run=%d", c.cfg.ServerURL, profileName, run)
+	// cloudflarepycli uses just POST /__up with no query params
+	url := fmt.Sprintf("%s/__up", c.cfg.ServerURL)
 
 	// Set up precise timing via httptrace
 	var timing timingInfo
@@ -837,6 +855,7 @@ func (c *Client) measureUpload(ctx context.Context, profileName string, payload 
 	if err != nil {
 		return ThroughputSample{}, err
 	}
+	setRequestHeaders(req)
 	req.Header.Set("Content-Type", "application/octet-stream")
 	req.ContentLength = int64(len(payload))
 

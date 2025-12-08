@@ -225,6 +225,10 @@ void http_disconnect(http_conn_t *conn)
     }
 
     conn->connected = false;
+
+    /* Clear static header buffer */
+    hdr_buf_pos = 0;
+    hdr_buf_len = 0;
 }
 
 /* Write data to connection */
@@ -237,7 +241,7 @@ static ssize_t conn_write(http_conn_t *conn, const void *buf, size_t len)
     }
 }
 
-/* Read data from connection */
+/* Read data from connection (raw, unbuffered) */
 static ssize_t conn_read(http_conn_t *conn, void *buf, size_t len)
 {
     if (conn->is_https) {
@@ -298,22 +302,27 @@ static int send_request(http_conn_t *conn, const char *method,
     /* Clear header buffer to discard any stale data from previous response */
     hdr_buf_clear();
 
+    /* Headers matching python-requests library defaults */
     if (body && body_len > 0) {
         header_len = snprintf(header, sizeof(header),
             "%s %s HTTP/1.1\r\n"
             "Host: %s\r\n"
+            "User-Agent: python-requests/2.32.0\r\n"
+            "Accept: */*\r\n"
+            "Accept-Encoding: identity\r\n"
             "Connection: keep-alive\r\n"
             "Content-Type: application/octet-stream\r\n"
             "Content-Length: %zu\r\n"
-            "Cache-Control: no-store\r\n"
             "\r\n",
             method, path, conn->host, body_len);
     } else {
         header_len = snprintf(header, sizeof(header),
             "%s %s HTTP/1.1\r\n"
             "Host: %s\r\n"
+            "User-Agent: python-requests/2.32.0\r\n"
+            "Accept: */*\r\n"
+            "Accept-Encoding: identity\r\n"
             "Connection: keep-alive\r\n"
-            "Cache-Control: no-store\r\n"
             "\r\n",
             method, path, conn->host);
     }
@@ -323,6 +332,9 @@ static int send_request(http_conn_t *conn, const char *method,
         return ERR_NETWORK;
     }
 
+    /* Mark when we start sending body (for upload timing) */
+    timing_mark_wrote_request(timing);
+
     /* Send body if present */
     if (body && body_len > 0) {
         size_t sent = 0;
@@ -331,12 +343,9 @@ static int send_request(http_conn_t *conn, const char *method,
             if (n <= 0) {
                 return ERR_NETWORK;
             }
-            sent += n;
+            sent += (size_t)n;
         }
     }
-
-    /* Mark request written */
-    timing_mark_wrote_request(timing);
 
     return ERR_OK;
 }
@@ -418,15 +427,16 @@ static int receive_response(http_conn_t *conn, http_response_t *response,
 
     /* Read body */
     if (content_length > 0) {
-        response->body = malloc(content_length + 1);
+        size_t body_size = (size_t)content_length;
+        response->body = malloc(body_size + 1);
         if (!response->body) {
             return ERR_MEMORY;
         }
-        response->body_cap = content_length + 1;
+        response->body_cap = body_size + 1;
 
         size_t total = 0;
-        while (total < (size_t)content_length) {
-            size_t to_read = (size_t)content_length - total;
+        while (total < body_size) {
+            size_t to_read = body_size - total;
             if (to_read > sizeof(read_buf)) {
                 to_read = sizeof(read_buf);
             }
@@ -475,11 +485,14 @@ static int receive_response(http_conn_t *conn, http_response_t *response,
 
             /* Grow buffer if needed */
             while (response->body_len + chunk_size + 1 > response->body_cap) {
-                response->body_cap *= 2;
-                response->body = realloc(response->body, response->body_cap);
-                if (!response->body) {
+                size_t new_cap = response->body_cap * 2;
+                char *new_body = realloc(response->body, new_cap);
+                if (!new_body) {
+                    /* Keep original buffer for cleanup by caller */
                     return ERR_MEMORY;
                 }
+                response->body = new_body;
+                response->body_cap = new_cap;
             }
 
             /* Read chunk data */
