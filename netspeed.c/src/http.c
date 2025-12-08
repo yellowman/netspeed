@@ -27,8 +27,9 @@
 /* Initial response buffer size */
 #define INITIAL_BUF_SIZE 4096
 
-/* Read buffer for body transfer (static, used for large reads) */
-static char body_read_buf[READ_BUFFER_SIZE];
+/* Read buffer for body transfer (64KB - smaller static allocation for portability) */
+#define BODY_READ_BUF_SIZE (64 * 1024)
+static char body_read_buf[BODY_READ_BUF_SIZE];
 
 void ssl_init(void)
 {
@@ -464,8 +465,8 @@ static int receive_response(http_conn_t *conn, http_response_t *response,
         size_t total = 0;
         while (total < body_size) {
             size_t to_read = body_size - total;
-            if (to_read > sizeof(body_read_buf)) {
-                to_read = sizeof(body_read_buf);
+            if (to_read > BODY_READ_BUF_SIZE) {
+                to_read = BODY_READ_BUF_SIZE;
             }
 
             /* Use conn_read to drain any leftover header buffer data first */
@@ -526,8 +527,8 @@ static int receive_response(http_conn_t *conn, http_response_t *response,
             size_t read_total = 0;
             while (read_total < chunk_size) {
                 size_t to_read = chunk_size - read_total;
-                if (to_read > sizeof(body_read_buf)) {
-                    to_read = sizeof(body_read_buf);
+                if (to_read > BODY_READ_BUF_SIZE) {
+                    to_read = BODY_READ_BUF_SIZE;
                 }
 
                 ssize_t n = conn_read(conn, body_read_buf, to_read);
