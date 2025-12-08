@@ -286,6 +286,10 @@ static int send_request(http_conn_t *conn, const char *method,
     char header[4096];
     int header_len;
 
+    /* Clear read buffer before new request to discard any stale data */
+    conn->read_pos = 0;
+    conn->read_len = 0;
+
     /* Headers matching python-requests library defaults */
     if (body && body_len > 0) {
         header_len = snprintf(header, sizeof(header),
@@ -450,12 +454,11 @@ static int receive_response(http_conn_t *conn, http_response_t *response,
         response->body_len = 0;
 
         while (1) {
-            /* Read chunk size line */
+            /* Read chunk size line using buffered I/O */
             line_len = 0;
             while (1) {
                 char c;
-                ssize_t n = conn_read(conn, &c, 1);
-                if (n <= 0) break;
+                if (conn_read_byte(conn, &c) < 0) break;
                 if (c == '\r') continue;
                 if (c == '\n') break;
                 if (line_len < sizeof(line) - 1) {
