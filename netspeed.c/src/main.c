@@ -180,6 +180,7 @@ int main(int argc, char *argv[])
     /* Setup signal handlers */
     signal(SIGINT, signal_handler);
     signal(SIGTERM, signal_handler);
+    signal(SIGPIPE, SIG_IGN);  /* Ignore SIGPIPE so write() returns EPIPE */
 
     /* Print header */
     output_header(&out, config.server_url);
