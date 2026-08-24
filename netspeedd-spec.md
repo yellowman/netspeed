@@ -16,6 +16,23 @@ it covers:
 
 ---
 
+phase 1 normative amendment — measurement integrity
+===================================================
+
+phase 1 introduces measurement api version 1. where older examples in this document conflict with this amendment, this amendment controls:
+
+- `/meta` includes `measurementApiVersion: 1` and the configured `maxTransferBytes`.
+- `/__down` and `/__up` return `413 Request Entity Too Large` when a requested or received transfer exceeds `MaxBytes`.
+- successful downloads contain exactly the requested bytes.
+- successful uploads return an exact byte-counted json receipt with the server body-read duration.
+- a request-body read failure is a failed request, not a successful measurement.
+- measurement responses use `Cache-Control: no-store, no-transform`.
+- `Server-Timing` durations preserve fractional milliseconds.
+
+client methodology for sustained loaded latency is phase 2. exact-size directional packet-loss semantics are phase 3. those later concerns are intentionally not folded into the phase 1 wire-contract patch.
+
+---
+
 1. api surface
 ==============
 
@@ -53,7 +70,9 @@ returns per-client metadata similar to `https://speed.cloudflare.com/meta`, typi
   "postalCode": "10001",
   "latitude": 40.73061,
   "longitude": -73.935242,
-  "timezone": "America/New_York"
+  "timezone": "America/New_York",
+  "measurementApiVersion": 1,
+  "maxTransferBytes": 1073741824
 }
 ```
 
@@ -110,10 +129,12 @@ provides binary payloads for:
 
 - status:
   - `200 OK` on success
-  - `400 Bad Request` if `bytes` is invalid or exceeds configured max (or you can clamp it and still return `200`)
+  - `400 Bad Request` if `bytes` is syntactically invalid or negative
+  - `413 Request Entity Too Large` if `bytes` exceeds the configured maximum
 - headers:
   - `Content-Type: application/octet-stream`
   - `Content-Length: <bytes>`
+  - `Cache-Control: no-store, no-transform`
   - optional metadata headers (cf-style):
 
     ```http
@@ -145,14 +166,12 @@ provides binary payloads for:
    - if empty - 0
    - if non-integer - respond `400`
    - if negative - respond `400`
-   - if > `Config.MaxBytes`:
-     - either respond `400`, or
-     - clamp to `Config.MaxBytes` (document whichever you choose)
+   - if > `Config.MaxBytes`, respond `413`
 2. record `start := time.Now()` if `ServerTiming` enabled
 3. write headers (including `Content-Length`)
 4. if `bytes == 0`, write no body and return
 5. otherwise, stream `bytes` bytes using a reusable buffer (see section 3.4)
-6. if `ServerTiming` enabled, compute `durMs := time.Since(start) / time.Millisecond` and set `Server-Timing: app;dur=<durMs>`
+6. if `ServerTiming` is enabled, emit the measured duration with fractional-millisecond precision, for example `Server-Timing: app;dur=0.347`
 
 ---
 
@@ -177,27 +196,34 @@ accepts large request bodies so the client can measure upload throughput and lat
 
 **response**
 
-- status: `200 OK` on success
+- status:
+  - `200 OK` only after the complete in-limit body has been read
+  - `413 Request Entity Too Large` for known or streamed bodies over `MaxBytes`
+  - a non-2xx status for request-body read failures
 - headers:
-  - `Content-Type: application/json` or `text/plain` (client doesn’t care)
-  - optional `Server-Timing: app;dur=<ms>`
-- body:
-  - may be empty or trivial (`{"ok":true}`); client uses only timing
+  - `Content-Type: application/json; charset=utf-8`
+  - `Cache-Control: no-store, no-transform`
+  - optional `Server-Timing: app;dur=<fractional-ms>`
+- body on success:
+
+  ```json
+  {
+    "ok": true,
+    "acceptedBytes": 1000000,
+    "serverDurationNs": 12500000
+  }
+  ```
 
 **behavior**
 
-1. record `start := time.Now()` if `ServerTiming` enabled
-2. read and discard body safely with a limit:
+1. reject a known `Content-Length` above `MaxBytes` before accepting the sample.
+2. read at most `MaxBytes + 1` bytes so a chunked or otherwise unknown-length overrun is observable.
+3. return `413` if the lookahead byte exists; return a non-2xx status on any body-read error.
+4. record the body-read interval at nanosecond precision and include it in the receipt.
+5. log the exact accepted byte count, `measId`, client ip, and duration.
+6. return `200` only when the complete body was accepted.
 
-   ```go
-   n, err := io.Copy(io.Discard, io.LimitReader(r.Body, cfg.MaxBytes))
-   ```
-
-3. log `n`, `measId`, client ip, and duration
-4. write `200` with small body or no body
-5. if `ServerTiming` enabled, add `Server-Timing` as above
-
-the important point: **always** read the request body fully up to a safe limit to avoid leaving connections hanging.
+clients must require `acceptedBytes` to equal the number of bytes they attempted to send before accepting the sample.
 
 ---
 
@@ -469,7 +495,7 @@ handler flow:
            return
        }
        if v > s.cfg.MaxBytes {
-           http.Error(w, "bytes too large", http.StatusBadRequest)
+           http.Error(w, "bytes too large", http.StatusRequestEntityTooLarge)
            return
        }
        nBytes = v
@@ -480,6 +506,7 @@ handler flow:
 3. set headers:
    - `Content-Type`
    - `Content-Length`
+   - `Cache-Control: no-store, no-transform`
    - meta headers built from `MetaProvider` (optionally; or reuse same meta as `/meta`)
 4. if `nBytes == 0`, just `w.WriteHeader(http.StatusOK)` and return
 5. else, stream:
@@ -500,7 +527,7 @@ handler flow:
    }
    ```
 
-6. if `EnableServerTiming`, compute `durMs` and add `Server-Timing` header
+6. if `EnableServerTiming`, add a fractional-millisecond `Server-Timing` value
 
 ---
 
@@ -508,20 +535,17 @@ handler flow:
 
 handler flow:
 
-1. record `start := time.Now()` if `EnableServerTiming`
-2. read request body:
+1. set `Cache-Control: no-store, no-transform`.
+2. reject a known `Content-Length > MaxBytes` with `413`.
+3. record the body-read start, then consume through a helper that reads at most `MaxBytes + 1` and propagates read errors.
+4. return `413` when the helper observes the lookahead byte; return `400` for a malformed/interrupted request body.
+5. compute the exact accepted byte count and body-read duration.
+6. set `Content-Type: application/json; charset=utf-8` and optional fractional `Server-Timing`.
+7. encode the measurement api v1 receipt:
 
-   ```go
-   max := s.cfg.MaxBytes
-   n, err := io.Copy(io.Discard, io.LimitReader(r.Body, max))
-   if err != nil && !errors.Is(err, io.EOF) {
-       // log error; we might still write a 500 or 200 depending on severity
-   }
+   ```json
+   {"ok":true,"acceptedBytes":1000000,"serverDurationNs":12500000}
    ```
-
-3. set `Content-Type: application/json; charset=utf-8`
-4. if `EnableServerTiming`, set `Server-Timing`
-5. write `{"ok":true}` or `204 No Content`
 
 ---
 
@@ -608,7 +632,7 @@ if you want to strictly validate allowed origins, you can:
 3.3 safety limits
 -----------------
 
-- `MaxBytes` must be enforced for both `/__down` and `/__up`
+- `MaxBytes` must be enforced for both `/__down` and `/__up`; over-limit requests return `413`, never a successful truncated sample
 - consider tighter defaults (e.g. 256 MiB) and allow override via config
 - implement server-level rate limiting (ip-based, token bucket) if you plan to expose it publicly
 
@@ -1181,13 +1205,13 @@ from all collected samples:
 
 ```ts
 type Summary = {
-  downloadMbps: number;        // e.g. 90th percentile of download mbps
-  uploadMbps: number;          // 90th percentile of upload mbps
-  latencyUnloadedMs: number;   // median unloaded latency
-  latencyDownloadMs: number;   // 90th percentile during-download
-  latencyUploadMs: number;     // 90th percentile during-upload
-  jitterMs: number;            // jitter estimate (p90 - median or stddev)
-  packetLossPercent: number;   // from webrtc
+  downloadMbps: number | null;        // e.g. 90th percentile of valid download samples
+  uploadMbps: number | null;          // 90th percentile of valid upload samples
+  latencyUnloadedMs: number | null;   // median unloaded latency
+  latencyDownloadMs: number | null;   // 90th percentile during-download
+  latencyUploadMs: number | null;     // 90th percentile during-upload
+  jitterMs: number | null;            // jitter estimate (p90 - median or stddev)
+  packetLossPercent: number | null;   // unavailable is null, never synthetic zero
 };
 ```
 
@@ -1273,7 +1297,8 @@ type ThroughputSample = {
 type PacketLossResult = {
   sent: number;
   received: number;
-  lossPercent: number;
+  lossPercent: number | null;
+  unavailable?: boolean;
   rttStatsMs: {
     min: number;
     median: number;
@@ -1283,16 +1308,16 @@ type PacketLossResult = {
 };
 
 type Summary = {
-  downloadMbps: number;
-  uploadMbps: number;
-  latencyUnloadedMs: number;
-  latencyDownloadMs: number;
-  latencyUploadMs: number;
-  jitterMs: number;
-  packetLossPercent: number;
+  downloadMbps: number | null;
+  uploadMbps: number | null;
+  latencyUnloadedMs: number | null;
+  latencyDownloadMs: number | null;
+  latencyUploadMs: number | null;
+  jitterMs: number | null;
+  packetLossPercent: number | null;
 };
 
-type NetworkQualityGrade = 'Great' | 'Good' | 'Okay' | 'Poor';
+type NetworkQualityGrade = 'Great' | 'Good' | 'Okay' | 'Poor' | 'N/A';
 
 type NetworkQuality = {
   videoStreaming: NetworkQualityGrade;
@@ -1314,6 +1339,8 @@ type Meta = {
   latitude: number;
   longitude: number;
   timezone?: string;
+  measurementApiVersion?: number;
+  maxTransferBytes?: number;
 };
 ```
 

@@ -43,6 +43,24 @@ const SpeedTest = (function() {
         '125GB': { bytes: 125000 * 1000 * 1000, runs: 2 }  // 1s at 1 Tbps
     };
 
+    // The phase-1 browser implementation still buffers transfers in memory.
+    // Keep a conservative local ceiling even when the server allows more;
+    // streaming/concurrent high-rate browser transfers are a later phase.
+    const LOCAL_DOWNLOAD_MAX_BYTES = 100 * 1000 * 1000;
+    const LOCAL_UPLOAD_MAX_BYTES = 50 * 1000 * 1000;
+    const LEGACY_SERVER_MAX_BYTES = 100 * 1000 * 1000;
+
+    let measurementApiVersion = 0;
+    let serverMaxTransferBytes = LEGACY_SERVER_MAX_BYTES;
+
+    function downloadTransferLimit() {
+        return Math.min(serverMaxTransferBytes, LOCAL_DOWNLOAD_MAX_BYTES);
+    }
+
+    function uploadTransferLimit() {
+        return Math.min(serverMaxTransferBytes, LOCAL_UPLOAD_MAX_BYTES);
+    }
+
     // Maximum duration (seconds) for a single test to be included
     // Profiles are selected if their estimated transfer time is under this limit
     // This scales linearly from 128 Kbps to 1 Tbps
@@ -52,19 +70,6 @@ const SpeedTest = (function() {
     // Tests stop when this budget is exhausted
     const TOTAL_DOWNLOAD_DURATION_SECONDS = 8;
     const TOTAL_UPLOAD_DURATION_SECONDS = 8;
-
-    // Uploads are materialized by browser fetch implementations. Keep a hard
-    // client-side memory ceiling until Phase 2 adds portable streaming uploads.
-    const WEB_UPLOAD_MEMORY_LIMIT_BYTES = 100 * 1000 * 1000;
-    const WEB_DOWNLOAD_FALLBACK_MEMORY_LIMIT_BYTES = 100 * 1000 * 1000;
-    const LEGACY_SERVER_TRANSFER_LIMIT_BYTES = 100 * 1000 * 1000;
-    const REQUIRED_UPLOAD_RECEIPT_VERSION = 1;
-    const MAX_UPLOAD_RECEIPT_BYTES = 64 * 1024;
-    const MAX_META_BODY_BYTES = 1024 * 1024;
-    const MAX_LOCATIONS_BODY_BYTES = 1024 * 1024;
-
-    let serverMaxTransferBytes = LEGACY_SERVER_TRANSFER_LIMIT_BYTES;
-    let uploadReceiptVersion = 0;
 
     // Active profiles (set dynamically based on detected speed)
     let DOWNLOAD_PROFILES = {};
@@ -78,94 +83,6 @@ const SpeedTest = (function() {
         packetLossInterval: 10,
         packetLossExtraWait: 3000
     };
-
-    function supportsStreamingResponseBodies() {
-        return typeof Response !== 'undefined' &&
-            Response.prototype &&
-            'body' in Response.prototype &&
-            typeof ReadableStream !== 'undefined';
-    }
-
-    function maxDownloadBytes() {
-        if (supportsStreamingResponseBodies()) {
-            return serverMaxTransferBytes;
-        }
-        return Math.min(serverMaxTransferBytes, WEB_DOWNLOAD_FALLBACK_MEMORY_LIMIT_BYTES);
-    }
-
-    function maxUploadBytes() {
-        return Math.min(serverMaxTransferBytes, WEB_UPLOAD_MEMORY_LIMIT_BYTES);
-    }
-
-    function requiredSuccessfulRuns(total) {
-        return total <= 1 ? total : Math.ceil(total / 2);
-    }
-
-    async function consumeResponseBody(response, expectedBytes) {
-        if (!Number.isSafeInteger(expectedBytes) || expectedBytes < 0) {
-            throw new Error(`Invalid expected response size: ${expectedBytes}`);
-        }
-
-        if (!response.body || typeof response.body.getReader !== 'function') {
-            if (expectedBytes > WEB_DOWNLOAD_FALLBACK_MEMORY_LIMIT_BYTES) {
-                throw new Error(`Streaming response bodies are unavailable; refusing to buffer ${expectedBytes} bytes`);
-            }
-            const received = (await response.arrayBuffer()).byteLength;
-            return received;
-        }
-
-        const reader = response.body.getReader();
-        let received = 0;
-        while (true) {
-            const { done, value } = await reader.read();
-            if (done) break;
-            received += value.byteLength;
-            if (received > expectedBytes) {
-                await reader.cancel('response exceeded expected length');
-                break;
-            }
-        }
-        return received;
-    }
-
-    async function readJSONBody(response, maxBytes) {
-        if (!Number.isSafeInteger(maxBytes) || maxBytes <= 0) {
-            throw new Error(`Invalid JSON response limit: ${maxBytes}`);
-        }
-
-        let bytes;
-        if (!response.body || typeof response.body.getReader !== 'function') {
-            const buffer = await response.arrayBuffer();
-            if (buffer.byteLength > maxBytes) {
-                throw new Error(`JSON response exceeds ${maxBytes} bytes`);
-            }
-            bytes = new Uint8Array(buffer);
-        } else {
-            const reader = response.body.getReader();
-            const chunks = [];
-            let received = 0;
-            while (true) {
-                const { done, value } = await reader.read();
-                if (done) break;
-                received += value.byteLength;
-                if (received > maxBytes) {
-                    await reader.cancel('JSON response exceeded limit');
-                    throw new Error(`JSON response exceeds ${maxBytes} bytes`);
-                }
-                chunks.push(value);
-            }
-
-            bytes = new Uint8Array(received);
-            let offset = 0;
-            for (const chunk of chunks) {
-                bytes.set(chunk, offset);
-                offset += chunk.byteLength;
-            }
-        }
-
-        const text = new TextDecoder().decode(bytes);
-        return JSON.parse(text);
-    }
 
     /**
      * Calculate estimated transfer time in seconds
@@ -182,20 +99,21 @@ const SpeedTest = (function() {
      * Uses linear scaling: include profiles where transfer time < MAX_TEST_DURATION_SECONDS
      */
     function selectDownloadProfiles(estimatedSpeedMbps) {
-        // Always include baseline profiles
-        const profiles = {
-            '100kB': ALL_DOWNLOAD_PROFILES['100kB'],
-            '1MB': ALL_DOWNLOAD_PROFILES['1MB']
-        };
+        const limit = downloadTransferLimit();
+        const profiles = {};
+        for (const name of ['100kB', '1MB']) {
+            const profile = ALL_DOWNLOAD_PROFILES[name];
+            if (profile.bytes <= limit) profiles[name] = profile;
+        }
 
         // Check larger profiles based on estimated transfer time
         const largerProfiles = ['10MB', '25MB', '100MB', '250MB', '500MB', '1GB', '2GB', '5GB', '12GB', '50GB', '100GB', '125GB'];
         for (const name of largerProfiles) {
             const profile = ALL_DOWNLOAD_PROFILES[name];
-            if (!profile) continue;
+            if (!profile || profile.bytes > limit) continue;
 
             const estimatedSeconds = estimateTransferTime(profile.bytes, estimatedSpeedMbps);
-            if (profile.bytes <= maxDownloadBytes() && estimatedSeconds <= MAX_TEST_DURATION_SECONDS) {
+            if (estimatedSeconds <= MAX_TEST_DURATION_SECONDS) {
                 profiles[name] = profile;
             }
         }
@@ -209,20 +127,21 @@ const SpeedTest = (function() {
      * Uses linear scaling: include profiles where transfer time < MAX_TEST_DURATION_SECONDS
      */
     function selectUploadProfiles(estimatedSpeedMbps) {
-        // Always include baseline profiles
-        const profiles = {
-            '100kB': ALL_UPLOAD_PROFILES['100kB'],
-            '1MB': ALL_UPLOAD_PROFILES['1MB']
-        };
+        const limit = uploadTransferLimit();
+        const profiles = {};
+        for (const name of ['100kB', '1MB']) {
+            const profile = ALL_UPLOAD_PROFILES[name];
+            if (profile.bytes <= limit) profiles[name] = profile;
+        }
 
         // Check larger profiles based on estimated transfer time
         const largerProfiles = ['10MB', '25MB', '50MB', '100MB', '250MB', '500MB', '1GB', '2GB', '5GB', '12GB', '50GB', '100GB', '125GB'];
         for (const name of largerProfiles) {
             const profile = ALL_UPLOAD_PROFILES[name];
-            if (!profile) continue;
+            if (!profile || profile.bytes > limit) continue;
 
             const estimatedSeconds = estimateTransferTime(profile.bytes, estimatedSpeedMbps);
-            if (profile.bytes <= maxUploadBytes() && estimatedSeconds <= MAX_TEST_DURATION_SECONDS) {
+            if (estimatedSeconds <= MAX_TEST_DURATION_SECONDS) {
                 profiles[name] = profile;
             }
         }
@@ -251,6 +170,34 @@ const SpeedTest = (function() {
             return (sorted[midIndex - 1] + sorted[midIndex]) / 2;
         }
         return sorted[midIndex];
+    }
+
+    function minimumValidRuns(runs) {
+        return runs >= 3 ? 2 : 1;
+    }
+
+    function requireValidSamples(label, successfulRuns, configuredRuns) {
+        const minimum = minimumValidRuns(configuredRuns);
+        if (successfulRuns < minimum) {
+            throw new Error(`${label} produced ${successfulRuns} valid samples; need at least ${minimum}`);
+        }
+    }
+
+    function validateUploadReceipt(receipt, expectedBytes) {
+        if (receipt?.ok !== true || receipt.acceptedBytes !== expectedBytes ||
+            !Number.isSafeInteger(receipt.serverDurationNs) || receipt.serverDurationNs <= 0) {
+            throw new Error(`Invalid upload receipt for ${expectedBytes} bytes`);
+        }
+        return receipt.serverDurationNs / 1e6;
+    }
+
+    function getMeasurementCapabilities() {
+        return {
+            measurementApiVersion,
+            serverMaxTransferBytes,
+            downloadMaxBytes: downloadTransferLimit(),
+            uploadMaxBytes: uploadTransferLimit()
+        };
     }
 
     // State
@@ -302,12 +249,31 @@ const SpeedTest = (function() {
      */
     async function fetchMeta() {
         const response = await fetch('/meta', { cache: 'no-store' });
-        if (!response.ok) throw new Error(`Failed to fetch metadata: HTTP ${response.status}`);
-        const contentType = (response.headers.get('Content-Type') || '').toLowerCase();
-        if (!contentType.startsWith('application/json')) {
-            throw new Error(`Metadata returned unexpected content type: ${contentType || 'missing'}`);
+        if (!response.ok) throw new Error('Failed to fetch metadata');
+        const meta = await response.json();
+
+        const advertisedVersion = Number(meta.measurementApiVersion || 0);
+        const advertisedMax = Number(meta.maxTransferBytes || 0);
+        if (advertisedVersion >= 1) {
+            if (!Number.isSafeInteger(advertisedMax) || advertisedMax <= 0) {
+                throw new Error('Measurement API v1 did not advertise a valid maxTransferBytes');
+            }
+            measurementApiVersion = advertisedVersion;
+            serverMaxTransferBytes = advertisedMax;
+        } else if (Number.isSafeInteger(advertisedMax) && advertisedMax > 0) {
+            measurementApiVersion = 0;
+            serverMaxTransferBytes = advertisedMax;
+        } else {
+            measurementApiVersion = 0;
+            serverMaxTransferBytes = LEGACY_SERVER_MAX_BYTES;
         }
-        return readJSONBody(response, MAX_META_BODY_BYTES);
+
+        if (downloadTransferLimit() < ALL_DOWNLOAD_PROFILES['100kB'].bytes ||
+            uploadTransferLimit() < ALL_UPLOAD_PROFILES['100kB'].bytes) {
+            throw new Error(`Server transfer limit ${serverMaxTransferBytes} is below the smallest browser profile`);
+        }
+
+        return meta;
     }
 
     /**
@@ -315,12 +281,8 @@ const SpeedTest = (function() {
      */
     async function fetchLocations() {
         const response = await fetch('/locations', { cache: 'no-store' });
-        if (!response.ok) throw new Error(`Failed to fetch locations: HTTP ${response.status}`);
-        const contentType = (response.headers.get('Content-Type') || '').toLowerCase();
-        if (!contentType.startsWith('application/json')) {
-            throw new Error(`Locations returned unexpected content type: ${contentType || 'missing'}`);
-        }
-        return readJSONBody(response, MAX_LOCATIONS_BODY_BYTES);
+        if (!response.ok) throw new Error('Failed to fetch locations');
+        return response.json();
     }
 
     /**
@@ -351,45 +313,45 @@ const SpeedTest = (function() {
      * Run a single download test
      */
     async function runDownload(bytes, profile, runIndex, phase = null) {
-        if (!Number.isSafeInteger(bytes) || bytes < 0 || bytes > maxDownloadBytes()) {
-            throw new Error(`Download size ${bytes} exceeds negotiated maximum ${maxDownloadBytes()}`);
+        if (!Number.isSafeInteger(bytes) || bytes < 0 || bytes > downloadTransferLimit()) {
+            throw new Error(`Download size ${bytes} exceeds the browser/server limit ${downloadTransferLimit()}`);
         }
 
-        const measId = `${Date.now()}-${Math.random().toString(36).slice(2, 11)}`;
-        let url = `/__down?bytes=${bytes}&measId=${measId}&profile=${encodeURIComponent(profile)}&run=${runIndex}`;
-        if (phase) url += `&during=${encodeURIComponent(phase)}`;
+        const measId = `${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+        let url = `/__down?bytes=${bytes}&measId=${measId}&profile=${profile}&run=${runIndex}`;
+        if (phase) url += `&during=${phase}`;
 
+        // Capture start time for manual fallback timing
         const manualStart = performance.now();
+
         const response = await fetch(url, {
             cache: 'no-store',
             signal: abortController?.signal
         });
 
-        if (!response.ok) {
-            const detail = (await response.text()).trim();
-            throw new Error(`Download failed: HTTP ${response.status}${detail ? `: ${detail}` : ''}`);
-        }
-        const contentType = (response.headers.get('Content-Type') || '').toLowerCase();
-        if (!contentType.startsWith('application/octet-stream')) {
-            throw new Error(`Download returned unexpected content type: ${contentType || 'missing'}`);
-        }
-        const contentLength = response.headers.get('Content-Length');
-        if (contentLength !== null && Number(contentLength) !== bytes) {
-            throw new Error(`Download Content-Length ${contentLength}; expected ${bytes}`);
-        }
+        if (!response.ok) throw new Error(`Download failed: ${response.status}`);
 
-        const received = await consumeResponseBody(response, bytes);
-        const manualEnd = performance.now();
+        // Use arrayBuffer() to ensure response is fully received before checking timing
+        const buffer = await response.arrayBuffer();
+        const received = buffer.byteLength;
         if (received !== bytes) {
-            throw new Error(`Download received ${received} bytes; expected ${bytes}`);
+            throw new Error(`Download returned ${received} bytes; expected ${bytes}`);
         }
 
+        const manualEnd = performance.now();
+
+        // Use Resource Timing API to get precise body transfer time
+        // responseStart = first byte received, responseEnd = last byte received
         const timing = await getResourceTiming(url);
         let durationMs;
         let timingSource;
 
         if (timing && timing.responseStart > 0 && timing.responseEnd > 0) {
+            // Body transfer time (excludes connection, TLS, request headers)
             const bodyTime = timing.responseEnd - timing.responseStart;
+
+            // For small/fast downloads, body time may be 0 or near-0.
+            // Fall back to requestStart->responseEnd which includes request overhead but avoids Infinity
             if (bodyTime < 1 && timing.requestStart > 0) {
                 durationMs = timing.responseEnd - timing.requestStart;
                 timingSource = 'resource-timing-full';
@@ -399,9 +361,11 @@ const SpeedTest = (function() {
                 timingSource = 'resource-timing';
                 resourceTimingUsed = true;
             }
+            // If bodyTime < 1 and requestStart is 0, fall through to manual timing
         }
 
         if (!durationMs) {
+            // Fallback: use manual timing (includes connection overhead)
             durationMs = manualEnd - manualStart;
             timingSource = 'manual';
             timingFallbackCount++;
@@ -411,11 +375,17 @@ const SpeedTest = (function() {
             }
         }
 
+        // Final guard against division by zero
+        if (durationMs < 0.1) {
+            durationMs = manualEnd - manualStart;
+            timingSource = 'manual-guard';
+        }
         if (!Number.isFinite(durationMs) || durationMs <= 0) {
-            throw new Error(`Invalid download duration: ${durationMs}`);
+            throw new Error('Download duration was not positive');
         }
 
         const mbps = (received * 8) / (durationMs / 1000) / 1e6;
+
         return {
             ts: Date.now(),
             direction: 'download',
@@ -423,8 +393,7 @@ const SpeedTest = (function() {
             durationMs,
             mbps,
             profile,
-            runIndex,
-            timingSource
+            runIndex
         };
     }
 
@@ -432,64 +401,99 @@ const SpeedTest = (function() {
      * Run a single upload test
      */
     async function runUpload(bytes, profile, runIndex, phase = null) {
-        if (uploadReceiptVersion < REQUIRED_UPLOAD_RECEIPT_VERSION) {
-            throw new Error('Server does not support verified upload receipts');
-        }
-        if (!Number.isSafeInteger(bytes) || bytes < 0 || bytes > maxUploadBytes()) {
-            throw new Error(`Upload size ${bytes} exceeds browser maximum ${maxUploadBytes()}`);
+        if (!Number.isSafeInteger(bytes) || bytes < 0 || bytes > uploadTransferLimit()) {
+            throw new Error(`Upload size ${bytes} exceeds the browser/server limit ${uploadTransferLimit()}`);
         }
 
-        const measId = `${Date.now()}-${Math.random().toString(36).slice(2, 11)}`;
-        let url = `/__up?measId=${measId}&profile=${encodeURIComponent(profile)}&run=${runIndex}`;
-        if (phase) url += `&during=${encodeURIComponent(phase)}`;
+        const measId = `${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+        let url = `/__up?measId=${measId}&profile=${profile}&run=${runIndex}`;
+        if (phase) url += `&during=${phase}`;
 
         const payload = new Uint8Array(bytes);
+
+        // Capture start time for manual fallback timing
+        const manualStart = performance.now();
+
         const response = await fetch(url, {
             method: 'POST',
             body: payload,
             headers: { 'Content-Type': 'application/octet-stream' },
-            cache: 'no-store',
             signal: abortController?.signal
         });
 
-        if (!response.ok) {
-            const detail = (await response.text()).trim();
-            throw new Error(`Upload failed: HTTP ${response.status}${detail ? `: ${detail}` : ''}`);
-        }
-        const contentType = (response.headers.get('Content-Type') || '').toLowerCase();
-        if (!contentType.startsWith('application/json')) {
-            throw new Error(`Upload returned unexpected content type: ${contentType || 'missing'}`);
+        if (!response.ok) throw new Error(`Upload failed: ${response.status}`);
+
+        let receipt = null;
+        if (measurementApiVersion >= 1) {
+            receipt = await response.json();
+            validateUploadReceipt(receipt, bytes);
+        } else {
+            await response.arrayBuffer();
         }
 
-        let receipt;
-        try {
-            receipt = await readJSONBody(response, MAX_UPLOAD_RECEIPT_BYTES);
-        } catch (err) {
-            throw new Error(`Invalid upload receipt: ${err.message}`);
-        }
-        if (!receipt || receipt.ok !== true) {
-            throw new Error('Server rejected upload');
-        }
-        if (receipt.acceptedBytes !== bytes) {
-            throw new Error(`Server accepted ${receipt.acceptedBytes} upload bytes; expected ${bytes}`);
+        const manualEnd = performance.now();
+
+        // Use Resource Timing API for precise timing
+        const timing = await getResourceTiming(url);
+        let durationMs;
+        let timingSource;
+
+        // Measurement API v1 uses the server's exact body-read duration.
+        if (receipt) {
+            durationMs = validateUploadReceipt(receipt, bytes);
+            timingSource = 'upload-receipt';
         }
 
-        const durationMs = Number(receipt.serverDurationNs) / 1e6;
+        // For legacy uploads, prefer Server-Timing if available.
+        // Server-Timing measures server-side: time from request start to body fully received
+        if (!durationMs && timing && timing.serverTiming && timing.serverTiming.length > 0) {
+            const serverDur = timing.serverTiming.find(st => st.name === 'app');
+            if (serverDur && serverDur.duration > 0) {
+                durationMs = serverDur.duration;
+                timingSource = 'server-timing';
+                resourceTimingUsed = true;
+            }
+        }
+
+        // Fallback to Resource Timing requestStart -> responseStart
+        if (!durationMs && timing && timing.requestStart > 0 && timing.responseStart > 0) {
+            durationMs = timing.responseStart - timing.requestStart;
+            timingSource = 'resource-timing';
+            resourceTimingUsed = true;
+        }
+
+        // Last fallback: manual timing
+        if (!durationMs) {
+            durationMs = manualEnd - manualStart;
+            timingSource = 'manual';
+            timingFallbackCount++;
+            if (callbacks.onTimingWarning) {
+                callbacks.onTimingWarning('upload', 'Resource Timing API unavailable');
+            }
+        }
+
+        // Log first few uploads to verify timing source
+        if (runIndex < 2 && profile !== 'warmup') {
+            console.log(`Upload ${profile}/${runIndex}: ${timingSource}`, {
+                durationMs: durationMs.toFixed(1),
+                serverTiming: timing?.serverTiming?.map(st => ({ name: st.name, duration: st.duration }))
+            });
+        }
+
         if (!Number.isFinite(durationMs) || durationMs <= 0) {
-            throw new Error(`Invalid server upload duration: ${receipt.serverDurationNs}`);
+            throw new Error('Upload duration was not positive');
         }
 
-        resourceTimingUsed = true;
-        const mbps = (receipt.acceptedBytes * 8) / (durationMs / 1000) / 1e6;
+        const mbps = (bytes * 8) / (durationMs / 1000) / 1e6;
+
         return {
             ts: Date.now(),
             direction: 'upload',
-            sizeBytes: receipt.acceptedBytes,
+            sizeBytes: bytes,
             durationMs,
             mbps,
             profile,
-            runIndex,
-            timingSource: 'server-receipt'
+            runIndex
         };
     }
 
@@ -507,12 +511,11 @@ const SpeedTest = (function() {
             signal: abortController?.signal
         });
 
-        if (!response.ok) {
-            const detail = (await response.text()).trim();
-            throw new Error(`Latency probe failed: HTTP ${response.status}${detail ? `: ${detail}` : ''}`);
+        if (!response.ok) throw new Error(`Latency probe failed: ${response.status}`);
+        const body = await response.arrayBuffer();
+        if (body.byteLength !== 0) {
+            throw new Error(`Latency probe returned ${body.byteLength} bytes; expected 0`);
         }
-        const received = await consumeResponseBody(response, 0);
-        if (received !== 0) throw new Error(`Latency response contained ${received} bytes; expected 0`);
         const manualEnd = performance.now();
 
         // Try to get more accurate timing from Resource Timing API
@@ -539,6 +542,10 @@ const SpeedTest = (function() {
             if (callbacks.onTimingWarning) {
                 callbacks.onTimingWarning('latency', 'Resource Timing API unavailable');
             }
+        }
+
+        if (!Number.isFinite(rttMs) || rttMs <= 0) {
+            throw new Error('Latency timing was not positive');
         }
 
         // Log first few probes to debug timing source
@@ -599,11 +606,11 @@ const SpeedTest = (function() {
             const start = performance.now();
             const response = await fetch(url, { cache: 'no-store', signal: abortController?.signal });
             if (!response.ok) return 0;
-            const received = await consumeResponseBody(response, bytes);
-            if (received !== bytes) return 0;
+            const body = await response.arrayBuffer();
+            if (body.byteLength !== bytes) return 0;
             const durationMs = performance.now() - start;
-            if (durationMs <= 0) return 0;
-            const mbps = (received * 8) / (durationMs * 1000);
+            if (!Number.isFinite(durationMs) || durationMs <= 0) return 0;
+            const mbps = (bytes * 8) / (durationMs * 1000);
             return mbps;
         } catch {
             return 0;
@@ -643,32 +650,30 @@ const SpeedTest = (function() {
             }
         }
 
-        if (samples.length === 0) {
-            throw new Error('Unloaded latency test produced no valid samples');
-        }
         if (samples.length >= totalProbes) {
             return samples;
         }
 
-        // Calculate median RTT from initial probes
-        const sortedRtts = samples.map(s => s.rttMs).sort((a, b) => a - b);
-        const medianRtt = sortedRtts[Math.floor(sortedRtts.length / 2)];
-
         // Decide batching strategy based on latency and bandwidth
-        let useParallel;
-        if (medianRtt < lowLatencyMs) {
-            // Low latency: definitely fast connection, use parallel
-            useParallel = true;
-            console.log(`Latency: median RTT ${medianRtt.toFixed(1)}ms (low), using parallel mode`);
-        } else if (medianRtt >= highLatencyMs) {
-            // High latency: check bandwidth to distinguish satellite from slow DSL
-            const bandwidth = await quickBandwidthEstimate();
-            useParallel = bandwidth >= minBandwidthMbps;
-            console.log(`Latency: median RTT ${medianRtt.toFixed(1)}ms (high), bandwidth ~${bandwidth.toFixed(1)} Mbps, using ${useParallel ? 'parallel' : 'sequential'} mode`);
-        } else {
-            // Medium latency (50-100ms): typical internet, use parallel
-            useParallel = true;
-            console.log(`Latency: median RTT ${medianRtt.toFixed(1)}ms (medium), using parallel mode`);
+        let useParallel = false;
+        if (samples.length > 0) {
+            const sortedRtts = samples.map(s => s.rttMs).sort((a, b) => a - b);
+            const medianRtt = sortedRtts[Math.floor(sortedRtts.length / 2)];
+
+            if (medianRtt < lowLatencyMs) {
+                // Low latency: definitely fast connection, use parallel
+                useParallel = true;
+                console.log(`Latency: median RTT ${medianRtt.toFixed(1)}ms (low), using parallel mode`);
+            } else if (medianRtt >= highLatencyMs) {
+                // High latency: check bandwidth to distinguish satellite from slow DSL
+                const bandwidth = await quickBandwidthEstimate();
+                useParallel = bandwidth >= minBandwidthMbps;
+                console.log(`Latency: median RTT ${medianRtt.toFixed(1)}ms (high), bandwidth ~${bandwidth.toFixed(1)} Mbps, using ${useParallel ? 'parallel' : 'sequential'} mode`);
+            } else {
+                // Medium latency (50-100ms): typical internet, use parallel
+                useParallel = true;
+                console.log(`Latency: median RTT ${medianRtt.toFixed(1)}ms (medium), using parallel mode`);
+            }
         }
 
         // Phase 2: Run remaining probes (parallel or sequential based on connection quality)
@@ -735,9 +740,11 @@ const SpeedTest = (function() {
             }
         }
 
-        if (samples.length < requiredSuccessfulRuns(totalProbes)) {
-            throw new Error(`Unloaded latency test produced ${samples.length}/${totalProbes} valid samples`);
+        const minimum = Math.min(3, totalProbes);
+        if (samples.length < minimum) {
+            throw new Error(`Unloaded latency produced ${samples.length} valid probes; need at least ${minimum}`);
         }
+
         return samples;
     }
 
@@ -750,63 +757,69 @@ const SpeedTest = (function() {
         const allSamples = [];
 
         // Phase 1: Run all 100kB tests (baseline, always included)
-        const profile100k = ALL_DOWNLOAD_PROFILES['100kB'];
-        const profile1m = ALL_DOWNLOAD_PROFILES['1MB'];
-        const baselineRuns = profile100k.runs + profile1m.runs;
-
-        let successes100k = 0;
-        console.log('Download: running 100kB baseline tests...');
-        for (let i = 0; i < profile100k.runs; i++) {
-            if (abortController?.signal.aborted) break;
-            while (isPaused) await sleep(100);
-
-            try {
-                const sample = await runDownload(profile100k.bytes, '100kB', i);
-                allSamples.push(sample.mbps);
-                results.throughputSamples.push(sample);
-                successes100k++;
-                totalRuns++;
-
-                if (callbacks.onDownloadProgress) {
-                    callbacks.onDownloadProgress('100kB', i + 1, profile100k.runs, sample, totalRuns, baselineRuns);
-                }
-            } catch (err) {
-                console.error(`Download 100kB run ${i} failed:`, err);
-            }
+        const profile100k = ALL_DOWNLOAD_PROFILES['100kB'].bytes <= downloadTransferLimit()
+            ? ALL_DOWNLOAD_PROFILES['100kB'] : null;
+        const profile1m = ALL_DOWNLOAD_PROFILES['1MB'].bytes <= downloadTransferLimit()
+            ? ALL_DOWNLOAD_PROFILES['1MB'] : null;
+        const baselineRuns = (profile100k?.runs || 0) + (profile1m?.runs || 0);
+        if (baselineRuns === 0) {
+            throw new Error('No download profile fits the browser/server transfer limit');
         }
 
-        if (successes100k < requiredSuccessfulRuns(profile100k.runs)) {
-            throw new Error(`Download 100kB profile produced ${successes100k}/${profile100k.runs} valid samples`);
+        const samplesFor100k = [];
+        if (profile100k) {
+            console.log('Download: running 100kB baseline tests...');
+            for (let i = 0; i < profile100k.runs; i++) {
+                if (abortController?.signal.aborted) break;
+                while (isPaused) await sleep(100);
+
+                try {
+                    const sample = await runDownload(profile100k.bytes, '100kB', i);
+                    samplesFor100k.push(sample.mbps);
+                    allSamples.push(sample.mbps);
+                    results.throughputSamples.push(sample);
+                    totalRuns++;
+
+                    if (callbacks.onDownloadProgress) {
+                        callbacks.onDownloadProgress('100kB', i + 1, profile100k.runs, sample, totalRuns, baselineRuns);
+                    }
+                } catch (err) {
+                    console.error(`Download 100kB run ${i} failed:`, err);
+                }
+            }
+            requireValidSamples('Download 100kB baseline', samplesFor100k.length, profile100k.runs);
         }
 
         // Phase 2: Run all 1MB tests (baseline, always included)
         const samplesFor1MB = [];
-        console.log('Download: running 1MB baseline tests...');
-        for (let i = 0; i < profile1m.runs; i++) {
-            if (abortController?.signal.aborted) break;
-            while (isPaused) await sleep(100);
+        if (profile1m) {
+            console.log('Download: running 1MB baseline tests...');
+            for (let i = 0; i < profile1m.runs; i++) {
+                if (abortController?.signal.aborted) break;
+                while (isPaused) await sleep(100);
 
-            try {
-                const sample = await runDownload(profile1m.bytes, '1MB', i);
-                samplesFor1MB.push(sample.mbps);
-                allSamples.push(sample.mbps);
-                results.throughputSamples.push(sample);
-                totalRuns++;
+                try {
+                    const sample = await runDownload(profile1m.bytes, '1MB', i);
+                    samplesFor1MB.push(sample.mbps);
+                    allSamples.push(sample.mbps);
+                    results.throughputSamples.push(sample);
+                    totalRuns++;
 
-                if (callbacks.onDownloadProgress) {
-                    callbacks.onDownloadProgress('1MB', i + 1, profile1m.runs, sample, totalRuns, baselineRuns);
+                    if (callbacks.onDownloadProgress) {
+                        callbacks.onDownloadProgress('1MB', i + 1, profile1m.runs, sample, totalRuns, baselineRuns);
+                    }
+                } catch (err) {
+                    console.error(`Download 1MB run ${i} failed:`, err);
                 }
-            } catch (err) {
-                console.error(`Download 1MB run ${i} failed:`, err);
             }
-        }
-
-        if (samplesFor1MB.length < requiredSuccessfulRuns(profile1m.runs)) {
-            throw new Error(`Download 1MB profile produced ${samplesFor1MB.length}/${profile1m.runs} valid samples`);
+            requireValidSamples('Download 1MB baseline', samplesFor1MB.length, profile1m.runs);
         }
 
         // Phase 3: Estimate sustained speed from 1MB tests (after burst buffers depleted)
-        const estimatedSpeed = estimateSpeed(samplesFor1MB);
+        const estimatedSpeed = estimateSpeed(samplesFor1MB.length > 0 ? samplesFor1MB : samplesFor100k);
+        if (!Number.isFinite(estimatedSpeed) || estimatedSpeed <= 0) {
+            throw new Error('Download baseline did not produce a usable speed estimate');
+        }
         DOWNLOAD_PROFILES = selectDownloadProfiles(estimatedSpeed);
         console.log(`Download: estimated sustained speed ${estimatedSpeed.toFixed(1)} Mbps`);
 
@@ -839,8 +852,6 @@ const SpeedTest = (function() {
                 continue;
             }
 
-            const profileSampleStart = results.throughputSamples.length;
-            let successfulRuns = 0;
             for (let run = 0; run < runs; run++) {
                 if (abortController?.signal.aborted) break;
                 while (isPaused) await sleep(100);
@@ -848,7 +859,6 @@ const SpeedTest = (function() {
                 try {
                     const sample = await runDownload(bytes, profileName, run);
                     results.throughputSamples.push(sample);
-                    successfulRuns++;
                     totalRuns++;
 
                     if (callbacks.onDownloadProgress) {
@@ -860,10 +870,6 @@ const SpeedTest = (function() {
                         callbacks.onError('download', profileName, run, err);
                     }
                 }
-            }
-            if (successfulRuns < requiredSuccessfulRuns(runs)) {
-                results.throughputSamples.splice(profileSampleStart);
-                console.error(`Download ${profileName} profile discarded: ${successfulRuns}/${runs} valid samples`);
             }
         }
 
@@ -880,63 +886,69 @@ const SpeedTest = (function() {
         const allSamples = [];
 
         // Phase 1: Run all 100kB tests (baseline, always included)
-        const profile100k = ALL_UPLOAD_PROFILES['100kB'];
-        const profile1m = ALL_UPLOAD_PROFILES['1MB'];
-        const baselineRuns = profile100k.runs + profile1m.runs;
-
-        let successes100k = 0;
-        console.log('Upload: running 100kB baseline tests...');
-        for (let i = 0; i < profile100k.runs; i++) {
-            if (abortController?.signal.aborted) break;
-            while (isPaused) await sleep(100);
-
-            try {
-                const sample = await runUpload(profile100k.bytes, '100kB', i);
-                allSamples.push(sample.mbps);
-                results.throughputSamples.push(sample);
-                successes100k++;
-                totalRuns++;
-
-                if (callbacks.onUploadProgress) {
-                    callbacks.onUploadProgress('100kB', i + 1, profile100k.runs, sample, totalRuns, baselineRuns);
-                }
-            } catch (err) {
-                console.error(`Upload 100kB run ${i} failed:`, err);
-            }
+        const profile100k = ALL_UPLOAD_PROFILES['100kB'].bytes <= uploadTransferLimit()
+            ? ALL_UPLOAD_PROFILES['100kB'] : null;
+        const profile1m = ALL_UPLOAD_PROFILES['1MB'].bytes <= uploadTransferLimit()
+            ? ALL_UPLOAD_PROFILES['1MB'] : null;
+        const baselineRuns = (profile100k?.runs || 0) + (profile1m?.runs || 0);
+        if (baselineRuns === 0) {
+            throw new Error('No upload profile fits the browser/server transfer limit');
         }
 
-        if (successes100k < requiredSuccessfulRuns(profile100k.runs)) {
-            throw new Error(`Upload 100kB profile produced ${successes100k}/${profile100k.runs} valid samples`);
+        const samplesFor100k = [];
+        if (profile100k) {
+            console.log('Upload: running 100kB baseline tests...');
+            for (let i = 0; i < profile100k.runs; i++) {
+                if (abortController?.signal.aborted) break;
+                while (isPaused) await sleep(100);
+
+                try {
+                    const sample = await runUpload(profile100k.bytes, '100kB', i);
+                    samplesFor100k.push(sample.mbps);
+                    allSamples.push(sample.mbps);
+                    results.throughputSamples.push(sample);
+                    totalRuns++;
+
+                    if (callbacks.onUploadProgress) {
+                        callbacks.onUploadProgress('100kB', i + 1, profile100k.runs, sample, totalRuns, baselineRuns);
+                    }
+                } catch (err) {
+                    console.error(`Upload 100kB run ${i} failed:`, err);
+                }
+            }
+            requireValidSamples('Upload 100kB baseline', samplesFor100k.length, profile100k.runs);
         }
 
         // Phase 2: Run all 1MB tests (baseline, always included)
         const samplesFor1MB = [];
-        console.log('Upload: running 1MB baseline tests...');
-        for (let i = 0; i < profile1m.runs; i++) {
-            if (abortController?.signal.aborted) break;
-            while (isPaused) await sleep(100);
+        if (profile1m) {
+            console.log('Upload: running 1MB baseline tests...');
+            for (let i = 0; i < profile1m.runs; i++) {
+                if (abortController?.signal.aborted) break;
+                while (isPaused) await sleep(100);
 
-            try {
-                const sample = await runUpload(profile1m.bytes, '1MB', i);
-                samplesFor1MB.push(sample.mbps);
-                allSamples.push(sample.mbps);
-                results.throughputSamples.push(sample);
-                totalRuns++;
+                try {
+                    const sample = await runUpload(profile1m.bytes, '1MB', i);
+                    samplesFor1MB.push(sample.mbps);
+                    allSamples.push(sample.mbps);
+                    results.throughputSamples.push(sample);
+                    totalRuns++;
 
-                if (callbacks.onUploadProgress) {
-                    callbacks.onUploadProgress('1MB', i + 1, profile1m.runs, sample, totalRuns, baselineRuns);
+                    if (callbacks.onUploadProgress) {
+                        callbacks.onUploadProgress('1MB', i + 1, profile1m.runs, sample, totalRuns, baselineRuns);
+                    }
+                } catch (err) {
+                    console.error(`Upload 1MB run ${i} failed:`, err);
                 }
-            } catch (err) {
-                console.error(`Upload 1MB run ${i} failed:`, err);
             }
-        }
-
-        if (samplesFor1MB.length < requiredSuccessfulRuns(profile1m.runs)) {
-            throw new Error(`Upload 1MB profile produced ${samplesFor1MB.length}/${profile1m.runs} valid samples`);
+            requireValidSamples('Upload 1MB baseline', samplesFor1MB.length, profile1m.runs);
         }
 
         // Phase 3: Estimate sustained speed from 1MB tests (after burst buffers depleted)
-        const estimatedSpeed = estimateSpeed(samplesFor1MB);
+        const estimatedSpeed = estimateSpeed(samplesFor1MB.length > 0 ? samplesFor1MB : samplesFor100k);
+        if (!Number.isFinite(estimatedSpeed) || estimatedSpeed <= 0) {
+            throw new Error('Upload baseline did not produce a usable speed estimate');
+        }
         UPLOAD_PROFILES = selectUploadProfiles(estimatedSpeed);
         console.log(`Upload: estimated sustained speed ${estimatedSpeed.toFixed(1)} Mbps`);
 
@@ -969,8 +981,6 @@ const SpeedTest = (function() {
                 continue;
             }
 
-            const profileSampleStart = results.throughputSamples.length;
-            let successfulRuns = 0;
             for (let run = 0; run < runs; run++) {
                 if (abortController?.signal.aborted) break;
                 while (isPaused) await sleep(100);
@@ -978,7 +988,6 @@ const SpeedTest = (function() {
                 try {
                     const sample = await runUpload(bytes, profileName, run);
                     results.throughputSamples.push(sample);
-                    successfulRuns++;
                     totalRuns++;
 
                     if (callbacks.onUploadProgress) {
@@ -991,10 +1000,6 @@ const SpeedTest = (function() {
                     }
                 }
             }
-            if (successfulRuns < requiredSuccessfulRuns(runs)) {
-                results.throughputSamples.splice(profileSampleStart);
-                console.error(`Upload ${profileName} profile discarded: ${successfulRuns}/${runs} valid samples`);
-            }
         }
 
         const totalElapsed = (performance.now() - phase4StartTime) / 1000;
@@ -1004,12 +1009,13 @@ const SpeedTest = (function() {
     /**
      * Get the largest available profile from a profiles object
      */
-    function getLargestProfile(profiles, allProfiles) {
+    function getLargestProfile(profiles, allProfiles, maxBytes) {
         // Prefer profiles that exist in the dynamic set, falling back to ALL_*_PROFILES
         const available = Object.keys(profiles).length > 0 ? profiles : allProfiles;
         let largest = null;
         let largestBytes = 0;
         for (const [name, cfg] of Object.entries(available)) {
+            if (cfg.bytes > maxBytes) continue;
             if (cfg.bytes > largestBytes) {
                 largest = { name, bytes: cfg.bytes };
                 largestBytes = cfg.bytes;
@@ -1023,7 +1029,8 @@ const SpeedTest = (function() {
      */
     async function runLatencyDuringDownload() {
         // Use largest available profile to saturate connection
-        const profile = getLargestProfile(DOWNLOAD_PROFILES, ALL_DOWNLOAD_PROFILES);
+        const profile = getLargestProfile(DOWNLOAD_PROFILES, ALL_DOWNLOAD_PROFILES, downloadTransferLimit());
+        if (!profile) throw new Error('No download profile is available for loaded-latency testing');
         const downloadPromise = runDownload(profile.bytes, profile.name, 0, 'download');
 
         // Run latency probes concurrently
@@ -1048,7 +1055,8 @@ const SpeedTest = (function() {
      */
     async function runLatencyDuringUpload() {
         // Use largest available profile to saturate connection
-        const profile = getLargestProfile(UPLOAD_PROFILES, ALL_UPLOAD_PROFILES);
+        const profile = getLargestProfile(UPLOAD_PROFILES, ALL_UPLOAD_PROFILES, uploadTransferLimit());
+        if (!profile) throw new Error('No upload profile is available for loaded-latency testing');
         const uploadPromise = runUpload(profile.bytes, profile.name, 0, 'upload');
 
         // Run latency probes concurrently
@@ -1495,15 +1503,16 @@ const SpeedTest = (function() {
         });
 
         return {
-            downloadMbps: percentile(dlSamples, 90),
-            uploadMbps: percentile(ulSamples, 90),
-            latencyUnloadedMs: percentile(latUnloaded, 50),
-            latencyDownloadMs: percentile(latDownload, 90),
-            latencyUploadMs: percentile(latUpload, 90),
+            downloadMbps: percentileOrNull(dlSamples, 90),
+            uploadMbps: percentileOrNull(ulSamples, 90),
+            latencyUnloadedMs: percentileOrNull(latUnloaded, 50),
+            latencyDownloadMs: percentileOrNull(latDownload, 90),
+            latencyUploadMs: percentileOrNull(latUpload, 90),
             jitterMs: latUnloaded.length > 0
                 ? percentile(latUnloaded, 90) - percentile(latUnloaded, 50)
-                : 0,
-            packetLossPercent: results.packetLoss && !results.packetLoss.unavailable && Number.isFinite(results.packetLoss.lossPercent)
+                : null,
+            packetLossPercent: results.packetLoss && !results.packetLoss.unavailable &&
+                Number.isFinite(results.packetLoss.lossPercent)
                 ? results.packetLoss.lossPercent
                 : null
         };
@@ -1530,12 +1539,8 @@ const SpeedTest = (function() {
     }
 
     function gradeStreaming(s) {
-        if (!Number.isFinite(s.packetLossPercent)) return 'Incomplete';
-        // Ensure we have valid numbers (NaN comparisons always return false)
-        const dl = s.downloadMbps || 0;
-        const lat = isNaN(s.latencyUnloadedMs) ? 999 : s.latencyUnloadedMs;
-        const jit = isNaN(s.jitterMs) ? 999 : s.jitterMs;
-        const loss = s.packetLossPercent;
+        const { downloadMbps: dl, latencyUnloadedMs: lat, jitterMs: jit, packetLossPercent: loss } = s;
+        if (![dl, lat, jit, loss].every(Number.isFinite)) return 'N/A';
 
         if (dl >= 50 && lat <= 25 && jit <= 5 && loss <= 0.5) return 'Great';
         if (dl >= 20 && lat <= 50 && jit <= 15 && loss <= 1.5) return 'Good';
@@ -1544,12 +1549,9 @@ const SpeedTest = (function() {
     }
 
     function gradeGaming(s) {
-        if (!Number.isFinite(s.packetLossPercent)) return 'Incomplete';
         // Gaming requires low latency and jitter
-        const dl = s.downloadMbps || 0;
-        const lat = isNaN(s.latencyUnloadedMs) ? 999 : s.latencyUnloadedMs;
-        const jit = isNaN(s.jitterMs) ? 999 : s.jitterMs;
-        const loss = s.packetLossPercent;
+        const { downloadMbps: dl, latencyUnloadedMs: lat, jitterMs: jit, packetLossPercent: loss } = s;
+        if (![dl, lat, jit, loss].every(Number.isFinite)) return 'N/A';
 
         if (dl >= 25 && lat <= 20 && jit <= 3 && loss <= 0.1) return 'Great';
         if (dl >= 15 && lat <= 40 && jit <= 10 && loss <= 0.5) return 'Good';
@@ -1558,14 +1560,14 @@ const SpeedTest = (function() {
     }
 
     function gradeVideoChatting(s) {
-        if (!Number.isFinite(s.packetLossPercent)) return 'Incomplete';
         // Video chat needs good upload and low latency
-        const dl = s.downloadMbps || 0;
-        const ul = s.uploadMbps || 0;
-        const minSpeed = Math.min(dl, ul);
-        const lat = isNaN(s.latencyUnloadedMs) ? 999 : s.latencyUnloadedMs;
-        const jit = isNaN(s.jitterMs) ? 999 : s.jitterMs;
+        const dl = s.downloadMbps;
+        const ul = s.uploadMbps;
+        const lat = s.latencyUnloadedMs;
+        const jit = s.jitterMs;
         const loss = s.packetLossPercent;
+        if (![dl, ul, lat, jit, loss].every(Number.isFinite)) return 'N/A';
+        const minSpeed = Math.min(dl, ul);
 
         if (minSpeed >= 10 && lat <= 30 && jit <= 5 && loss <= 0.5) return 'Great';
         if (minSpeed >= 5 && lat <= 50 && jit <= 15 && loss <= 1) return 'Good';
@@ -1581,6 +1583,10 @@ const SpeedTest = (function() {
         const sorted = [...arr].sort((a, b) => a - b);
         const idx = Math.ceil((p / 100) * sorted.length) - 1;
         return sorted[Math.max(0, idx)];
+    }
+
+    function percentileOrNull(arr, p) {
+        return arr.length === 0 ? null : percentile(arr, p);
     }
 
     /**
@@ -1792,17 +1798,15 @@ const SpeedTest = (function() {
             return null;
         }
 
-        if (!Number.isFinite(summary.packetLossPercent)) {
-            console.warn('calculateNetworkQualityScore: packet loss unavailable');
+        const downloadMbps = summary.downloadMbps;
+        const latencyMs = summary.latencyUnloadedMs;
+        const jitterMs = summary.jitterMs;
+        const packetLossPercent = summary.packetLossPercent;
+        const downloadVariability = bandwidth.downloadVariability;
+        if (![downloadMbps, latencyMs, jitterMs, packetLossPercent, downloadVariability].every(Number.isFinite)) {
+            console.warn('calculateNetworkQualityScore: incomplete measurements');
             return null;
         }
-
-        // Ensure we have valid numbers (default to safe values if NaN/undefined)
-        const downloadMbps = summary.downloadMbps || 0;
-        const latencyMs = isNaN(summary.latencyUnloadedMs) ? 50 : summary.latencyUnloadedMs;
-        const jitterMs = isNaN(summary.jitterMs) ? 10 : summary.jitterMs;
-        const packetLossPercent = summary.packetLossPercent;
-        const downloadVariability = isNaN(bandwidth.downloadVariability) ? 0.1 : bandwidth.downloadVariability;
 
         // Bandwidth score (0-100)
         const bwScore = Math.min(100,
@@ -2105,19 +2109,6 @@ const SpeedTest = (function() {
             results.meta = meta;
             results.locations = locations;
 
-            if (Number.isSafeInteger(meta.maxTransferBytes) && meta.maxTransferBytes > 0) {
-                serverMaxTransferBytes = meta.maxTransferBytes;
-            } else {
-                serverMaxTransferBytes = LEGACY_SERVER_TRANSFER_LIMIT_BYTES;
-            }
-            uploadReceiptVersion = Number(meta.uploadReceiptVersion) || 0;
-            if (serverMaxTransferBytes < ALL_DOWNLOAD_PROFILES['1MB'].bytes) {
-                throw new Error(`Server transfer limit ${serverMaxTransferBytes} is below the 1MB baseline profile`);
-            }
-            if (uploadReceiptVersion < REQUIRED_UPLOAD_RECEIPT_VERSION) {
-                throw new Error(`Server does not support verified upload receipts (need version ${REQUIRED_UPLOAD_RECEIPT_VERSION})`);
-            }
-
             if (callbacks.onMetaReceived) {
                 callbacks.onMetaReceived(meta, locations);
             }
@@ -2247,7 +2238,7 @@ const SpeedTest = (function() {
     }
 
     // Public API
-    const api = {
+    return {
         setCallbacks,
         start,
         stop,
@@ -2259,29 +2250,14 @@ const SpeedTest = (function() {
         exportResults,
         calculateSummary,
         calculateQuality,
+        validateUploadReceipt,
+        getMeasurementCapabilities,
         fetchMeta,
         fetchLocations,
         DOWNLOAD_PROFILES,
         UPLOAD_PROFILES,
         CONFIG
     };
-
-    // Keep low-level measurement hooks out of the browser API while making the
-    // wire contract directly testable under Node.
-    if (typeof module !== 'undefined' && module.exports) {
-        api.__test = {
-            fetchMeta,
-            fetchLocations,
-            runDownload,
-            runUpload,
-            setServerCapabilities(maxBytes, receiptVersion) {
-                serverMaxTransferBytes = maxBytes;
-                uploadReceiptVersion = receiptVersion;
-            }
-        };
-    }
-
-    return api;
 })();
 
 // Export for module systems

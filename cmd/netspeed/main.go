@@ -1,4 +1,4 @@
-// Command netspeed is the CLI client for a netspeedd measurement server.
+// Command netspeed is a CLI speed test client compatible with netspeed daemon and Cloudflare.
 package main
 
 import (
@@ -37,7 +37,7 @@ func main() {
 		showVersion  bool
 	)
 
-	flag.StringVar(&serverURL, "server", "", "Server URL (default: http://localhost:8080)")
+	flag.StringVar(&serverURL, "server", "", "Server URL (default: auto-detect)")
 	flag.StringVar(&serverURL, "s", "", "Server URL (shorthand)")
 	flag.BoolVar(&jsonOutput, "json", false, "Output results as JSON")
 	flag.BoolVar(&jsonOutput, "j", false, "Output results as JSON (shorthand)")
@@ -60,11 +60,11 @@ func main() {
 
 	flag.Usage = func() {
 		fmt.Fprintf(os.Stderr, "Usage: netspeed [flags] [server-url]\n\n")
-		fmt.Fprintf(os.Stderr, "A command-line speed test client for netspeedd.\n\n")
+		fmt.Fprintf(os.Stderr, "A command-line speed test client compatible with netspeed daemon and Cloudflare.\n\n")
 		fmt.Fprintf(os.Stderr, "Flags:\n")
 		flag.PrintDefaults()
 		fmt.Fprintf(os.Stderr, "\nExamples:\n")
-		fmt.Fprintf(os.Stderr, "  netspeed                           Run test against http://localhost:8080\n")
+		fmt.Fprintf(os.Stderr, "  netspeed                           Run test against default server\n")
 		fmt.Fprintf(os.Stderr, "  netspeed https://speed.example.com Run test against specific server\n")
 		fmt.Fprintf(os.Stderr, "  netspeed --quick                   Quick test with fewer samples\n")
 		fmt.Fprintf(os.Stderr, "  netspeed --json                    Output results as JSON\n")
@@ -85,7 +85,7 @@ func main() {
 
 	// Default server if not specified
 	if serverURL == "" {
-		serverURL = "http://localhost:8080"
+		serverURL = "https://speed.cloudflare.com"
 	}
 
 	// Normalize server URL
@@ -109,11 +109,11 @@ func main() {
 
 	// Create client config
 	cfg := client.Config{
-		ServerURL:      serverURL,
-		Timeout:        timeout,
-		Quick:          quick,
-		DownloadOnly:   downloadOnly,
-		UploadOnly:     uploadOnly,
+		ServerURL:    serverURL,
+		Timeout:      timeout,
+		Quick:        quick,
+		DownloadOnly: downloadOnly,
+		UploadOnly:   uploadOnly,
 		SkipPacketLoss: noPacketLoss,
 		OnProgress: func(phase string, current, total int, value float64) {
 			out.Progress(phase, current, total, value)

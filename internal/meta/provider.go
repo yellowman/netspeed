@@ -10,22 +10,21 @@ import (
 
 // ClientMeta holds per-client metadata for the /meta endpoint.
 type ClientMeta struct {
-	Hostname                   string  `json:"hostname"`
-	ClientIP                   string  `json:"clientIp"`
-	HTTPProtocol               string  `json:"httpProtocol"`
-	ASN                        int     `json:"asn"`
-	ASOrg                      string  `json:"asOrganization"`
-	Colo                       string  `json:"colo"`
-	Country                    string  `json:"country"`
-	City                       string  `json:"city"`
-	Region                     string  `json:"region"`
-	PostalCode                 string  `json:"postalCode"`
-	Latitude                   float64 `json:"latitude"`
-	Longitude                  float64 `json:"longitude"`
-	Timezone                   string  `json:"timezone,omitempty"`
-	MaxTransferBytes           int64   `json:"maxTransferBytes"`
-	MeasurementProtocolVersion int     `json:"measurementProtocolVersion"`
-	UploadReceiptVersion       int     `json:"uploadReceiptVersion"`
+	Hostname              string  `json:"hostname"`
+	MeasurementAPIVersion int     `json:"measurementApiVersion,omitempty"`
+	MaxTransferBytes      int64   `json:"maxTransferBytes,omitempty"`
+	ClientIP              string  `json:"clientIp"`
+	HTTPProtocol          string  `json:"httpProtocol"`
+	ASN                   int     `json:"asn"`
+	ASOrg                 string  `json:"asOrganization"`
+	Colo                  string  `json:"colo"`
+	Country               string  `json:"country"`
+	City                  string  `json:"city"`
+	Region                string  `json:"region"`
+	PostalCode            string  `json:"postalCode"`
+	Latitude              float64 `json:"latitude"`
+	Longitude             float64 `json:"longitude"`
+	Timezone              string  `json:"timezone,omitempty"`
 }
 
 // Provider is the interface for extracting client metadata from requests.

@@ -151,15 +151,15 @@ func (o *Output) Results(r *client.Results) {
 	fmt.Println(strings.Repeat("─", 48))
 
 	// Download
-	dlStr := fmt.Sprintf("%.1f Mbps", r.Summary.DownloadMbps)
+	dlStr := formatOptional(r.Summary.DownloadMbps, "%.1f Mbps")
 	fmt.Printf("  Download:     %s\n", o.color(ColorCyan, dlStr))
 
 	// Upload
-	ulStr := fmt.Sprintf("%.1f Mbps", r.Summary.UploadMbps)
+	ulStr := formatOptional(r.Summary.UploadMbps, "%.1f Mbps")
 	fmt.Printf("  Upload:       %s\n", o.color(ColorCyan, ulStr))
 
 	// Latency
-	latStr := fmt.Sprintf("%.1f ms (jitter: %.1f ms)", r.Summary.LatencyUnloadedMs, r.Summary.JitterMs)
+	latStr := formatLatency(r.Summary.LatencyUnloadedMs, r.Summary.JitterMs)
 	fmt.Printf("  Latency:      %s\n", o.color(ColorBlue, latStr))
 
 	// Packet Loss
@@ -168,8 +168,6 @@ func (o *Output) Results(r *client.Results) {
 	} else if r.PacketLoss != nil {
 		plStr := fmt.Sprintf("%.2f%% (%d/%d)", r.PacketLoss.LossPercent, r.PacketLoss.Received, r.PacketLoss.Sent)
 		fmt.Printf("  Packet Loss:  %s\n", plStr)
-	} else {
-		fmt.Printf("  Packet Loss:  %s\n", o.color(ColorYellow, "N/A (skipped)"))
 	}
 
 	fmt.Println(strings.Repeat("─", 48))
@@ -194,7 +192,7 @@ func (o *Output) gradeColor(grade string) string {
 		return o.color(ColorGreen, grade)
 	case "Good":
 		return o.color(ColorGreen, grade)
-	case "Okay", "Incomplete":
+	case "Okay":
 		return o.color(ColorYellow, grade)
 	case "Poor":
 		return o.color(ColorRed, grade)
@@ -219,8 +217,8 @@ func (o *Output) verboseDetails(r *client.Results) {
 	if len(unloaded) > 0 {
 		min, max, _ := stats(unloaded)
 		med := median(unloaded)
-		fmt.Printf("  Unloaded:   %.1f ms (min: %.1f, max: %.1f, median: %.1f)\n",
-			r.Summary.LatencyUnloadedMs, min, max, med)
+		fmt.Printf("  Unloaded:   %s (min: %.1f, max: %.1f, median: %.1f)\n",
+			formatOptional(r.Summary.LatencyUnloadedMs, "%.1f ms"), min, max, med)
 	}
 
 	fmt.Println()
@@ -310,43 +308,58 @@ func median(values []float64) float64 {
 	return sorted[n/2]
 }
 
-func optionalFloat(value *float64, format string) string {
-	if value == nil {
-		return "n/a"
-	}
-	return fmt.Sprintf(format, *value)
-}
-
 // Quiet prints minimal output.
 func (o *Output) Quiet(r *client.Results) {
 	// Format: download_mbps upload_mbps latency_ms loss_percent
-	fmt.Printf("%.1f  %.1f  %.1f  %s\n",
-		r.Summary.DownloadMbps,
-		r.Summary.UploadMbps,
-		r.Summary.LatencyUnloadedMs,
-		optionalFloat(r.Summary.PacketLossPercent, "%.2f"))
+	fmt.Printf("%s  %s  %s  %s\n",
+		formatOptional(r.Summary.DownloadMbps, "%.1f"),
+		formatOptional(r.Summary.UploadMbps, "%.1f"),
+		formatOptional(r.Summary.LatencyUnloadedMs, "%.1f"),
+		formatOptional(r.Summary.PacketLossPercent, "%.2f"))
 }
 
 // CSV prints CSV output.
 func (o *Output) CSV(r *client.Results) {
+	// Header
 	fmt.Println("timestamp,server,download_mbps,upload_mbps,latency_ms,jitter_ms,packet_loss_pct")
 
+	// Data
 	hostname := ""
 	if r.Meta != nil {
 		hostname = r.Meta.Hostname
 	}
-	loss := ""
-	if r.Summary.PacketLossPercent != nil {
-		loss = fmt.Sprintf("%.2f", *r.Summary.PacketLossPercent)
-	}
-	fmt.Printf("%s,%s,%.1f,%.1f,%.1f,%.1f,%s\n",
+	fmt.Printf("%s,%s,%s,%s,%s,%s,%s\n",
 		r.Timestamp.UTC().Format(time.RFC3339),
 		hostname,
-		r.Summary.DownloadMbps,
-		r.Summary.UploadMbps,
-		r.Summary.LatencyUnloadedMs,
-		r.Summary.JitterMs,
-		loss)
+		formatCSVOptional(r.Summary.DownloadMbps, "%.1f"),
+		formatCSVOptional(r.Summary.UploadMbps, "%.1f"),
+		formatCSVOptional(r.Summary.LatencyUnloadedMs, "%.1f"),
+		formatCSVOptional(r.Summary.JitterMs, "%.1f"),
+		formatCSVOptional(r.Summary.PacketLossPercent, "%.2f"))
+}
+
+func formatOptional(value *float64, format string) string {
+	if value == nil {
+		return "N/A"
+	}
+	return fmt.Sprintf(format, *value)
+}
+
+func formatCSVOptional(value *float64, format string) string {
+	if value == nil {
+		return ""
+	}
+	return fmt.Sprintf(format, *value)
+}
+
+func formatLatency(latency, jitter *float64) string {
+	if latency == nil {
+		return "N/A"
+	}
+	if jitter == nil {
+		return fmt.Sprintf("%.1f ms (jitter: N/A)", *latency)
+	}
+	return fmt.Sprintf("%.1f ms (jitter: %.1f ms)", *latency, *jitter)
 }
 
 // Spinner provides ASCII spinner animation.

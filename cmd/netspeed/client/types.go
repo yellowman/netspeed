@@ -1,28 +1,26 @@
 package client
 
 import (
-	"encoding/json"
 	"time"
 )
 
 // Meta holds server and client metadata (matches web client format).
 type Meta struct {
-	Hostname                   string  `json:"hostname"`
-	ClientIP                   string  `json:"clientIp"`
-	HTTPProtocol               string  `json:"httpProtocol"`
-	ASN                        int     `json:"asn"`
-	ASOrganization             string  `json:"asOrganization"`
-	Colo                       string  `json:"colo"`
-	Country                    string  `json:"country"`
-	City                       string  `json:"city"`
-	Region                     string  `json:"region"`
-	PostalCode                 string  `json:"postalCode"`
-	Latitude                   float64 `json:"latitude"`
-	Longitude                  float64 `json:"longitude"`
-	Timezone                   string  `json:"timezone,omitempty"`
-	MaxTransferBytes           int64   `json:"maxTransferBytes,omitempty"`
-	MeasurementProtocolVersion int     `json:"measurementProtocolVersion,omitempty"`
-	UploadReceiptVersion       int     `json:"uploadReceiptVersion,omitempty"`
+	Hostname              string  `json:"hostname"`
+	MeasurementAPIVersion int     `json:"measurementApiVersion,omitempty"`
+	MaxTransferBytes      int64   `json:"maxTransferBytes,omitempty"`
+	ClientIP              string  `json:"clientIp"`
+	HTTPProtocol          string  `json:"httpProtocol"`
+	ASN                   int     `json:"asn"`
+	ASOrganization        string  `json:"asOrganization"`
+	Colo                  string  `json:"colo"`
+	Country               string  `json:"country"`
+	City                  string  `json:"city"`
+	Region                string  `json:"region"`
+	PostalCode            string  `json:"postalCode"`
+	Latitude              float64 `json:"latitude"`
+	Longitude             float64 `json:"longitude"`
+	Timezone              string  `json:"timezone,omitempty"`
 }
 
 // LatencySample represents a single latency measurement (internal format).
@@ -102,38 +100,14 @@ type PacketLossResult struct {
 	Reason      string   `json:"reason,omitempty"`
 }
 
-// MarshalJSON keeps a measured 0% loss distinct from an unavailable test.
-func (r PacketLossResult) MarshalJSON() ([]byte, error) {
-	type packetLossJSON struct {
-		Sent        int      `json:"sent"`
-		Received    int      `json:"received"`
-		LossPercent *float64 `json:"lossPercent"`
-		RTTStatsMs  RTTStats `json:"rttStatsMs"`
-		JitterMs    float64  `json:"jitterMs"`
-		TestID      string   `json:"testId,omitempty"`
-		Unavailable bool     `json:"unavailable,omitempty"`
-		Reason      string   `json:"reason,omitempty"`
-	}
-
-	var loss *float64
-	if !r.Unavailable {
-		loss = &r.LossPercent
-	}
-	return json.Marshal(packetLossJSON{
-		Sent: r.Sent, Received: r.Received, LossPercent: loss,
-		RTTStatsMs: r.RTTStatsMs, JitterMs: r.JitterMs, TestID: r.TestID,
-		Unavailable: r.Unavailable, Reason: r.Reason,
-	})
-}
-
 // Summary holds computed summary statistics.
 type Summary struct {
-	DownloadMbps      float64  `json:"downloadMbps"`
-	UploadMbps        float64  `json:"uploadMbps"`
-	LatencyUnloadedMs float64  `json:"latencyUnloadedMs"`
-	LatencyDownloadMs float64  `json:"latencyDownloadMs"`
-	LatencyUploadMs   float64  `json:"latencyUploadMs"`
-	JitterMs          float64  `json:"jitterMs"`
+	DownloadMbps      *float64 `json:"downloadMbps"`
+	UploadMbps        *float64 `json:"uploadMbps"`
+	LatencyUnloadedMs *float64 `json:"latencyUnloadedMs"`
+	LatencyDownloadMs *float64 `json:"latencyDownloadMs"`
+	LatencyUploadMs   *float64 `json:"latencyUploadMs"`
+	JitterMs          *float64 `json:"jitterMs"`
 	PacketLossPercent *float64 `json:"packetLossPercent"`
 }
 

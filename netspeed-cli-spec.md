@@ -16,6 +16,21 @@ what responses it expects, how tests are orchestrated, and how results are
 displayed in the terminal. backend implementation details (TURN server config, HMAC secrets,
 etc.) are intentionally out of scope.
 
+## phase 1 normative amendment
+
+The following rules are implemented and override older examples in this document where they conflict:
+
+- the source baseline is Go 1.23.2 or newer;
+- `/meta` advertises `measurementApiVersion` and `maxTransferBytes`;
+- every measurement request must receive HTTP `200`, and downloads/latency probes must return exactly the requested byte count;
+- measurement API v1 uploads succeed only when the JSON receipt confirms the exact accepted byte count and a positive server body-read duration;
+- profiles larger than `maxTransferBytes` are never selected; legacy servers without capabilities are conservatively capped at 100 MB;
+- upload request bodies are generated as a stream and are not retained in a payload-size cache;
+- baseline throughput profiles require at least two valid samples and unloaded latency requires at least three valid probes;
+- unavailable metrics serialize as JSON `null`, print as `N/A`/blank, and cannot receive a quality grade.
+
+True sustained loaded-latency overlap and exact-size directional packet-loss semantics remain phase 2 and phase 3 work respectively; see `IMPROVEMENT_PLAN.md`.
+
 ---
 
 ## 1. command line interface
@@ -98,6 +113,8 @@ netspeed-cli -v
 ```json
 {
   "hostname": "speed.example.com",
+  "measurementApiVersion": 1,
+  "maxTransferBytes": 1073741824,
   "clientIp": "203.0.113.42",
   "httpProtocol": "HTTP/2.0",
   "asn": 13254,
@@ -176,13 +193,23 @@ netspeed-cli -v
 
 **response**
 
-- status: `200` (or `204`)
-- body: ignored.
+- status: `200` only
+- body for measurement API v1:
+
+```json
+{
+  "ok": true,
+  "acceptedBytes": 1000000,
+  "serverDurationNs": 12345678
+}
+```
 
 **CLI behavior**
 
-- create reusable `[]byte` payload per upload profile size.
-- measure duration and compute mbps from payload size.
+- generate the body incrementally without a payload-sized allocation.
+- require `acceptedBytes` to equal the requested body size.
+- use `serverDurationNs` as the canonical upload duration for API v1.
+- reject malformed receipts, non-positive durations, non-`200` statuses, and incomplete request-body consumption.
 
 ---
 
@@ -311,11 +338,13 @@ RTT = GotFirstResponseByte - WroteRequest
 
 **upload timing (throughput):**
 
-measure from request body write start to response received:
+for measurement API v1, use the server body-read duration from the verified receipt:
 
 ```
-Upload Time = GotFirstResponseByte - (body write start)
+Upload Time = time.Duration(receipt.ServerDurationNS)
 ```
+
+For a legacy server, the fallback interval begins when the HTTP transport first reads the generated request body and ends at the first response byte.
 
 **timing implementation:**
 
@@ -348,8 +377,8 @@ func createTrace(t *timingInfo) *httptrace.ClientTrace {
 
 | Profile | Size (bytes) | Runs | Notes |
 |---------|--------------|------|-------|
-| 100kB | 100,000 | 10 | baseline (always included) |
-| 1MB | 1,000,000 | 8 | baseline (always included) |
+| 100kB | 100,000 | 10 | baseline when permitted by the server ceiling |
+| 1MB | 1,000,000 | 8 | baseline when permitted by the server ceiling |
 | 10MB | 10,000,000 | 6 | |
 | 25MB | 25,000,000 | 4 | |
 | 100MB | 100,000,000 | 3 | |
@@ -365,6 +394,8 @@ func createTrace(t *timingInfo) *httptrace.ClientTrace {
 
 **Note:** Sizes use decimal (kB/MB/GB) notation: 1 kB = 1,000 bytes, 1 MB = 1,000,000 bytes, 1 GB = 1,000,000,000 bytes.
 
+Only profiles whose size is less than or equal to `/meta.maxTransferBytes` are eligible. Listing a profile here does not authorize a client to exceed the advertised server ceiling.
+
 **per profile (with precise timing):**
 
 ```go
@@ -375,14 +406,23 @@ trace := createTrace(&timing)
 ctx := httptrace.WithClientTrace(context.Background(), trace)
 
 req, _ := http.NewRequestWithContext(ctx, "GET", url, nil)
-resp, _ := client.Do(req)
+resp, err := client.Do(req)
+if err != nil {
+    return err
+}
+defer resp.Body.Close()
+if resp.StatusCode != http.StatusOK {
+    return fmt.Errorf("unexpected download status: %s", resp.Status)
+}
 
-// Read body - timing.gotFirstByte is set when first byte arrives
-received, _ := io.Copy(io.Discard, resp.Body)
+// timing.gotFirstByte is set when the first body byte arrives.
+received, err := io.Copy(io.Discard, resp.Body)
 bodyDone := time.Now()
-resp.Body.Close()
+if err != nil || received != sizeBytes {
+    return fmt.Errorf("incomplete download: received %d of %d bytes", received, sizeBytes)
+}
 
-// Body transfer time only (excludes connection, TLS, headers)
+// Body transfer time only (excludes connection, TLS, and headers).
 duration := bodyDone.Sub(timing.gotFirstByte)
 mbps := float64(received*8) / duration.Seconds() / 1e6
 ```
@@ -395,8 +435,8 @@ mbps := float64(received*8) / duration.Seconds() / 1e6
 
 | Profile | Size (bytes) | Runs | Notes |
 |---------|--------------|------|-------|
-| 100kB | 100,000 | 8 | baseline (always included) |
-| 1MB | 1,000,000 | 6 | baseline (always included) |
+| 100kB | 100,000 | 8 | baseline when permitted by the server ceiling |
+| 1MB | 1,000,000 | 6 | baseline when permitted by the server ceiling |
 | 10MB | 10,000,000 | 4 | |
 | 25MB | 25,000,000 | 4 | |
 | 50MB | 50,000,000 | 3 | |
@@ -413,26 +453,38 @@ mbps := float64(received*8) / duration.Seconds() / 1e6
 
 **Note:** Sizes use decimal (kB/MB/GB) notation: 1 kB = 1,000 bytes, 1 MB = 1,000,000 bytes, 1 GB = 1,000,000,000 bytes.
 
+Only profiles whose size is less than or equal to `/meta.maxTransferBytes` are eligible. Upload payloads are streamed from a bounded generator rather than materialized and cached.
+
 **per profile (with precise timing):**
 
 ```go
 url := fmt.Sprintf("%s/__up?profile=%s&run=%d", baseURL, profile, runIndex)
 
-var timing timingInfo
-trace := createTrace(&timing)
-ctx := httptrace.WithClientTrace(context.Background(), trace)
-
-// Track when body write starts
-bodyWriteStart := time.Now()
-req, _ := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(payload))
+body := newGeneratedUploadBody(sizeBytes)
+req, _ := http.NewRequestWithContext(ctx, "POST", url, body)
+req.ContentLength = sizeBytes
 req.Header.Set("Content-Type", "application/octet-stream")
 
-resp, _ := client.Do(req)
-resp.Body.Close()
+resp, err := client.Do(req)
+if err != nil {
+    return err
+}
+defer resp.Body.Close()
+if resp.StatusCode != http.StatusOK {
+    return fmt.Errorf("unexpected upload status: %s", resp.Status)
+}
 
-// Upload time: from body write start to response received
-duration := timing.gotFirstByte.Sub(bodyWriteStart)
-mbps := float64(len(payload)*8) / duration.Seconds() / 1e6
+receipt, err := measurement.DecodeUploadReceipt(resp.Body)
+if err != nil {
+    return err
+}
+readBytes, _, _ := body.snapshot()
+if readBytes != sizeBytes || receipt.AcceptedBytes != sizeBytes {
+    return fmt.Errorf("upload byte-count mismatch")
+}
+
+duration := time.Duration(receipt.ServerDurationNS)
+mbps := float64(receipt.AcceptedBytes*8) / duration.Seconds() / 1e6
 ```
 
 ---
@@ -583,29 +635,31 @@ type PacketLossResult struct {
 }
 
 type Summary struct {
-    DownloadMbps      float64 `json:"downloadMbps"`
-    UploadMbps        float64 `json:"uploadMbps"`
-    LatencyUnloadedMs float64 `json:"latencyUnloadedMs"`
-    LatencyDownloadMs float64 `json:"latencyDownloadMs"`
-    LatencyUploadMs   float64 `json:"latencyUploadMs"`
-    JitterMs          float64 `json:"jitterMs"`
-    PacketLossPercent float64 `json:"packetLossPercent"`
+    DownloadMbps      *float64 `json:"downloadMbps"`
+    UploadMbps        *float64 `json:"uploadMbps"`
+    LatencyUnloadedMs *float64 `json:"latencyUnloadedMs"`
+    LatencyDownloadMs *float64 `json:"latencyDownloadMs"`
+    LatencyUploadMs   *float64 `json:"latencyUploadMs"`
+    JitterMs          *float64 `json:"jitterMs"`
+    PacketLossPercent *float64 `json:"packetLossPercent"`
 }
 
 type Meta struct {
-    Hostname       string  `json:"hostname"`
-    ClientIP       string  `json:"clientIp"`
-    HTTPProtocol   string  `json:"httpProtocol"`
-    ASN            int     `json:"asn"`
-    ASOrganization string  `json:"asOrganization"`
-    Colo           string  `json:"colo"`
-    Country        string  `json:"country"`
-    City           string  `json:"city"`
-    Region         string  `json:"region"`
-    PostalCode     string  `json:"postalCode"`
-    Latitude       float64 `json:"latitude"`
-    Longitude      float64 `json:"longitude"`
-    Timezone       string  `json:"timezone,omitempty"`
+    Hostname              string  `json:"hostname"`
+    MeasurementAPIVersion int     `json:"measurementApiVersion,omitempty"`
+    MaxTransferBytes      int64   `json:"maxTransferBytes,omitempty"`
+    ClientIP              string  `json:"clientIp"`
+    HTTPProtocol          string  `json:"httpProtocol"`
+    ASN                   int     `json:"asn"`
+    ASOrganization        string  `json:"asOrganization"`
+    Colo                  string  `json:"colo"`
+    Country               string  `json:"country"`
+    City                  string  `json:"city"`
+    Region                string  `json:"region"`
+    PostalCode            string  `json:"postalCode"`
+    Latitude              float64 `json:"latitude"`
+    Longitude             float64 `json:"longitude"`
+    Timezone              string  `json:"timezone,omitempty"`
 }
 ```
 
@@ -1256,27 +1310,18 @@ func newPeerConnection(turnCreds TURNCredentials) (*webrtc.PeerConnection, error
 }
 ```
 
-### 10.3 payload generation
+### 10.3 upload body generation
+
+upload request bodies must be generated incrementally from a bounded buffer. the implementation uses a deterministic zero-producing `io.ReadCloser` that tracks the exact number of bytes consumed by `net/http`; it must not allocate or cache a slice proportional to the selected profile size.
 
 ```go
-var payloadCache = make(map[int64][]byte)
-var payloadMu sync.Mutex
+body := newGeneratedUploadBody(sizeBytes)
+req, _ := http.NewRequestWithContext(ctx, http.MethodPost, url, body)
+req.ContentLength = sizeBytes
 
-func getPayload(size int64) []byte {
-    payloadMu.Lock()
-    defer payloadMu.Unlock()
-
-    if payload, ok := payloadCache[size]; ok {
-        return payload
-    }
-
-    payload := make([]byte, size)
-    // Fill with random data to prevent compression
-    rand.Read(payload)
-    payloadCache[size] = payload
-
-    return payload
-}
+resp, err := client.Do(req)
+// require status 200, then verify body.snapshot().readBytes == sizeBytes
+// and, for measurement api v1, receipt.acceptedBytes == sizeBytes.
 ```
 
 ### 10.4 terminal detection

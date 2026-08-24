@@ -351,17 +351,19 @@
             onTimingWarning: handleTimingWarning
         });
 
+        let completed = false;
         try {
             await SpeedTest.start();
+            completed = true;
         } catch (err) {
             if (err.name !== 'AbortError') {
                 console.error('Speed test failed:', err);
-                showError('Speed test failed. Please try again.');
+                showError('Speed test failed. No incomplete result was graded.');
             }
         }
 
         state.isRunning = false;
-        updateUIState('complete');
+        updateUIState(completed ? 'complete' : 'idle');
     }
 
     /**
@@ -725,17 +727,18 @@
         updateHeroValue('upload', summary.uploadMbps);
 
         if (elements.latencyValue) {
-            elements.latencyValue.textContent = summary.latencyUnloadedMs.toFixed(1);
+            elements.latencyValue.textContent = Number.isFinite(summary.latencyUnloadedMs)
+                ? summary.latencyUnloadedMs.toFixed(1) : 'N/A';
         }
 
         if (elements.jitterValue) {
-            elements.jitterValue.textContent = summary.jitterMs.toFixed(1);
+            elements.jitterValue.textContent = Number.isFinite(summary.jitterMs)
+                ? summary.jitterMs.toFixed(1) : 'N/A';
         }
 
         if (elements.packetLossValue) {
             elements.packetLossValue.textContent = Number.isFinite(summary.packetLossPercent)
-                ? summary.packetLossPercent.toFixed(2)
-                : 'N/A';
+                ? summary.packetLossPercent.toFixed(2) : 'N/A';
         }
 
         // Update measure time
@@ -984,6 +987,12 @@
 
         if (!valueEl) return;
 
+        if (!Number.isFinite(value)) {
+            valueEl.textContent = 'N/A';
+            if (unitEl) unitEl.textContent = '';
+            return;
+        }
+
         if (value >= 1000) {
             valueEl.textContent = (value / 1000).toFixed(2);
             if (unitEl) unitEl.textContent = 'Gbps';
@@ -1204,8 +1213,7 @@
             'Great': 'great',
             'Good': 'good',
             'Okay': 'okay',
-            'Poor': 'poor',
-            'Incomplete': 'incomplete'
+            'Poor': 'poor'
         };
 
         const ph = '<span class="placeholder"></span>';
@@ -1214,7 +1222,7 @@
         if (elements.streamingScore) {
             const grade = quality.videoStreaming;
             // Remove old grade classes and add new one
-            elements.streamingScore.classList.remove('great', 'good', 'okay', 'poor', 'incomplete');
+            elements.streamingScore.classList.remove('great', 'good', 'okay', 'poor');
             if (gradeClass[grade]) elements.streamingScore.classList.add(gradeClass[grade]);
             const text = elements.streamingScore.querySelector('.grade-text');
             if (text) text.innerHTML = grade || ph;
@@ -1223,7 +1231,7 @@
         // Gaming
         if (elements.gamingScore) {
             const grade = quality.gaming;
-            elements.gamingScore.classList.remove('great', 'good', 'okay', 'poor', 'incomplete');
+            elements.gamingScore.classList.remove('great', 'good', 'okay', 'poor');
             if (gradeClass[grade]) elements.gamingScore.classList.add(gradeClass[grade]);
             const text = elements.gamingScore.querySelector('.grade-text');
             if (text) text.innerHTML = grade || ph;
@@ -1232,7 +1240,7 @@
         // Video Chatting
         if (elements.videoChatScore) {
             const grade = quality.videoChatting;
-            elements.videoChatScore.classList.remove('great', 'good', 'okay', 'poor', 'incomplete');
+            elements.videoChatScore.classList.remove('great', 'good', 'okay', 'poor');
             if (gradeClass[grade]) elements.videoChatScore.classList.add(gradeClass[grade]);
             const text = elements.videoChatScore.querySelector('.grade-text');
             if (text) text.innerHTML = grade || ph;
@@ -1367,6 +1375,14 @@
      */
     function encodeResultsForURL() {
         if (!state.summary) return null;
+        const required = [
+            state.summary.downloadMbps,
+            state.summary.uploadMbps,
+            state.summary.latencyUnloadedMs,
+            state.summary.jitterMs,
+            state.summary.packetLossPercent
+        ];
+        if (!required.every(Number.isFinite)) return null;
 
         // Pack quality grades: each 0-4, packed as qs*25 + qg*5 + qv
         let q = 0;
@@ -1408,12 +1424,6 @@
         // All values to encode (delta-encoded as one array)
         const serverLoc = state.locations?.find(l => l.iata === state.meta?.colo);
         const pl = state.packetLoss;
-
-        // Shared-result URLs require a complete metric set. Do not encode an
-        // unavailable packet-loss measurement as a misleading zero.
-        if (!Number.isFinite(state.summary?.packetLossPercent)) {
-            return null;
-        }
 
         const values = [
             Math.round(state.summary.downloadMbps * 10),

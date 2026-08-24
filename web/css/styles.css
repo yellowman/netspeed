@@ -626,8 +626,6 @@ button {
 .quality-grade.okay .grade-text { color: var(--color-grade-okay); }
 .quality-grade.poor .grade-dot { background: var(--color-grade-poor); }
 .quality-grade.poor .grade-text { color: var(--color-grade-poor); }
-.quality-grade.incomplete .grade-dot { background: var(--color-text-tertiary); }
-.quality-grade.incomplete .grade-text { color: var(--color-text-secondary); }
 
 .learn-more-btn {
     font-size: 0.875rem;

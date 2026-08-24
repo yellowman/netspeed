@@ -327,8 +327,8 @@ func (rw *responseWriter) WriteHeader(code int) {
 // setServerTiming adds the Server-Timing header if enabled.
 func (s *Server) setServerTiming(w http.ResponseWriter, start time.Time) {
 	if s.cfg.EnableServerTiming {
-		durMS := float64(time.Since(start).Microseconds()) / 1000.0
-		w.Header().Set("Server-Timing", fmt.Sprintf("app;dur=%.3f", durMS))
+		durMs := float64(time.Since(start).Microseconds()) / 1000
+		w.Header().Set("Server-Timing", fmt.Sprintf("app;dur=%.3f", durMs))
 	}
 }
 

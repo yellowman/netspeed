@@ -18,6 +18,21 @@ etc.) are intentionally out of scope.
 
 ---
 
+## phase 1 normative amendment — measurement integrity
+
+phase 1 adds a versioned measurement contract. where older text in this document conflicts with this amendment, this amendment controls:
+
+- `/meta` advertises `measurementApiVersion` and `maxTransferBytes`.
+- the browser accepts throughput samples only after an expected `200` response and an exact byte-count check.
+- measurement api v1 upload responses contain `acceptedBytes` and `serverDurationNs`; a sample is invalid unless `acceptedBytes` exactly equals the request payload size.
+- eligible browser transfers are bounded by the smaller of the server-advertised ceiling and the current browser-memory ceiling: 100 MB for download and 50 MB for upload.
+- a phase must meet its minimum valid-sample count; individual request failures are not converted into successful zero-valued samples.
+- unavailable summary metrics are `null`, displayed as `N/A`, and cannot receive a quality grade.
+
+phase 2 owns sustained load, browser streaming, and demonstrable loaded-latency overlap. phase 3 owns the exact-size directional packet-loss protocol. the current implementation does not claim those two methodologies are release-qualified.
+
+---
+
 ## 1. backend api surface (from the frontend's point of view)
 
 ### 1.1 http measurement endpoints
@@ -47,7 +62,9 @@ etc.) are intentionally out of scope.
   "postalCode": "97701",
   "latitude": 44.0582,
   "longitude": -121.3153,
-  "timezone": "America/Los_Angeles"
+  "timezone": "America/Los_Angeles",
+  "measurementApiVersion": 1,
+  "maxTransferBytes": 1073741824
 }
 ```
 
@@ -85,8 +102,8 @@ etc.) are intentionally out of scope.
 - headers:
   - `Content-Type: application/octet-stream`
   - `Content-Length: <bytes>` (may be `0`)
-  - other headers are ignored by the frontend.
-- body: exactly `bytes` bytes of opaque data.
+  - `Cache-Control: no-store, no-transform`
+- body: exactly `bytes` bytes of opaque data. requests above `maxTransferBytes` return `413`.
 
 **frontend behavior**
 
@@ -135,14 +152,29 @@ etc.) are intentionally out of scope.
 
 **response**
 
-- status: `200` (or `204`)
-- body: ignored by frontend.
+- status: `200` on success.
+- headers:
+  - `Content-Type: application/json; charset=utf-8`
+  - `Cache-Control: no-store, no-transform`
+- body for measurement api v1:
+
+  ```json
+  {
+    "ok": true,
+    "acceptedBytes": 1000000,
+    "serverDurationNs": 12500000
+  }
+  ```
+
+- known or streamed bodies larger than `maxTransferBytes` return `413`.
+- request-body read failures return a non-2xx response.
 
 **frontend behavior**
 
-- create a reusable `ArrayBuffer` per upload profile size.
-- send it as the body while measuring duration the same way as download.
-- compute mbps from payload size and duration.
+- reject payloads above the effective upload ceiling.
+- send a bounded binary payload and require status `200`.
+- for measurement api v1, require `acceptedBytes` to equal the payload size exactly and require a positive `serverDurationNs`.
+- compute canonical upload throughput from `acceptedBytes` and `serverDurationNs`; client-side timing is diagnostic only.
 
 ---
 
@@ -413,16 +445,16 @@ frontend runs four kinds of tests in a defined sequence:
 
   ```ts
   const url = `/__up?profile=${profile}&run=${runIndex}`;
-  const start = performance.now();
   const res = await fetch(url, {
     method: 'POST',
     body: payload,
     headers: { 'Content-Type': 'application/octet-stream' }
   });
-  await res.arrayBuffer();
-  const end = performance.now();
-  const durationMs = end - start;
-  const mbps = (sizeBytes * 8) / (durationMs / 1000) / 1e6;
+  if (!res.ok) throw new Error(`upload failed: ${res.status}`);
+
+  const receipt = await res.json();
+  const durationMs = validateUploadReceipt(receipt, sizeBytes);
+  const mbps = (receipt.acceptedBytes * 8) / (durationMs / 1000) / 1e6;
   ```
 
 - store as `ThroughputSample` with `direction='upload'`.
@@ -594,7 +626,8 @@ type ThroughputSample = {
 type PacketLossResult = {
   sent: number;
   received: number;
-  lossPercent: number;
+  lossPercent: number | null;
+  unavailable?: boolean;
   rttStatsMs: {
     min: number;
     median: number;
@@ -605,16 +638,16 @@ type PacketLossResult = {
 };
 
 type Summary = {
-  downloadMbps: number;
-  uploadMbps: number;
-  latencyUnloadedMs: number;
-  latencyDownloadMs: number;
-  latencyUploadMs: number;
-  jitterMs: number;
-  packetLossPercent: number;
+  downloadMbps: number | null;
+  uploadMbps: number | null;
+  latencyUnloadedMs: number | null;
+  latencyDownloadMs: number | null;
+  latencyUploadMs: number | null;
+  jitterMs: number | null;
+  packetLossPercent: number | null;
 };
 
-type NetworkQualityGrade = 'Great' | 'Good' | 'Okay' | 'Poor';
+type NetworkQualityGrade = 'Great' | 'Good' | 'Okay' | 'Poor' | 'N/A';
 
 type NetworkQuality = {
   videoStreaming: NetworkQualityGrade;
@@ -636,6 +669,8 @@ type Meta = {
   latitude: number;
   longitude: number;
   timezone?: string;
+  measurementApiVersion?: number;
+  maxTransferBytes?: number;
 };
 
 type Location = {
@@ -670,19 +705,24 @@ function buildSummary(
   const latDownload = latency.filter(l => l.phase === 'download').map(l => l.rttMs);
   const latUpload   = latency.filter(l => l.phase === 'upload').map(l => l.rttMs);
 
+  const unloadedP50 = percentileOrNull(latUnloaded, 0.50);
+  const unloadedP90 = percentileOrNull(latUnloaded, 0.90);
+
   return {
-    downloadMbps: p90(dl),
-    uploadMbps: p90(ul),
-    latencyUnloadedMs: p50(latUnloaded),
-    latencyDownloadMs: p90(latDownload),
-    latencyUploadMs: p90(latUpload),
-    jitterMs: p90(latUnloaded) - p50(latUnloaded),
-    packetLossPercent: loss ? loss.lossPercent : 0
+    downloadMbps: percentileOrNull(dl, 0.90),
+    uploadMbps: percentileOrNull(ul, 0.90),
+    latencyUnloadedMs: unloadedP50,
+    latencyDownloadMs: percentileOrNull(latDownload, 0.90),
+    latencyUploadMs: percentileOrNull(latUpload, 0.90),
+    jitterMs: unloadedP50 === null || unloadedP90 === null
+      ? null
+      : unloadedP90 - unloadedP50,
+    packetLossPercent: loss && !loss.unavailable ? loss.lossPercent : null
   };
 }
 ```
 
-`p50` = median, `p90` = 90th percentile.
+`percentileOrNull` returns `null` for an empty or invalid sample set. grading functions return `N/A` unless every metric they require is finite.
 
 ### 4.2 network quality grading (example)
 
@@ -1618,8 +1658,8 @@ type ThroughputSampleExtended = ThroughputSample & {
 
 | Profile | Size | Runs | Notes |
 |---------|------|------|-------|
-| 100kB   | 100,000 bytes | 10 | baseline (always included) |
-| 1MB     | 1,000,000 bytes | 8 | baseline (always included) |
+| 100kB   | 100,000 bytes | 10 | baseline when permitted by the server ceiling |
+| 1MB     | 1,000,000 bytes | 8 | baseline when permitted by the server ceiling |
 | 10MB    | 10,000,000 bytes | 6 | |
 | 25MB    | 25,000,000 bytes | 4 | |
 | 100MB   | 100,000,000 bytes | 3 | |
@@ -1637,8 +1677,8 @@ type ThroughputSampleExtended = ThroughputSample & {
 
 | Profile | Size | Runs | Notes |
 |---------|------|------|-------|
-| 100kB   | 100,000 bytes | 8 | baseline (always included) |
-| 1MB     | 1,000,000 bytes | 6 | baseline (always included) |
+| 100kB   | 100,000 bytes | 8 | baseline when permitted by the server ceiling |
+| 1MB     | 1,000,000 bytes | 6 | baseline when permitted by the server ceiling |
 | 10MB    | 10,000,000 bytes | 4 | |
 | 25MB    | 25,000,000 bytes | 4 | |
 | 50MB    | 50,000,000 bytes | 3 | |
@@ -1654,6 +1694,8 @@ type ThroughputSampleExtended = ThroughputSample & {
 | 125GB   | 125,000,000,000 bytes | 2 | 1s at 1 Tbps |
 
 **Note:** Sizes use decimal (kB/MB/GB) notation: 1 kB = 1,000 bytes, 1 MB = 1,000,000 bytes, 1 GB = 1,000,000,000 bytes.
+
+these tables are the future streaming profile catalog. in phase 1, a browser profile is eligible only when its size is no greater than both `meta.maxTransferBytes` and the local browser ceiling (100 MB download, 50 MB upload). larger catalog entries remain disabled until phase 2 supplies bounded streaming and sustained concurrency.
 
 ### 15.3 adaptive profile selection
 
@@ -1674,7 +1716,7 @@ const TOTAL_UPLOAD_DURATION_SECONDS = 8;   // total time budget for upload phase
 
 **selection process:**
 
-1. **baseline phase:** run all 100kB tests (10 runs) then all 1MB tests (8 runs)
+1. **baseline phase:** run eligible 100kB and 1MB tests, requiring the configured minimum valid samples from each required baseline
 2. **speed estimation:** calculate median speed from 1MB samples (after burst buffers depleted)
 3. **profile selection:** include larger profiles where estimated transfer time ≤ 4 seconds
 4. **time budget execution:** run selected profiles until 8-second budget exhausted
@@ -1706,8 +1748,8 @@ function estimateTransferTime(bytes: number, speedMbps: number): number {
   return (bytes * 8) / (speedMbps * 1e6);
 }
 
-function selectProfiles(estimatedSpeedMbps: number, allProfiles: ProfileMap): ProfileMap {
-  // Always include baseline
+function selectProfiles(estimatedSpeedMbps: number, allProfiles: ProfileMap, transferLimit: number): ProfileMap {
+  // Include only eligible baseline profiles
   const profiles = {
     '100kB': allProfiles['100kB'],
     '1MB': allProfiles['1MB']
@@ -1716,6 +1758,7 @@ function selectProfiles(estimatedSpeedMbps: number, allProfiles: ProfileMap): Pr
   // Add larger profiles based on estimated transfer time
   for (const [name, profile] of Object.entries(allProfiles)) {
     if (name === '100kB' || name === '1MB') continue;
+    if (profile.bytes > transferLimit) continue;
     const estimatedSeconds = estimateTransferTime(profile.bytes, estimatedSpeedMbps);
     if (estimatedSeconds <= 4) {
       profiles[name] = profile;
@@ -1729,8 +1772,8 @@ function selectProfiles(estimatedSpeedMbps: number, allProfiles: ProfileMap): Pr
 this ensures:
 - slow connections (128 Kbps) only run small tests that complete quickly
 - fast connections (1+ Gbps) run larger tests for accurate measurements
-- extremely fast connections (10+ Gbps) use GB-sized tests
-- linear scaling works across the full range from 128 Kbps to 1 Tbps
+- phase 1 never selects a profile above the effective transfer ceiling
+- phase 2 may enable larger bounded streaming profiles for extremely fast connections
 - total test duration is bounded by 8-second budget per phase
 
 **batch skipping implementation:**
