@@ -7,7 +7,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"log"
 	"net"
 	"net/http"
@@ -15,8 +14,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/yellowman/netspeed/internal/measurement"
 	"github.com/yellowman/netspeed/internal/meta"
+	"github.com/yellowman/netspeed/internal/protocol"
 )
 
 // calculateSpeedMbps calculates speed in megabits per second from bytes and duration.
@@ -49,8 +48,10 @@ func (s *Server) handleMeta(w http.ResponseWriter, r *http.Request) {
 	}
 
 	clientMeta := s.metaProvider.MetaFor(r)
-	clientMeta.MeasurementAPIVersion = measurement.APIVersion
 	clientMeta.MaxTransferBytes = s.cfg.MaxBytes
+	clientMeta.MeasurementProtocolVersion = protocol.MeasurementProtocolVersion
+	clientMeta.UploadReceiptVersion = protocol.UploadReceiptVersion
+	clientMeta.PacketLossFrameVersion = protocol.PacketLossFrameVersion
 
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-store")
@@ -69,7 +70,6 @@ func (s *Server) handleDown(w http.ResponseWriter, r *http.Request) {
 	}
 
 	start := time.Now()
-	w.Header().Set("Cache-Control", "no-store, no-transform")
 
 	// Parse query parameters
 	bytesStr := r.URL.Query().Get("bytes")
@@ -88,7 +88,7 @@ func (s *Server) handleDown(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if v > s.cfg.MaxBytes {
-			http.Error(w, "bytes exceeds maximum allowed", http.StatusRequestEntityTooLarge)
+			http.Error(w, "bytes exceeds maximum allowed", http.StatusBadRequest)
 			return
 		}
 		nBytes = v
@@ -101,6 +101,8 @@ func (s *Server) handleDown(w http.ResponseWriter, r *http.Request) {
 	// Set headers
 	w.Header().Set("Content-Type", "application/octet-stream")
 	w.Header().Set("Content-Length", strconv.FormatInt(nBytes, 10))
+	w.Header().Set("Cache-Control", "no-store, no-transform")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
 	s.setMetaHeaders(w, clientMeta, start)
 
 	// Set Server-Timing header before body starts (measures server-side latency)
@@ -123,10 +125,6 @@ func (s *Server) handleDown(w http.ResponseWriter, r *http.Request) {
 
 	// Stream the payload
 	buf := s.payloadBuf
-	if len(buf) == 0 {
-		http.Error(w, "download buffer is not configured", http.StatusInternalServerError)
-		return
-	}
 	remaining := nBytes
 	for remaining > 0 {
 		chunk := int64(len(buf))
@@ -134,19 +132,16 @@ func (s *Server) handleDown(w http.ResponseWriter, r *http.Request) {
 			chunk = remaining
 		}
 		n, err := w.Write(buf[:chunk])
-		remaining -= int64(n)
-		if err == nil && int64(n) != chunk {
-			err = io.ErrShortWrite
-		}
 		if err != nil {
-			// Client disconnected or the response writer accepted a short write.
+			// Client disconnected - log partial transfer
 			duration := time.Since(start)
-			bytesSent := nBytes - remaining
+			bytesSent := nBytes - remaining + int64(n)
 			speedMbps := calculateSpeedMbps(bytesSent, duration)
-			log.Printf("Download interrupted: client=%s measId=%s bytes=%d/%d duration=%s speed=%s error=%v",
-				clientIP, measId, bytesSent, nBytes, duration, formatSpeed(speedMbps), err)
+			log.Printf("Download interrupted: client=%s measId=%s bytes=%d/%d duration=%s speed=%s",
+				clientIP, measId, bytesSent, nBytes, duration, formatSpeed(speedMbps))
 			return
 		}
+		remaining -= int64(n)
 	}
 
 	// Log completed download with speed
@@ -164,50 +159,43 @@ func (s *Server) handleUp(w http.ResponseWriter, r *http.Request) {
 	}
 
 	start := time.Now()
-	w.Header().Set("Cache-Control", "no-store, no-transform")
-
-	// Reject a known oversized body before reading it. The connection is closed
-	// because unread request bytes cannot safely be reused for another request.
-	if r.ContentLength > s.cfg.MaxBytes {
-		w.Header().Set("Connection", "close")
-		http.Error(w, "upload body exceeds maximum allowed", http.StatusRequestEntityTooLarge)
-		return
-	}
-
-	bodyReadStart := time.Now()
-	n, err := measurement.ReadUploadBody(r.Body, s.cfg.MaxBytes)
-	if err != nil {
-		clientIP := meta.ClientIPFromRequest(r, s.cfg.TrustProxyHeaders)
-		measID := r.URL.Query().Get("measId")
-		if errors.Is(err, measurement.ErrBodyTooLarge) {
-			w.Header().Set("Connection", "close")
-			log.Printf("Upload rejected: client=%s measId=%s bytesRead=%d maxBytes=%d error=%v",
-				clientIP, measID, n, s.cfg.MaxBytes, err)
-			http.Error(w, "upload body exceeds maximum allowed", http.StatusRequestEntityTooLarge)
-			return
-		}
-
-		log.Printf("Upload read error: client=%s measId=%s bytesRead=%d error=%v",
-			clientIP, measID, n, err)
-		http.Error(w, "failed to read complete upload body", http.StatusBadRequest)
-		return
-	}
-
-	duration := time.Since(bodyReadStart)
-	speedMbps := calculateSpeedMbps(n, duration)
 	measID := r.URL.Query().Get("measId")
 	clientIP := meta.ClientIPFromRequest(r, s.cfg.TrustProxyHeaders)
+
+	n, err := protocol.ReadUpload(r.Body, r.ContentLength, s.cfg.MaxBytes)
+	if err != nil {
+		switch {
+		case errors.Is(err, protocol.ErrUploadTooLarge):
+			log.Printf("Upload rejected: client=%s measId=%s bytes=%d maxBytes=%d",
+				clientIP, measID, n, s.cfg.MaxBytes)
+			http.Error(w, protocol.ErrUploadTooLarge.Error(), http.StatusRequestEntityTooLarge)
+		case errors.Is(err, protocol.ErrUploadLengthMismatch):
+			log.Printf("Upload length mismatch: client=%s measId=%s bytes=%d contentLength=%d",
+				clientIP, measID, n, r.ContentLength)
+			http.Error(w, protocol.ErrUploadLengthMismatch.Error(), http.StatusBadRequest)
+		default:
+			log.Printf("Upload read error: client=%s measId=%s bytes=%d error=%v", clientIP, measID, n, err)
+			http.Error(w, "failed to read complete upload", http.StatusBadRequest)
+		}
+		return
+	}
+
+	duration := time.Since(start)
+	speedMbps := calculateSpeedMbps(n, duration)
 	log.Printf("Upload: client=%s measId=%s bytes=%d duration=%s speed=%s",
 		clientIP, measID, n, duration, formatSpeed(speedMbps))
 
-	receipt := measurement.UploadReceipt{
+	receipt := protocol.UploadReceipt{
 		OK:               true,
 		AcceptedBytes:    n,
 		ServerDurationNS: duration.Nanoseconds(),
 	}
 
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
 	s.setServerTiming(w, start)
+	w.WriteHeader(http.StatusOK)
 	if err := json.NewEncoder(w).Encode(receipt); err != nil {
 		log.Printf("Upload receipt write error: client=%s measId=%s error=%v", clientIP, measID, err)
 	}
@@ -425,6 +413,20 @@ type PacketTestReportRequest struct {
 	TransportProtocol string  `json:"transportProtocol,omitempty"`
 }
 
+// PacketTestReportResponse contains authoritative server-side counters. These
+// counters let clients distinguish forward-path probe loss from reverse-path
+// acknowledgement loss and round-trip transaction loss.
+type PacketTestReportResponse struct {
+	OK                   bool `json:"ok"`
+	ProtocolVersion      int  `json:"protocolVersion"`
+	FrameSizeBytes       int  `json:"frameSizeBytes"`
+	ForwardReceived      int  `json:"forwardReceived"`
+	AcknowledgementsSent int  `json:"acknowledgementsSent"`
+	DuplicateFrames      int  `json:"duplicateFrames"`
+	InvalidFrames        int  `json:"invalidFrames"`
+	AckSendFailures      int  `json:"ackSendFailures"`
+}
+
 // handlePacketTestReport handles POST /api/packet-test/report.
 // This endpoint receives packet loss test results from the client.
 func (s *Server) handlePacketTestReport(w http.ResponseWriter, r *http.Request) {
@@ -438,19 +440,46 @@ func (s *Server) handlePacketTestReport(w http.ResponseWriter, r *http.Request) 
 		http.Error(w, "invalid request body", http.StatusBadRequest)
 		return
 	}
-
-	// Log the report
-	clientIP := meta.ClientIPFromRequest(r, s.cfg.TrustProxyHeaders)
-	log.Printf("Packet test report: testId=%s client=%s sent=%d received=%d loss=%.2f%% rtt=[%.2f/%.2f/%.2f]ms jitter=%.2fms",
-		req.TestID, clientIP, req.Sent, req.Received, req.LossPercent,
-		req.RTTMin, req.RTTMedian, req.RTTP90, req.JitterMs)
-
-	// Clean up the session if it exists
-	if s.webrtcManager != nil && req.TestID != "" {
-		s.webrtcManager.CloseSession(req.TestID)
+	if req.TestID == "" {
+		http.Error(w, "testId is required", http.StatusBadRequest)
+		return
+	}
+	if s.webrtcManager == nil {
+		http.Error(w, "WebRTC not available", http.StatusServiceUnavailable)
+		return
 	}
 
+	snapshot, ok := s.webrtcManager.PacketLossSnapshot(req.TestID)
+	if !ok {
+		http.Error(w, "packet test session not found", http.StatusNotFound)
+		return
+	}
+
+	clientIP := meta.ClientIPFromRequest(r, s.cfg.TrustProxyHeaders)
+	log.Printf("Packet test report: testId=%s client=%s sent=%d transactionReceived=%d clientLoss=%.2f%% forwardReceived=%d acksSent=%d invalid=%d duplicates=%d ackSendFailures=%d rtt=[%.2f/%.2f/%.2f]ms jitter=%.2fms",
+		req.TestID, clientIP, req.Sent, req.Received, req.LossPercent,
+		snapshot.ForwardReceived, snapshot.AcknowledgementsSent, snapshot.InvalidFrames,
+		snapshot.DuplicateFrames, snapshot.AckSendFailures,
+		req.RTTMin, req.RTTMedian, req.RTTP90, req.JitterMs)
+
+	response := PacketTestReportResponse{
+		OK:                   true,
+		ProtocolVersion:      protocol.MeasurementProtocolVersion,
+		FrameSizeBytes:       snapshot.FrameSizeBytes,
+		ForwardReceived:      snapshot.ForwardReceived,
+		AcknowledgementsSent: snapshot.AcknowledgementsSent,
+		DuplicateFrames:      snapshot.DuplicateFrames,
+		InvalidFrames:        snapshot.InvalidFrames,
+		AckSendFailures:      snapshot.AckSendFailures,
+	}
+
+	// Snapshot first, then close. Closing before the snapshot would erase the
+	// only authoritative record of which forward probes reached the server.
+	s.webrtcManager.CloseSession(req.TestID)
+
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
-	w.WriteHeader(http.StatusOK)
-	w.Write([]byte(`{"ok":true}`))
+	w.Header().Set("Cache-Control", "no-store")
+	if err := json.NewEncoder(w).Encode(response); err != nil {
+		log.Printf("Packet test report response write error: testId=%s error=%v", req.TestID, err)
+	}
 }

@@ -9,7 +9,7 @@ that talks to a backend exposing these endpoints:
 - `GET /locations`
 - `GET /api/turn/credentials`
 - `POST /api/packet-test/offer`
-- (optional) `POST /api/packet-test/report`
+- `POST /api/packet-test/report`
 
 this is a **frontend-only** spec: it defines what requests the browser makes,
 what responses it expects, how tests are orchestrated, and how results are
@@ -18,20 +18,12 @@ etc.) are intentionally out of scope.
 
 ---
 
-## phase 1 normative amendment — measurement integrity
 
-phase 1 adds a versioned measurement contract. where older text in this document conflicts with this amendment, this amendment controls:
-
-- `/meta` advertises `measurementApiVersion` and `maxTransferBytes`.
-- the browser accepts throughput samples only after an expected `200` response and an exact byte-count check.
-- measurement api v1 upload responses contain `acceptedBytes` and `serverDurationNs`; a sample is invalid unless `acceptedBytes` exactly equals the request payload size.
-- eligible browser transfers are bounded by the smaller of the server-advertised ceiling and the current browser-memory ceiling: 100 MB for download and 50 MB for upload.
-- a phase must meet its minimum valid-sample count; individual request failures are not converted into successful zero-valued samples.
-- unavailable summary metrics are `null`, displayed as `N/A`, and cannot receive a quality grade.
-
-phase 2 owns sustained load, browser streaming, and demonstrable loaded-latency overlap. phase 3 owns the exact-size directional packet-loss protocol. the current implementation does not claim those two methodologies are release-qualified.
-
----
+> **Phase 2 authority:** the implemented browser requires measurement protocol
+> version 2. [`MEASUREMENT_PROTOCOL_V2.md`](MEASUREMENT_PROTOCOL_V2.md) is the
+> canonical wire and methodology contract. It supersedes pre-v2 giant-profile,
+> post-transfer loaded-latency, short JSON packet, and large retained-buffer
+> examples in earlier revisions of this design document.
 
 ## 1. backend api surface (from the frontend's point of view)
 
@@ -63,8 +55,10 @@ phase 2 owns sustained load, browser streaming, and demonstrable loaded-latency 
   "latitude": 44.0582,
   "longitude": -121.3153,
   "timezone": "America/Los_Angeles",
-  "measurementApiVersion": 1,
-  "maxTransferBytes": 1073741824
+  "maxTransferBytes": 1073741824,
+  "measurementProtocolVersion": 2,
+  "uploadReceiptVersion": 1,
+  "packetLossFrameVersion": 1
 }
 ```
 
@@ -80,103 +74,35 @@ phase 2 owns sustained load, browser streaming, and demonstrable loaded-latency 
 
 #### 1.1.2 `GET /__down` — download / latency
 
-**request**
+The browser requests an exact byte count plus unique `measId` and diagnostic
+`profile`, `run`, and `during` labels. It accepts only status `200`, binary
+content type, a matching supplied `Content-Length`, an exact body byte count,
+and a positive duration.
 
-- method: `GET`
-- path: `/__down`
-- query parameters:
+Streaming response bodies are consumed incrementally. Where response streaming
+is unavailable, the browser limits a materialized fallback to 100 MB. Throughput
+request timing uses Resource Timing when available; aggregate fixed-window speed
+uses verified bytes over the window wall-clock interval. A zero-byte request is
+a latency probe.
 
-  - `bytes` (string int, optional)
-    - number of bytes to download.
-    - `0` or omitted → latency-only probe.
-  - `profile` (string, optional)
-    - name of download profile: `100k`, `1M`, `10M`, `25M`, `100M`.
-  - `run` (string int, optional)
-    - run index within a profile.
-  - `phase` (string, optional)
-    - `unloaded`, `download`, `upload` (for latency probes).
+#### 1.1.3 `POST /__up` — verified upload
 
-**response**
+The browser sends an exact-length binary body with unique `measId` and diagnostic
+`profile` and `run` labels. A successful response is receipt version 1:
 
-- status: `200`
-- headers:
-  - `Content-Type: application/octet-stream`
-  - `Content-Length: <bytes>` (may be `0`)
-  - `Cache-Control: no-store, no-transform`
-- body: exactly `bytes` bytes of opaque data. requests above `maxTransferBytes` return `413`.
+```json
+{
+  "ok": true,
+  "acceptedBytes": 1000000,
+  "serverDurationNs": 123456789
+}
+```
 
-**frontend behavior**
-
-- measure round-trip time using `performance.now()`:
-
-  ```ts
-  const start = performance.now();
-  const res = await fetch(url, { cache: 'no-store' });
-  const reader = res.body!.getReader();
-  let received = 0;
-  for (;;) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    received += value.byteLength;
-  }
-  const end = performance.now();
-  const durationMs = end - start;
-  ```
-
-- for `bytes > 0`, compute throughput:
-
-  ```ts
-  const mbps = (received * 8) / (durationMs / 1000) / 1e6;
-  ```
-
-- for `bytes == 0`, use `durationMs` as a latency sample.
-
----
-
-#### 1.1.3 `POST /__up` — upload
-
-**request**
-
-- method: `POST`
-- path: `/__up`
-- query parameters:
-
-  - `profile` (string, optional: `100k`, `1M`, `10M`, `25M`, `50M`)
-  - `run` (string int, optional)
-  - `phase` (string, optional: `upload` for latency-under-load probes)
-
-- headers:
-  - `Content-Type: application/octet-stream` (recommended)
-- body:
-  - binary payload of the desired size.
-
-**response**
-
-- status: `200` on success.
-- headers:
-  - `Content-Type: application/json; charset=utf-8`
-  - `Cache-Control: no-store, no-transform`
-- body for measurement api v1:
-
-  ```json
-  {
-    "ok": true,
-    "acceptedBytes": 1000000,
-    "serverDurationNs": 12500000
-  }
-  ```
-
-- known or streamed bodies larger than `maxTransferBytes` return `413`.
-- request-body read failures return a non-2xx response.
-
-**frontend behavior**
-
-- reject payloads above the effective upload ceiling.
-- send a bounded binary payload and require status `200`.
-- for measurement api v1, require `acceptedBytes` to equal the payload size exactly and require a positive `serverDurationNs`.
-- compute canonical upload throughput from `acceptedBytes` and `serverDurationNs`; client-side timing is diagnostic only.
-
----
+The sample is retained only when status and JSON type are correct and
+`acceptedBytes` equals the intended body length. The daemon duration is
+canonical. A streaming-capable browser emits 64 KiB request chunks. Other
+browsers reuse a payload no larger than 8 MiB and use XHR upload lifecycle events
+to identify actual outbound load; receipt wait is not upload load.
 
 #### 1.1.4 `GET /locations` — test locations
 
@@ -292,7 +218,7 @@ the frontend must tolerate additional fields in the response.
 {
   "sdp": "<browser-offer-sdp>",
   "type": "offer",
-  "testProfile": "loss-basic"
+  "testProfile": "loss-exact-v1"
 }
 ```
 
@@ -319,7 +245,7 @@ const res = await fetch('/api/packet-test/offer', {
   body: JSON.stringify({
     sdp: offer.sdp,
     type: offer.type,
-    testProfile: 'loss-basic'
+    testProfile: 'loss-exact-v1'
   })
 });
 
@@ -334,325 +260,163 @@ respond with a valid WebRTC answer.
 
 ---
 
-#### 1.2.3 `POST /api/packet-test/report` (optional)
+#### 1.2.3 `POST /api/packet-test/report`
 
-**purpose:** report the final packet-loss and summary metrics to the backend.
+This report is required for a complete protocol-v2 packet test because it returns
+the daemon's authoritative forward-path counters.
 
-**request**
-
-- method: `POST`
-- path: `/api/packet-test/report`
-- headers: `Content-Type: application/json`
-- body (example):
+**request body**
 
 ```json
 {
   "testId": "c65b0b1d-6f7f-4a9a-9f2b-7c9d3c5f0c3a",
-  "lossResult": {
-    "sent": 1000,
-    "received": 995,
-    "lossPercent": 0.5,
-    "rttStatsMs": { "min": 15, "median": 20, "p90": 30 },
-    "jitterMs": 3.2
-  },
-  "summary": {
-    "downloadMbps": 778.1,
-    "uploadMbps": 757.2,
-    "latencyUnloadedMs": 6.0,
-    "latencyDownloadMs": 15.0,
-    "latencyUploadMs": 21.0,
-    "jitterMs": 1.2,
-    "packetLossPercent": 0.5
-  },
-  "meta": {
-    "asn": 13254,
-    "colo": "PDX"
-  }
+  "sent": 1000,
+  "received": 995,
+  "lossPercent": 0.5,
+  "rttMinMs": 15,
+  "rttMedianMs": 20,
+  "rttP90Ms": 30,
+  "jitterMs": 10
 }
 ```
 
-**response**
+**accepted response**
 
-- status: `200` or `204`
-- body: ignored by frontend.
+```json
+{
+  "ok": true,
+  "protocolVersion": 2,
+  "frameSizeBytes": 1200,
+  "forwardReceived": 998,
+  "acknowledgementsSent": 998,
+  "duplicateFrames": 0,
+  "invalidFrames": 0,
+  "ackSendFailures": 0
+}
+```
 
-frontend must treat this endpoint as optional; if the request fails, tests and
-ui still complete locally.
-
----
+The browser reconciles these counts with its unique acknowledgements before it
+publishes transaction, forward, and reverse-acknowledgement loss. A missing or
+invalid report makes packet loss unavailable rather than assuming zero.
 
 ## 2. measurement pipeline (frontend behavior)
 
-frontend runs four kinds of tests in a defined sequence:
+The browser executes:
 
-1. download speed (`/__down`)
-2. upload speed (`/__up`)
-3. latency (`/__down?bytes=0`)
-4. packet loss (TURN + WebRTC)
+1. capability negotiation and metadata;
+2. 20 unloaded latency probes with adaptive batching;
+3. three verified 100 kB and three verified 1 MB download baselines;
+4. three 1.5-second sustained download windows, with loaded probes in the middle
+   window;
+5. matching upload baselines and sustained windows;
+6. the exact-frame WebRTC packet test;
+7. shared summaries, grades, diagnostics, and confidence.
 
-### 2.1 download speed tests
+### 2.1 bounded throughput windows
 
-**profiles & sizes:**
+The median 1 MB baseline selects a request chunk intended to last about 250 ms
+per flow. The chunk is 100,000 bytes through 256 MiB and is always capped by
+`maxTransferBytes` and browser fallback limits. Flow count rises from 1 to 2, 4,
+or 6 as the estimate increases. Each worker repeatedly completes exact verified
+requests until the window owner stops it.
 
-- `100k` → `100 * 1024` bytes
-- `1M`   → `1 * 1024 * 1024`
-- `10M`  → `10 * 1024 * 1024`
-- `25M`  → `25 * 1024 * 1024`
-- `100M` → `100 * 1024 * 1024`
+A window sample is completed verified bytes divided by elapsed wall-clock time.
+Baseline requests tune the plan but are excluded from headline throughput when
+window samples exist.
 
-**per profile:**
+### 2.2 continuous loaded-latency proof
 
-- `runs` per profile (e.g. 3–10).
-- for each run:
+The window owns an aggregate active-transfer tracker. A probe is retained only
+when at least one transfer is active before and after the probe and no zero-load
+gap occurs between those observations. A rejected probe is retried.
 
-  ```ts
-  const url = `/__down?bytes=${sizeBytes}&profile=${profile}&run=${runIndex}`;
-  const start = performance.now();
-  const res = await fetch(url, { cache: 'no-store' });
-  const reader = res.body!.getReader();
-  let received = 0;
+Download activity spans response-body reads. Streaming upload activity spans
+request-stream production. XHR fallback activity spans browser upload start/end
+events. Buffered fetch fallback is marked imprecise for confidence purposes.
+Normal mode targets five probes and requires at least three accepted probes for
+each enabled direction. The window timer stops new requests and further probe
+retries, then drains requests already in flight. When the timer expires, a
+loaded-latency result is retained only if its accepted-probe quorum has already
+been reached; otherwise the direction fails instead of stretching the nominal
+window indefinitely.
 
-  for (;;) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    received += value.byteLength;
-  }
+### 2.3 exact packet test
 
-  const end = performance.now();
-  const durationMs = end - start;
-  const mbps = (received * 8) / (durationMs / 1000) / 1e6;
-  ```
+The browser uses an unordered data channel with `maxRetransmits: 0` and sends
+1,000 exact 1,200-byte binary `NSPL` frames at 10 ms intervals. Local `send()`
+failures do not consume sequence numbers. The daemon validates frame version,
+length, header, type, and deterministic padding and acknowledges each unique
+valid probe once.
 
-- store each result as a `ThroughputSample`.
+The browser waits for late acknowledgements, then obtains the daemon report and
+publishes round-trip transaction loss, forward probe loss, and reverse
+acknowledgement loss separately.
 
----
+### 2.4 shared statistics
 
-### 2.2 upload speed tests
-
-**profiles & sizes:**
-
-- `100k`, `1M`, `10M`, `25M`, `50M` (same size rule as download).
-
-**per profile:**
-
-- prepare payload once:
-
-  ```ts
-  const payload = new Uint8Array(sizeBytes); // zero-filled is fine
-  ```
-
-- per run:
-
-  ```ts
-  const url = `/__up?profile=${profile}&run=${runIndex}`;
-  const res = await fetch(url, {
-    method: 'POST',
-    body: payload,
-    headers: { 'Content-Type': 'application/octet-stream' }
-  });
-  if (!res.ok) throw new Error(`upload failed: ${res.status}`);
-
-  const receipt = await res.json();
-  const durationMs = validateUploadReceipt(receipt, sizeBytes);
-  const mbps = (receipt.acceptedBytes * 8) / (durationMs / 1000) / 1e6;
-  ```
-
-- store as `ThroughputSample` with `direction='upload'`.
-
----
-
-### 2.3 latency tests
-
-latency tests call `GET /__down?bytes=0` and treat the duration as rtt.
-
-**phases:**
-
-1. **unloaded latency** (adaptive batching)
-   - 20 total probes with hybrid latency+bandwidth detection:
-
-     ```ts
-     const url = `/__down?bytes=0&phase=unloaded&seq=${i}`;
-     ```
-
-   - **phase 1:** run first 3 probes sequentially to estimate connection quality
-   - **phase 2:** decide batching strategy based on median RTT:
-     - RTT < 50ms: use parallel batching (fast/local connection)
-     - RTT 50-100ms: use parallel batching (typical internet)
-     - RTT ≥ 100ms: check bandwidth first via quick 100KB download
-       - bandwidth ≥ 2 Mbps: use parallel batching (satellite connection)
-       - bandwidth < 2 Mbps: continue sequential (slow DSL)
-   - **phase 3:** run remaining 17 probes using selected strategy
-     - parallel mode: batch 5 probes at a time
-     - sequential mode: one probe at a time
-
-   - measure `durationMs` per request; store as `LatencySample` with `phase='unloaded'`.
-
-   **adaptive batching implementation:**
-   ```ts
-   const lowLatencyMs = 50;      // Below this: always parallel
-   const highLatencyMs = 100;    // Above this: check bandwidth
-   const minBandwidthMbps = 2;   // Minimum bandwidth for parallel on high-latency
-
-   // Calculate median RTT from initial 3 probes
-   const medianRtt = calculateMedian(samples.map(s => s.rttMs));
-
-   let useParallel;
-   if (medianRtt < lowLatencyMs) {
-     useParallel = true;  // Fast connection
-   } else if (medianRtt >= highLatencyMs) {
-     // High latency: check bandwidth to distinguish satellite from slow DSL
-     const bandwidth = await quickBandwidthEstimate();  // 100KB download
-     useParallel = bandwidth >= minBandwidthMbps;
-   } else {
-     useParallel = true;  // Medium latency (50-100ms)
-   }
-   ```
-
-2. **latency during download**
-   - while a medium/large download profile is running (e.g. `10M` or `25M`):
-     - schedule 5 latency probes using `phase='download'`.
-
-       ```ts
-       const url = `/__down?bytes=0&phase=download&seq=${i}`;
-       ```
-
-3. **latency during upload**
-   - same approach, but overlapping with an active upload test:
-
-     ```ts
-     const url = `/__down?bytes=0&phase=upload&seq=${i}`;
-     ```
-
-frontend coordinates these phases to ensure overlapping load and latency probes.
-
----
-
-### 2.4 packet loss test (TURN + WebRTC)
-
-profile: `"loss-basic"`.
-
-**steps:**
-
-1. call `GET /api/turn/credentials` and configure `RTCPeerConnection`.
-2. create `RTCDataChannel` labeled `"packet-loss"`:
-
-   ```ts
-   const dc = pc.createDataChannel('packet-loss', {
-     ordered: true,
-     maxRetransmits: 0
-   });
-   ```
-
-3. perform SDP offer/answer through `POST /api/packet-test/offer` (see 1.2.2).
-4. once the data channel `open` event fires, run the packet test:
-
-   ```ts
-   const N = 1000;
-   const intervalMs = 10;
-   let seq = 0;
-   const acks = new Set<number>();
-
-   dc.onmessage = (event) => {
-     const msg = JSON.parse(event.data);
-     if (typeof msg.ack === 'number') {
-       acks.add(msg.ack);
-     }
-   };
-
-   const timer = setInterval(() => {
-     if (seq >= N) {
-       clearInterval(timer);
-       return;
-     }
-
-     const msg = {
-       seq,
-       sentAt: Date.now(),
-       size: 1200
-     };
-     dc.send(JSON.stringify(msg));
-     seq++;
-   }, intervalMs);
-   ```
-
-5. after all packets are sent, wait an additional `extraWaitMs` (e.g. `3000`) for late acks.
-6. compute loss statistics:
-
-   ```ts
-   const sent = N;
-   const received = acks.size;
-   const lossPercent = (sent - received) / sent * 100;
-   ```
-
-7. optionally call `pc.getStats()`:
-
-   - derive RTT and jitter (implementation-specific).
-8. assemble `PacketLossResult` and store it in app state.
-9. optionally send to `/api/packet-test/report`.
-
----
+The frontend mirrors `internal/measurement`: finite positive values, warmup
+removal, R-7 percentiles, conservative 1.5-IQR filtering, p90-minus-median
+jitter, and population coefficient of variation.
 
 ## 3. frontend data model
 
 ```ts
-type LatencyPhase = 'unloaded' | 'download' | 'upload';
-
 type LatencySample = {
-  ts: number;          // ms since epoch
-  rttMs: number;       // measured round-trip time
-  phase: LatencyPhase;
+  ts: number;
+  rttMs: number;
+  phase: 'unloaded' | 'download' | 'upload';
+  probeStartedAt?: number;
+  probeFinishedAt?: number;
+  loadOverlapped?: boolean;
+  loadTrackingAccurate?: boolean;
+  timingSource?: string;
 };
-
-type ThroughputDirection = 'download' | 'upload';
-
-type ThroughputProfile =
-  | '100k'
-  | '1M'
-  | '10M'
-  | '25M'
-  | '50M'
-  | '100M';
 
 type ThroughputSample = {
   ts: number;
-  direction: ThroughputDirection;
+  direction: 'download' | 'upload';
   sizeBytes: number;
   durationMs: number;
   mbps: number;
-  profile: ThroughputProfile;
+  profile: string;
   runIndex: number;
+  sampleKind?: 'baseline' | 'window';
+  concurrency?: number;
+  chunkBytes?: number;
+  requestCount?: number;
+  timingSource?: string;
 };
 
 type PacketLossResult = {
   sent: number;
   received: number;
-  lossPercent: number | null;
-  unavailable?: boolean;
-  rttStatsMs: {
-    min: number;
-    median: number;
-    p90: number;
-  };
+  lossPercent: number | null; // transaction-loss compatibility alias
+  transactionLossPercent: number | null;
+  forwardSent: number;
+  forwardReceived: number;
+  forwardLossPercent: number | null;
+  acknowledgementsSent: number;
+  acknowledgementsReceived: number;
+  reverseAcknowledgementLossPercent: number | null;
+  frameSizeBytes: number;
+  duplicateFrames: number;
+  invalidFrames: number;
+  ackSendFailures: number;
+  rttStatsMs: { min: number; median: number; p90: number };
   jitterMs: number;
-  testId?: string;             // from /api/packet-test/offer
+  testId?: string;
+  unavailable?: boolean;
+  reason?: string;
 };
 
 type Summary = {
-  downloadMbps: number | null;
-  uploadMbps: number | null;
-  latencyUnloadedMs: number | null;
-  latencyDownloadMs: number | null;
-  latencyUploadMs: number | null;
-  jitterMs: number | null;
+  downloadMbps: number;
+  uploadMbps: number;
+  latencyUnloadedMs: number;
+  latencyDownloadMs: number;
+  latencyUploadMs: number;
+  jitterMs: number;
   packetLossPercent: number | null;
-};
-
-type NetworkQualityGrade = 'Great' | 'Good' | 'Okay' | 'Poor' | 'N/A';
-
-type NetworkQuality = {
-  videoStreaming: NetworkQualityGrade;
-  gaming: NetworkQualityGrade;
-  videoChatting: NetworkQualityGrade;
 };
 
 type Meta = {
@@ -669,66 +433,38 @@ type Meta = {
   latitude: number;
   longitude: number;
   timezone?: string;
-  measurementApiVersion?: number;
-  maxTransferBytes?: number;
-};
-
-type Location = {
-  iata: string;
-  lat: number;
-  lon: number;
-  cca2: string;
-  region: string;
-  city: string;
+  maxTransferBytes: number;
+  measurementProtocolVersion: number;
+  uploadReceiptVersion: number;
+  packetLossFrameVersion: number;
 };
 ```
 
----
+The existing location, map, diagnostic, grading, and presentation types remain
+unchanged.
 
 ## 4. summary metrics & grading
 
 ### 4.1 summary calculations
 
-computed from samples collected in sections 2.1–2.4.
+- Download and upload are the R-7 p90 of fixed-window values after conservative
+  IQR filtering. Baselines are excluded whenever window samples exist.
+- Unloaded latency drops two warmup samples, filters, and uses the median.
+- Loaded latency uses only `loadOverlapped === true` probes and reports the
+  median of each direction.
+- Jitter is unloaded p90 minus unloaded median.
+- `packetLossPercent` is transaction loss when the exact-frame test completed;
+  otherwise it is `null`.
 
-```ts
-function buildSummary(
-  throughput: ThroughputSample[],
-  latency: LatencySample[],
-  loss: PacketLossResult | null
-): Summary {
-  // helper functions p50/p90 omitted here
-  const dl = throughput.filter(s => s.direction === 'download').map(s => s.mbps);
-  const ul = throughput.filter(s => s.direction === 'upload').map(s => s.mbps);
-
-  const latUnloaded = latency.filter(l => l.phase === 'unloaded').map(l => l.rttMs);
-  const latDownload = latency.filter(l => l.phase === 'download').map(l => l.rttMs);
-  const latUpload   = latency.filter(l => l.phase === 'upload').map(l => l.rttMs);
-
-  const unloadedP50 = percentileOrNull(latUnloaded, 0.50);
-  const unloadedP90 = percentileOrNull(latUnloaded, 0.90);
-
-  return {
-    downloadMbps: percentileOrNull(dl, 0.90),
-    uploadMbps: percentileOrNull(ul, 0.90),
-    latencyUnloadedMs: unloadedP50,
-    latencyDownloadMs: percentileOrNull(latDownload, 0.90),
-    latencyUploadMs: percentileOrNull(latUpload, 0.90),
-    jitterMs: unloadedP50 === null || unloadedP90 === null
-      ? null
-      : unloadedP90 - unloadedP50,
-    packetLossPercent: loss && !loss.unavailable ? loss.lossPercent : null
-  };
-}
-```
-
-`percentileOrNull` returns `null` for an empty or invalid sample set. grading functions return `N/A` unless every metric they require is finite.
+All percentiles use R-7 interpolation. Unknown packet loss is never represented
+as zero, and grades requiring packet loss are `Incomplete`.
 
 ### 4.2 network quality grading (example)
 
 ```ts
 function gradeForStreaming(s: Summary): NetworkQualityGrade {
   const { downloadMbps, latencyUnloadedMs, jitterMs, packetLossPercent } = s;
+  if (packetLossPercent === null) return 'Incomplete';
 
   if (
     downloadMbps >= 50 &&
@@ -1461,156 +1197,20 @@ show network quality score prominently:
 
 ## 13. test confidence metrics
 
-### 13.1 measurement quality assessment
+The browser and Go client expose the same five gates:
 
-evaluate the confidence/reliability of test results:
+| gate | normal-mode requirement | deduction |
+|---|---|---:|
+| sample adequacy | 3 windows and 3 accepted loaded probes per enabled direction; at least 10 unloaded probes | 20 |
+| variability | throughput CV below 30%; unloaded latency CV below 50% | 25 |
+| loaded overlap | required probes prove continuous load | 25 |
+| packet test | directional daemon report completed and reverse-ACK loss is measurable | 20 |
+| timing accuracy | no imprecise timing fallback | 10 |
 
-```ts
-type TestConfidence = {
-  overall: 'high' | 'medium' | 'low';
-  overallScore: number;          // 0-100
-
-  metrics: {
-    sampleCount: {
-      download: number;
-      upload: number;
-      latency: number;
-      adequate: boolean;
-    };
-
-    coefficientOfVariation: {
-      download: number;          // std/mean as percentage
-      upload: number;
-      latency: number;
-      acceptable: boolean;       // <30% is acceptable
-    };
-
-    outlierRate: {
-      download: number;          // percentage of samples excluded
-      upload: number;
-      latency: number;
-      acceptable: boolean;       // <20% is acceptable
-    };
-
-    timingAccuracy: {
-      resourceTimingUsed: boolean;
-      serverTimingUsed: boolean;
-      fallbackCount: number;
-      accurate: boolean;
-    };
-
-    connectionStability: {
-      abortedTests: number;
-      retriedTests: number;
-      packetTestCompleted: boolean;
-      stable: boolean;
-    };
-  };
-
-  warnings: string[];
-};
-```
-
-**calculation:**
-
-```ts
-function assessTestConfidence(
-  samples: ThroughputSample[],
-  latency: LatencySample[],
-  packetLoss: PacketLossResult | null,
-  timingStats: { resourceTiming: number; serverTiming: number; fallback: number }
-): TestConfidence {
-  const warnings: string[] = [];
-
-  // Sample counts
-  const dlCount = samples.filter(s => s.direction === 'download').length;
-  const ulCount = samples.filter(s => s.direction === 'upload').length;
-  const latCount = latency.filter(s => s.phase === 'unloaded').length;
-  const sampleAdequate = dlCount >= 20 && ulCount >= 15 && latCount >= 10;
-  if (!sampleAdequate) warnings.push('Insufficient samples for high confidence');
-
-  // Coefficient of variation
-  function cv(arr: number[]): number {
-    if (arr.length < 2) return 0;
-    const mean = arr.reduce((a, b) => a + b, 0) / arr.length;
-    const std = Math.sqrt(arr.reduce((sum, x) => sum + (x - mean) ** 2, 0) / arr.length);
-    return (std / mean) * 100;
-  }
-
-  const dlCV = cv(samples.filter(s => s.direction === 'download').map(s => s.mbps));
-  const ulCV = cv(samples.filter(s => s.direction === 'upload').map(s => s.mbps));
-  const latCV = cv(latency.filter(s => s.phase === 'unloaded').map(s => s.rttMs));
-  const cvAcceptable = dlCV < 30 && ulCV < 30 && latCV < 50;
-  if (!cvAcceptable) warnings.push('High variability in measurements');
-
-  // Outlier rate (samples that were filtered out)
-  // This would need to be tracked during test execution
-  const outlierAcceptable = true; // placeholder
-
-  // Timing accuracy
-  const totalRequests = timingStats.resourceTiming + timingStats.serverTiming + timingStats.fallback;
-  const accurateTimingPercent = totalRequests > 0
-    ? ((timingStats.resourceTiming + timingStats.serverTiming) / totalRequests) * 100
-    : 0;
-  const timingAccurate = accurateTimingPercent > 80;
-  if (!timingAccurate) warnings.push('Timing API fallbacks may reduce accuracy');
-
-  // Connection stability
-  const connectionStable = packetLoss !== null && !packetLoss.unavailable;
-  if (!connectionStable) warnings.push('Packet loss test incomplete');
-
-  // Overall score (0-100)
-  let score = 100;
-  if (!sampleAdequate) score -= 20;
-  if (!cvAcceptable) score -= 25;
-  if (!timingAccurate) score -= 15;
-  if (!connectionStable) score -= 15;
-
-  let overall: 'high' | 'medium' | 'low';
-  if (score >= 80) overall = 'high';
-  else if (score >= 50) overall = 'medium';
-  else overall = 'low';
-
-  return {
-    overall,
-    overallScore: Math.max(0, score),
-    metrics: {
-      sampleCount: { download: dlCount, upload: ulCount, latency: latCount, adequate: sampleAdequate },
-      coefficientOfVariation: { download: dlCV, upload: ulCV, latency: latCV, acceptable: cvAcceptable },
-      outlierRate: { download: 0, upload: 0, latency: 0, acceptable: outlierAcceptable },
-      timingAccuracy: {
-        resourceTimingUsed: timingStats.resourceTiming > 0,
-        serverTimingUsed: timingStats.serverTiming > 0,
-        fallbackCount: timingStats.fallback,
-        accurate: timingAccurate
-      },
-      connectionStability: {
-        abortedTests: 0,
-        retriedTests: 0,
-        packetTestCompleted: connectionStable,
-        stable: connectionStable
-      }
-    },
-    warnings
-  };
-}
-```
-
-**ui display:**
-
-show test confidence section:
-
-- confidence badge: "High Confidence" (green) / "Medium Confidence" (yellow) / "Low Confidence" (red)
-- expandable details:
-  - "Samples: ✓ Download (31), ✓ Upload (25), ✓ Latency (18)"
-  - "Variability: ✓ Download ±8%, ✓ Upload ±12%, ✓ Latency ±15%"
-  - "Timing: ✓ Resource Timing API used (95% of requests)"
-  - "Connection: ✓ Stable throughout test"
-- warnings list (if any):
-  - "⚠ High variability in measurements"
-  - "⚠ Some timing fallbacks used"
-
----
+The result contains `sampleCount`, `coefficientOfVariation`, `loadedOverlap`,
+`timingAccuracy`, and `packetTest` subrecords plus warnings. Scores of 80–100 are
+high, 50–79 medium, and lower scores low. The UI renders these named gates rather
+than the former placeholder outlier and generic connection-stability fields.
 
 ## 14. updated data model
 
@@ -1652,156 +1252,24 @@ type ThroughputSampleExtended = ThroughputSample & {
 
 ---
 
-## 15. test profiles and adaptive selection
+## 15. bounded fixed-window selection
 
-### 15.1 all available download profiles
+The giant profile table is removed. Each direction has only two planning
+baselines—100 kB and 1 MB, three runs each—followed by three 1.5-second windows.
 
-| Profile | Size | Runs | Notes |
-|---------|------|------|-------|
-| 100kB   | 100,000 bytes | 10 | baseline when permitted by the server ceiling |
-| 1MB     | 1,000,000 bytes | 8 | baseline when permitted by the server ceiling |
-| 10MB    | 10,000,000 bytes | 6 | |
-| 25MB    | 25,000,000 bytes | 4 | |
-| 100MB   | 100,000,000 bytes | 3 | |
-| 250MB   | 250,000,000 bytes | 2 | |
-| 500MB   | 500,000,000 bytes | 2 | 1s at 4 Gbps |
-| 1GB     | 1,000,000,000 bytes | 2 | 1s at 8 Gbps |
-| 2GB     | 2,000,000,000 bytes | 2 | 1s at 16 Gbps |
-| 5GB     | 5,000,000,000 bytes | 2 | 1s at 40 Gbps |
-| 12GB    | 12,000,000,000 bytes | 2 | 1s at ~100 Gbps |
-| 50GB    | 50,000,000,000 bytes | 2 | 1s at 400 Gbps |
-| 100GB   | 100,000,000,000 bytes | 2 | 1s at 800 Gbps |
-| 125GB   | 125,000,000,000 bytes | 2 | 1s at 1 Tbps |
-
-### 15.2 all available upload profiles
-
-| Profile | Size | Runs | Notes |
-|---------|------|------|-------|
-| 100kB   | 100,000 bytes | 8 | baseline when permitted by the server ceiling |
-| 1MB     | 1,000,000 bytes | 6 | baseline when permitted by the server ceiling |
-| 10MB    | 10,000,000 bytes | 4 | |
-| 25MB    | 25,000,000 bytes | 4 | |
-| 50MB    | 50,000,000 bytes | 3 | |
-| 100MB   | 100,000,000 bytes | 2 | |
-| 250MB   | 250,000,000 bytes | 2 | 1s at 2 Gbps |
-| 500MB   | 500,000,000 bytes | 2 | 1s at 4 Gbps |
-| 1GB     | 1,000,000,000 bytes | 2 | 1s at 8 Gbps |
-| 2GB     | 2,000,000,000 bytes | 2 | 1s at 16 Gbps |
-| 5GB     | 5,000,000,000 bytes | 2 | 1s at 40 Gbps |
-| 12GB    | 12,000,000,000 bytes | 2 | 1s at ~100 Gbps |
-| 50GB    | 50,000,000,000 bytes | 2 | 1s at 400 Gbps |
-| 100GB   | 100,000,000,000 bytes | 2 | 1s at 800 Gbps |
-| 125GB   | 125,000,000,000 bytes | 2 | 1s at 1 Tbps |
-
-**Note:** Sizes use decimal (kB/MB/GB) notation: 1 kB = 1,000 bytes, 1 MB = 1,000,000 bytes, 1 GB = 1,000,000,000 bytes.
-
-these tables are the future streaming profile catalog. in phase 1, a browser profile is eligible only when its size is no greater than both `meta.maxTransferBytes` and the local browser ceiling (100 MB download, 50 MB upload). larger catalog entries remain disabled until phase 2 supplies bounded streaming and sustained concurrency.
-
-### 15.3 adaptive profile selection
-
-profiles are selected dynamically based on estimated connection speed. the algorithm uses linear time-based scaling:
-
-**formula:**
-```
-estimatedTime = (bytes × 8) / (speedMbps × 1,000,000)
-include profile if estimatedTime ≤ MAX_TEST_DURATION_SECONDS (4 seconds)
+```text
+target bytes = estimated bits/s / 8 × 0.250 s / concurrency
 ```
 
-**time budget constants:**
-```ts
-const MAX_TEST_DURATION_SECONDS = 4;       // max time for a single profile to be selected
-const TOTAL_DOWNLOAD_DURATION_SECONDS = 8; // total time budget for download phase
-const TOTAL_UPLOAD_DURATION_SECONDS = 8;   // total time budget for upload phase
-```
+The chunk is rounded to 64 KiB, bounded to 100,000 bytes through 256 MiB, and
+capped by the daemon. Browser concurrency is 1 below 100 Mbps, 2 at 100 Mbps,
+4 at 500 Mbps, and at most 6 at 2 Gbps and above. Streaming upload bodies use
+64 KiB chunks; non-streaming upload falls back to a reusable 8 MiB payload.
+Non-streaming download is capped at 100 MB.
 
-**selection process:**
-
-1. **baseline phase:** run eligible 100kB and 1MB tests, requiring the configured minimum valid samples from each required baseline
-2. **speed estimation:** calculate median speed from 1MB samples (after burst buffers depleted)
-3. **profile selection:** include larger profiles where estimated transfer time ≤ 4 seconds
-4. **time budget execution:** run selected profiles until 8-second budget exhausted
-5. **batch skipping:** if a profile's entire batch won't fit in remaining time, skip it entirely (no partial batches)
-
-**baseline profiles (always included):**
-- 100kB and 1MB are always included regardless of speed
-
-**examples at various speeds:**
-
-| Speed | Download Profiles | Upload Profiles |
-|-------|-------------------|-----------------|
-| 128 Kbps | 100kB, 1MB | 100kB, 1MB |
-| 5 Mbps | 100kB, 1MB | 100kB, 1MB |
-| 40 Mbps | 100kB, 1MB, 10MB | 100kB, 1MB |
-| 200 Mbps | 100kB, 1MB, ... 100MB | 100kB, 1MB, ... 100MB |
-| 1 Gbps | 100kB, 1MB, ... 500MB | 100kB, 1MB, ... 500MB |
-| 10 Gbps | 100kB, 1MB, ... 5GB | 100kB, 1MB, ... 5GB |
-| 100 Gbps | 100kB, 1MB, ... 50GB | 100kB, 1MB, ... 50GB |
-| 400 Gbps | 100kB, 1MB, ... 125GB | 100kB, 1MB, ... 125GB |
-| 800 Gbps | all profiles | all profiles |
-| 1 Tbps | all profiles | all profiles |
-
-**implementation:**
-
-```ts
-function estimateTransferTime(bytes: number, speedMbps: number): number {
-  if (speedMbps <= 0) return Infinity;
-  return (bytes * 8) / (speedMbps * 1e6);
-}
-
-function selectProfiles(estimatedSpeedMbps: number, allProfiles: ProfileMap, transferLimit: number): ProfileMap {
-  // Include only eligible baseline profiles
-  const profiles = {
-    '100kB': allProfiles['100kB'],
-    '1MB': allProfiles['1MB']
-  };
-
-  // Add larger profiles based on estimated transfer time
-  for (const [name, profile] of Object.entries(allProfiles)) {
-    if (name === '100kB' || name === '1MB') continue;
-    if (profile.bytes > transferLimit) continue;
-    const estimatedSeconds = estimateTransferTime(profile.bytes, estimatedSpeedMbps);
-    if (estimatedSeconds <= 4) {
-      profiles[name] = profile;
-    }
-  }
-
-  return profiles;
-}
-```
-
-this ensures:
-- slow connections (128 Kbps) only run small tests that complete quickly
-- fast connections (1+ Gbps) run larger tests for accurate measurements
-- phase 1 never selects a profile above the effective transfer ceiling
-- phase 2 may enable larger bounded streaming profiles for extremely fast connections
-- total test duration is bounded by 8-second budget per phase
-
-**batch skipping implementation:**
-
-```ts
-for (const profileName of largerProfiles) {
-  if (!DOWNLOAD_PROFILES[profileName]) continue;
-  const { bytes, runs } = DOWNLOAD_PROFILES[profileName];
-
-  // Check if entire batch can fit in remaining time budget
-  const elapsedMs = performance.now() - phase4StartTime;
-  const remainingMs = timeBudgetMs - elapsedMs;
-  const estimatedBatchTime = estimateTransferTime(bytes, estimatedSpeed) * runs * 1000;
-
-  if (estimatedBatchTime > remainingMs) {
-    console.log(`Download: skipping ${profileName} batch (${runs} runs) - insufficient time`);
-    expectedTotal -= runs; // Adjust expected total for progress reporting
-    continue;
-  }
-
-  // Run all tests in this batch
-  for (let run = 0; run < runs; run++) {
-    // ... execute test
-  }
-}
-```
-
----
+Workers repeat complete requests for the duration of the window. The window does
+not count partial or unverifiable requests, and high rates scale through
+concurrency rather than multi-gigabyte allocations.
 
 ## 16. packet loss error handling
 
@@ -1845,13 +1313,16 @@ when an error occurs, return an unavailable result:
 
 ```ts
 type PacketLossResultUnavailable = {
-  sent: 0;
-  received: 0;
-  lossPercent: 0;
+  sent: number;
+  received: number;
+  lossPercent: null;
+  transactionLossPercent: null;
+  forwardLossPercent: null;
+  reverseAcknowledgementLossPercent: null;
   rttStatsMs: { min: 0; median: 0; p90: 0 };
   jitterMs: 0;
   unavailable: true;
-  reason: string;  // human-readable error message
+  reason: string;
 };
 ```
 

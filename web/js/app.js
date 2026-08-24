@@ -351,19 +351,17 @@
             onTimingWarning: handleTimingWarning
         });
 
-        let completed = false;
         try {
             await SpeedTest.start();
-            completed = true;
         } catch (err) {
             if (err.name !== 'AbortError') {
                 console.error('Speed test failed:', err);
-                showError('Speed test failed. No incomplete result was graded.');
+                showError('Speed test failed. Please try again.');
             }
         }
 
         state.isRunning = false;
-        updateUIState(completed ? 'complete' : 'idle');
+        updateUIState('complete');
     }
 
     /**
@@ -727,18 +725,17 @@
         updateHeroValue('upload', summary.uploadMbps);
 
         if (elements.latencyValue) {
-            elements.latencyValue.textContent = Number.isFinite(summary.latencyUnloadedMs)
-                ? summary.latencyUnloadedMs.toFixed(1) : 'N/A';
+            elements.latencyValue.textContent = summary.latencyUnloadedMs.toFixed(1);
         }
 
         if (elements.jitterValue) {
-            elements.jitterValue.textContent = Number.isFinite(summary.jitterMs)
-                ? summary.jitterMs.toFixed(1) : 'N/A';
+            elements.jitterValue.textContent = summary.jitterMs.toFixed(1);
         }
 
         if (elements.packetLossValue) {
             elements.packetLossValue.textContent = Number.isFinite(summary.packetLossPercent)
-                ? summary.packetLossPercent.toFixed(2) : 'N/A';
+                ? summary.packetLossPercent.toFixed(2)
+                : 'N/A';
         }
 
         // Update measure time
@@ -987,12 +984,6 @@
 
         if (!valueEl) return;
 
-        if (!Number.isFinite(value)) {
-            valueEl.textContent = 'N/A';
-            if (unitEl) unitEl.textContent = '';
-            return;
-        }
-
         if (value >= 1000) {
             valueEl.textContent = (value / 1000).toFixed(2);
             if (unitEl) unitEl.textContent = 'Gbps';
@@ -1213,7 +1204,8 @@
             'Great': 'great',
             'Good': 'good',
             'Okay': 'okay',
-            'Poor': 'poor'
+            'Poor': 'poor',
+            'Incomplete': 'incomplete'
         };
 
         const ph = '<span class="placeholder"></span>';
@@ -1222,7 +1214,7 @@
         if (elements.streamingScore) {
             const grade = quality.videoStreaming;
             // Remove old grade classes and add new one
-            elements.streamingScore.classList.remove('great', 'good', 'okay', 'poor');
+            elements.streamingScore.classList.remove('great', 'good', 'okay', 'poor', 'incomplete');
             if (gradeClass[grade]) elements.streamingScore.classList.add(gradeClass[grade]);
             const text = elements.streamingScore.querySelector('.grade-text');
             if (text) text.innerHTML = grade || ph;
@@ -1231,7 +1223,7 @@
         // Gaming
         if (elements.gamingScore) {
             const grade = quality.gaming;
-            elements.gamingScore.classList.remove('great', 'good', 'okay', 'poor');
+            elements.gamingScore.classList.remove('great', 'good', 'okay', 'poor', 'incomplete');
             if (gradeClass[grade]) elements.gamingScore.classList.add(gradeClass[grade]);
             const text = elements.gamingScore.querySelector('.grade-text');
             if (text) text.innerHTML = grade || ph;
@@ -1240,7 +1232,7 @@
         // Video Chatting
         if (elements.videoChatScore) {
             const grade = quality.videoChatting;
-            elements.videoChatScore.classList.remove('great', 'good', 'okay', 'poor');
+            elements.videoChatScore.classList.remove('great', 'good', 'okay', 'poor', 'incomplete');
             if (gradeClass[grade]) elements.videoChatScore.classList.add(gradeClass[grade]);
             const text = elements.videoChatScore.querySelector('.grade-text');
             if (text) text.innerHTML = grade || ph;
@@ -1283,24 +1275,43 @@
             elements.packetLossValue.classList.remove('error');
         }
 
-        // Update badge
+        const transactionLoss = Number(packetLoss.transactionLossPercent ?? packetLoss.lossPercent);
+        const forwardLoss = packetLoss.forwardLossPercent === null || packetLoss.forwardLossPercent === undefined
+            ? null
+            : Number(packetLoss.forwardLossPercent);
+        const reverseLoss = packetLoss.reverseAcknowledgementLossPercent === null ||
+            packetLoss.reverseAcknowledgementLossPercent === undefined
+            ? null
+            : Number(packetLoss.reverseAcknowledgementLossPercent);
+        const acknowledged = Number(packetLoss.acknowledgementsReceived ?? packetLoss.received) || 0;
+        const sent = Number(packetLoss.sent) || 0;
+
+        // The headline is round-trip transaction loss. Directional values are
+        // shown separately so a missing acknowledgement is not mislabeled as
+        // forward-path packet loss.
         if (elements.packetLossBadge) {
-            elements.packetLossBadge.textContent = `${packetLoss.received}/${packetLoss.sent}`;
+            elements.packetLossBadge.textContent = `${acknowledged}/${sent}`;
         }
 
-        // Update fill bar
         if (elements.packetLossFill) {
-            const successPercent = (packetLoss.received / packetLoss.sent) * 100;
+            const successPercent = sent > 0 ? (acknowledged / sent) * 100 : 0;
             elements.packetLossFill.style.width = `${successPercent}%`;
         }
 
-        // Update detail text
         if (elements.packetLossDetail) {
-            elements.packetLossDetail.textContent = `${packetLoss.lossPercent.toFixed(2)}%`;
+            const parts = [Number.isFinite(transactionLoss)
+                ? `Transaction ${transactionLoss.toFixed(2)}%`
+                : 'Transaction N/A'];
+            if (Number.isFinite(forwardLoss)) parts.push(`forward ${forwardLoss.toFixed(2)}%`);
+            if (Number.isFinite(reverseLoss)) parts.push(`reverse ACK ${reverseLoss.toFixed(2)}%`);
+            elements.packetLossDetail.textContent = parts.join(' · ');
         }
 
         if (elements.packetsReceived) {
-            elements.packetsReceived.textContent = `${packetLoss.received} / ${packetLoss.sent} packets`;
+            const forwardReceived = Number(packetLoss.forwardReceived);
+            elements.packetsReceived.textContent = Number.isFinite(forwardReceived)
+                ? `${forwardReceived}/${sent} probes reached server; ${acknowledged} ACKs returned`
+                : `${acknowledged} / ${sent} transactions acknowledged`;
         }
 
         // Update RTT stats
@@ -1375,14 +1386,6 @@
      */
     function encodeResultsForURL() {
         if (!state.summary) return null;
-        const required = [
-            state.summary.downloadMbps,
-            state.summary.uploadMbps,
-            state.summary.latencyUnloadedMs,
-            state.summary.jitterMs,
-            state.summary.packetLossPercent
-        ];
-        if (!required.every(Number.isFinite)) return null;
 
         // Pack quality grades: each 0-4, packed as qs*25 + qg*5 + qv
         let q = 0;
@@ -1424,6 +1427,12 @@
         // All values to encode (delta-encoded as one array)
         const serverLoc = state.locations?.find(l => l.iata === state.meta?.colo);
         const pl = state.packetLoss;
+
+        // Shared-result URLs require a complete metric set. Do not encode an
+        // unavailable packet-loss measurement as a misleading zero.
+        if (!Number.isFinite(state.summary?.packetLossPercent)) {
+            return null;
+        }
 
         const values = [
             Math.round(state.summary.downloadMbps * 10),
@@ -2497,58 +2506,66 @@
     function updateTestConfidenceDisplay(confidence) {
         if (!confidence) return;
 
-        // Update badge
         if (elements.confidenceBadge) {
-            const labels = { 'high': 'High Confidence', 'medium': 'Medium Confidence', 'low': 'Low Confidence' };
+            const labels = { high: 'High Confidence', medium: 'Medium Confidence', low: 'Low Confidence' };
             elements.confidenceBadge.textContent = labels[confidence.overall] || 'Unknown';
-            elements.confidenceBadge.className = `confidence-badge ${confidence.overall}`;
+            elements.confidenceBadge.className = `confidence-badge ${confidence.overall || 'low'}`;
         }
 
+        // Older shared-result URLs carry only the aggregate confidence level.
+        // The detailed gates are available on newly measured Phase 2 results.
         const metrics = confidence.metrics;
+        if (!metrics) return;
 
-        // Sample count
+        const sampleCount = metrics.sampleCount || {};
         if (elements.sampleCountIcon) {
-            elements.sampleCountIcon.className = `confidence-icon ${metrics.sampleCount.adequate ? 'pass' : 'fail'}`;
+            elements.sampleCountIcon.className = `confidence-icon ${sampleCount.adequate ? 'pass' : 'fail'}`;
         }
         if (elements.sampleCountDetail) {
-            elements.sampleCountDetail.textContent = `DL: ${metrics.sampleCount.download}, UL: ${metrics.sampleCount.upload}, Lat: ${metrics.sampleCount.latency}`;
+            elements.sampleCountDetail.textContent =
+                `Windows DL/UL: ${sampleCount.downloadWindows ?? 0}/${sampleCount.uploadWindows ?? 0}; ` +
+                `latency: ${sampleCount.unloadedLatency ?? 0}`;
         }
 
-        // Variability
+        const variability = metrics.coefficientOfVariation || {};
         if (elements.variabilityIcon) {
-            elements.variabilityIcon.className = `confidence-icon ${metrics.coefficientOfVariation.acceptable ? 'pass' : 'fail'}`;
+            elements.variabilityIcon.className = `confidence-icon ${variability.acceptable ? 'pass' : 'fail'}`;
         }
         if (elements.variabilityDetail) {
-            elements.variabilityDetail.textContent = `DL: ±${metrics.coefficientOfVariation.download.toFixed(0)}%, UL: ±${metrics.coefficientOfVariation.upload.toFixed(0)}%`;
+            elements.variabilityDetail.textContent =
+                `DL: ±${Number(variability.download || 0).toFixed(0)}%, ` +
+                `UL: ±${Number(variability.upload || 0).toFixed(0)}%, ` +
+                `RTT: ±${Number(variability.latency || 0).toFixed(0)}%`;
         }
 
-        // Timing
+        const timing = metrics.timingAccuracy || {};
         if (elements.timingIcon) {
-            elements.timingIcon.className = `confidence-icon ${metrics.timingAccuracy.accurate ? 'pass' : 'fail'}`;
+            elements.timingIcon.className = `confidence-icon ${timing.accurate ? 'pass' : 'fail'}`;
         }
         if (elements.timingDetail) {
-            const timingText = metrics.timingAccuracy.resourceTimingUsed ? 'Resource Timing API' :
-                              (metrics.timingAccuracy.fallbackCount > 0 ? `${metrics.timingAccuracy.fallbackCount} fallbacks` : 'Available');
-            elements.timingDetail.textContent = timingText;
+            elements.timingDetail.textContent = timing.accurate
+                ? 'Verified window and probe timing'
+                : 'Fallback or imprecise load timing used';
         }
 
-        // Connection
+        const overlap = metrics.loadedOverlap || {};
+        const packetTest = metrics.packetTest || {};
+        const connectionComplete = overlap.complete === true && packetTest.completed === true;
         if (elements.connectionIcon) {
-            elements.connectionIcon.className = `confidence-icon ${metrics.connectionStability.stable ? 'pass' : 'fail'}`;
+            elements.connectionIcon.className = `confidence-icon ${connectionComplete ? 'pass' : 'fail'}`;
         }
         if (elements.connectionDetail) {
-            elements.connectionDetail.textContent = metrics.connectionStability.packetTestCompleted ? 'Stable' : 'Incomplete';
+            const overlapText = `overlap DL/UL ${overlap.downloadAccepted ?? 0}/${overlap.uploadAccepted ?? 0}`;
+            elements.connectionDetail.textContent = packetTest.completed
+                ? `Directional loss complete; ${overlapText}`
+                : `Directional loss incomplete; ${overlapText}`;
         }
 
-        // Warnings
         if (elements.confidenceWarnings) {
-            if (confidence.warnings.length > 0) {
-                elements.confidenceWarnings.innerHTML = confidence.warnings
-                    .map(w => `<div class="confidence-warning">${w}</div>`)
-                    .join('');
-            } else {
-                elements.confidenceWarnings.innerHTML = '';
-            }
+            const warnings = Array.isArray(confidence.warnings) ? confidence.warnings : [];
+            elements.confidenceWarnings.innerHTML = warnings
+                .map(warning => `<div class="confidence-warning">${warning}</div>`)
+                .join('');
         }
     }
 

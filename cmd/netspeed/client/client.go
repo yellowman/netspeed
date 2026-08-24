@@ -2,28 +2,30 @@
 package client
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"io"
+	"math"
 	"net"
 	"net/http"
 	"net/http/httptrace"
 	"net/url"
 	"sort"
-	"strconv"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/yellowman/netspeed/internal/measurement"
+	"github.com/yellowman/netspeed/internal/protocol"
 )
 
 // timingInfo captures precise HTTP timing events.
 type timingInfo struct {
-	wroteRequest time.Time
-	gotFirstByte time.Time
+	wroteRequest   time.Time
+	gotFirstByte   time.Time
+	onWroteRequest func()
 }
 
 // createTrace creates an httptrace.ClientTrace for precise timing.
@@ -31,6 +33,9 @@ func createTrace(t *timingInfo) *httptrace.ClientTrace {
 	return &httptrace.ClientTrace{
 		WroteRequest: func(info httptrace.WroteRequestInfo) {
 			t.wroteRequest = time.Now()
+			if t.onWroteRequest != nil {
+				t.onWroteRequest()
+			}
 		},
 		GotFirstResponseByte: func() {
 			t.gotFirstByte = time.Now()
@@ -51,13 +56,13 @@ type Config struct {
 
 // Buffer sizes for high-speed connections
 const (
-	ReadBufferSize  = 4 * 1024 * 1024 // 4MB read buffer
-	WriteBufferSize = 4 * 1024 * 1024 // 4MB write buffer
-
-	// LegacyMaxTransferBytes is used when a third-party server does not
-	// advertise the phase-1 measurement capabilities in /meta.
-	LegacyMaxTransferBytes int64 = 100_000_000
-	maxErrorBodyBytes      int64 = 4 << 10
+	ReadBufferSize            = 4 * 1024 * 1024 // 4MB read buffer
+	WriteBufferSize           = 4 * 1024 * 1024 // 4MB write buffer
+	legacyMaxTransferBytes    = 100_000_000     // conservative cap for older /meta responses
+	maxMeasurementErrorBytes  = 4 * 1024
+	maxMetaBodyBytes          = 1 * 1024 * 1024
+	maxUploadReceiptBodyBytes = 64 * 1024
+	maxPacketReportBodyBytes  = 64 * 1024
 )
 
 // UserAgent matches python-requests default format
@@ -71,94 +76,8 @@ func setRequestHeaders(req *http.Request) {
 	req.Header.Set("Connection", "keep-alive")
 }
 
-func newMeasurementID() string {
-	seq := measurementSequence.Add(1)
-	return fmt.Sprintf("%d-%d", time.Now().UnixNano(), seq)
-}
-
-func requireStatusOK(resp *http.Response, operation string) error {
-	if resp.StatusCode == http.StatusOK {
-		return nil
-	}
-
-	body, err := io.ReadAll(io.LimitReader(resp.Body, maxErrorBodyBytes))
-	if err != nil {
-		return fmt.Errorf("%s returned HTTP %d and its error body could not be read: %w", operation, resp.StatusCode, err)
-	}
-	detail := strings.TrimSpace(string(body))
-	if detail == "" {
-		return fmt.Errorf("%s returned HTTP %d", operation, resp.StatusCode)
-	}
-	return fmt.Errorf("%s returned HTTP %d: %s", operation, resp.StatusCode, detail)
-}
-
-func (c *Client) endpoint(path string, query url.Values) (string, error) {
-	u, err := url.Parse(strings.TrimRight(c.cfg.ServerURL, "/") + path)
-	if err != nil {
-		return "", fmt.Errorf("build %s endpoint: %w", path, err)
-	}
-
-	q := u.Query()
-	for key, values := range query {
-		for _, value := range values {
-			q.Add(key, value)
-		}
-	}
-	u.RawQuery = q.Encode()
-	return u.String(), nil
-}
-
-// generatedUploadBody streams a deterministic zero-filled request body without
-// retaining a payload-sized allocation. Its timestamps are protected because
-// net/http may consume the body on a transport goroutine.
-type generatedUploadBody struct {
-	mu        sync.Mutex
-	remaining int64
-	readBytes int64
-	firstRead time.Time
-	lastRead  time.Time
-}
-
-func newGeneratedUploadBody(size int64) *generatedUploadBody {
-	return &generatedUploadBody{remaining: size}
-}
-
-func (b *generatedUploadBody) Read(p []byte) (int, error) {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-
-	if b.remaining == 0 {
-		return 0, io.EOF
-	}
-
-	n := int64(len(p))
-	if n > b.remaining {
-		n = b.remaining
-	}
-	clear(p[:int(n)])
-
-	now := time.Now()
-	if b.firstRead.IsZero() {
-		b.firstRead = now
-	}
-	b.lastRead = now
-	b.remaining -= n
-	b.readBytes += n
-	return int(n), nil
-}
-
-func (b *generatedUploadBody) Close() error { return nil }
-
-func (b *generatedUploadBody) snapshot() (readBytes int64, firstRead, lastRead time.Time) {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	return b.readBytes, b.firstRead, b.lastRead
-}
-
-// Time budget constants (matching web client)
+// Latency adaptation constants shared with the browser implementation.
 const (
-	MaxTestDuration         = 4 * time.Second // Max time for single profile to be selected
-	TotalPhaseBudget        = 8 * time.Second // Total time budget per phase
 	LowLatencyThreshold     = 50 * time.Millisecond
 	HighLatencyThreshold    = 100 * time.Millisecond
 	MinBandwidthForParallel = 2.0 // Mbps
@@ -166,13 +85,12 @@ const (
 
 // Client performs speed tests.
 type Client struct {
-	cfg                   Config
-	httpClient            *http.Client
-	maxTransferBytes      int64
-	measurementAPIVersion int
+	cfg                    Config
+	httpClient             *http.Client
+	maxTransferBytes       int64
+	uploadReceiptVersion   int
+	packetLossFrameVersion int
 }
-
-var measurementSequence atomic.Uint64
 
 // New creates a new speed test client.
 func New(cfg Config) *Client {
@@ -184,7 +102,7 @@ func New(cfg Config) *Client {
 
 	return &Client{
 		cfg:              cfg,
-		maxTransferBytes: LegacyMaxTransferBytes,
+		maxTransferBytes: legacyMaxTransferBytes,
 		httpClient: &http.Client{
 			Transport: &http.Transport{
 				DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
@@ -220,7 +138,7 @@ func New(cfg Config) *Client {
 // Run executes the full speed test suite.
 func (c *Client) Run(ctx context.Context) (*Results, error) {
 	if c.cfg.DownloadOnly && c.cfg.UploadOnly {
-		return nil, fmt.Errorf("download-only and upload-only cannot be used together")
+		return nil, fmt.Errorf("download-only and upload-only modes are mutually exclusive")
 	}
 
 	results := &Results{
@@ -235,6 +153,18 @@ func (c *Client) Run(ctx context.Context) (*Results, error) {
 		return nil, fmt.Errorf("failed to fetch metadata: %w", err)
 	}
 	results.Meta = meta
+	if meta.MaxTransferBytes > 0 {
+		c.maxTransferBytes = meta.MaxTransferBytes
+	}
+	c.uploadReceiptVersion = meta.UploadReceiptVersion
+	c.packetLossFrameVersion = meta.PacketLossFrameVersion
+	if meta.MeasurementProtocolVersion < protocol.MeasurementProtocolVersion {
+		return nil, fmt.Errorf("server measurement protocol %d is too old; need version %d",
+			meta.MeasurementProtocolVersion, protocol.MeasurementProtocolVersion)
+	}
+	if !c.cfg.DownloadOnly && c.uploadReceiptVersion < protocol.UploadReceiptVersion {
+		return nil, fmt.Errorf("server does not support verified upload receipts (need version %d)", protocol.UploadReceiptVersion)
+	}
 
 	// Run latency tests (unloaded) with adaptive batching
 	latencySamples, err := c.runAdaptiveLatencyTest(ctx, "unloaded", 20)
@@ -243,7 +173,7 @@ func (c *Client) Run(ctx context.Context) (*Results, error) {
 	}
 	results.LatencySamples = append(results.LatencySamples, latencySamples...)
 
-	// Run download tests with adaptive profile selection
+	// Run bounded fixed-duration download windows
 	if !c.cfg.UploadOnly {
 		downloadSamples, loadedLatency, err := c.runDownloadTests(ctx)
 		if err != nil {
@@ -253,7 +183,7 @@ func (c *Client) Run(ctx context.Context) (*Results, error) {
 		results.LatencySamples = append(results.LatencySamples, loadedLatency...)
 	}
 
-	// Run upload tests with adaptive profile selection
+	// Run bounded fixed-duration upload windows
 	if !c.cfg.DownloadOnly {
 		uploadSamples, loadedLatency, err := c.runUploadTests(ctx)
 		if err != nil {
@@ -263,16 +193,11 @@ func (c *Client) Run(ctx context.Context) (*Results, error) {
 		results.LatencySamples = append(results.LatencySamples, loadedLatency...)
 	}
 
-	// Run packet loss test. A skipped or failed test remains explicitly
-	// unavailable; it must never be converted into a perfect 0% result.
-	if c.cfg.SkipPacketLoss {
-		results.PacketLoss = &PacketLossResult{
-			Unavailable: true,
-			Reason:      "skipped by user",
-		}
-	} else {
+	// Run packet loss test
+	if !c.cfg.SkipPacketLoss {
 		packetLoss, err := c.runPacketLossTest(ctx)
 		if err != nil {
+			// Packet loss test failure is not fatal
 			results.PacketLoss = &PacketLossResult{
 				Unavailable: true,
 				Reason:      err.Error(),
@@ -286,17 +211,14 @@ func (c *Client) Run(ctx context.Context) (*Results, error) {
 	results.Summary = c.calculateSummary(results)
 	results.Quality = c.calculateQuality(results.Summary)
 	results.EndTime = time.Now()
+	results.TestConfidence = c.assessTestConfidence(results)
 
 	return results, nil
 }
 
 // fetchMeta fetches server and client metadata.
 func (c *Client) fetchMeta(ctx context.Context) (*Meta, error) {
-	endpoint, err := c.endpoint("/meta", nil)
-	if err != nil {
-		return nil, err
-	}
-	req, err := http.NewRequestWithContext(ctx, "GET", endpoint, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.cfg.ServerURL+"/meta", nil)
 	if err != nil {
 		return nil, err
 	}
@@ -308,30 +230,16 @@ func (c *Client) fetchMeta(ctx context.Context) (*Meta, error) {
 	}
 	defer resp.Body.Close()
 
-	if err := requireStatusOK(resp, "metadata request"); err != nil {
+	if err := requireMeasurementStatus(resp, http.StatusOK); err != nil {
 		return nil, err
+	}
+	if contentType := resp.Header.Get("Content-Type"); !strings.HasPrefix(strings.ToLower(contentType), "application/json") {
+		return nil, fmt.Errorf("unexpected metadata content type %q", contentType)
 	}
 
 	var meta Meta
-	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&meta); err != nil {
+	if err := decodeLimitedJSON(resp.Body, maxMetaBodyBytes, &meta); err != nil {
 		return nil, fmt.Errorf("decode metadata: %w", err)
-	}
-
-	// Reset negotiated capabilities on every run so reusing a Client against a
-	// legacy server cannot retain a previous API-v1 contract.
-	c.measurementAPIVersion = 0
-	c.maxTransferBytes = LegacyMaxTransferBytes
-
-	if meta.MeasurementAPIVersion >= measurement.APIVersion {
-		if meta.MaxTransferBytes <= 0 {
-			return nil, fmt.Errorf("measurement API v%d did not advertise a positive maxTransferBytes", meta.MeasurementAPIVersion)
-		}
-		c.measurementAPIVersion = meta.MeasurementAPIVersion
-		c.maxTransferBytes = meta.MaxTransferBytes
-	} else if meta.MaxTransferBytes > 0 {
-		// Honor a capability-aware legacy server even if it does not yet
-		// advertise the byte-counted receipt version.
-		c.maxTransferBytes = meta.MaxTransferBytes
 	}
 
 	return &meta, nil
@@ -341,9 +249,6 @@ func (c *Client) fetchMeta(ctx context.Context) (*Meta, error) {
 func (c *Client) runAdaptiveLatencyTest(ctx context.Context, phase string, count int) ([]LatencySample, error) {
 	if c.cfg.Quick {
 		count = 5
-	}
-	if count <= 0 {
-		return nil, fmt.Errorf("latency test requires at least one probe")
 	}
 
 	samples := make([]LatencySample, 0, count)
@@ -361,37 +266,33 @@ func (c *Client) runAdaptiveLatencyTest(ctx context.Context, phase string, count
 		default:
 		}
 
-		rtt, err := c.measureLatency(ctx, phase, i)
+		sample, err := c.measureLatencySample(ctx, phase, i)
 		if err != nil {
 			continue
-		}
-
-		sample := LatencySample{
-			Timestamp: time.Now(),
-			RTT:       rtt,
-			Phase:     phase,
 		}
 		samples = append(samples, sample)
 
 		if c.cfg.OnProgress != nil {
-			c.cfg.OnProgress("latency", i+1, count, float64(rtt.Milliseconds()))
+			c.cfg.OnProgress("latency", i+1, count, float64(sample.RTT.Microseconds())/1000)
 		}
+	}
+
+	if len(samples) == 0 {
+		return samples, fmt.Errorf("%s latency test produced no valid samples", phase)
 	}
 
 	// Phase 2: Decide batching strategy based on median RTT
 	medianRTT := c.calculateMedianRTT(samples)
 	useParallel := false
 
-	if len(samples) > 0 {
-		if medianRTT < LowLatencyThreshold {
-			useParallel = true
-		} else if medianRTT >= HighLatencyThreshold {
-			// High latency: check bandwidth to distinguish satellite from slow DSL.
-			bandwidth := c.quickBandwidthEstimate(ctx)
-			useParallel = bandwidth >= MinBandwidthForParallel
-		} else {
-			useParallel = true // 50-100ms range
-		}
+	if medianRTT < LowLatencyThreshold {
+		useParallel = true
+	} else if medianRTT >= HighLatencyThreshold {
+		// High latency: check bandwidth to distinguish satellite from slow DSL
+		bandwidth := c.quickBandwidthEstimate(ctx)
+		useParallel = bandwidth >= MinBandwidthForParallel
+	} else {
+		useParallel = true // 50-100ms range
 	}
 
 	// Phase 3: Run remaining probes
@@ -421,32 +322,21 @@ func (c *Client) runAdaptiveLatencyTest(ctx context.Context, phase string, count
 			default:
 			}
 
-			rtt, err := c.measureLatency(ctx, phase, i)
+			sample, err := c.measureLatencySample(ctx, phase, i)
 			if err != nil {
 				continue
-			}
-
-			sample := LatencySample{
-				Timestamp: time.Now(),
-				RTT:       rtt,
-				Phase:     phase,
 			}
 			samples = append(samples, sample)
 
 			if c.cfg.OnProgress != nil {
-				c.cfg.OnProgress("latency", i+1, count, float64(rtt.Milliseconds()))
+				c.cfg.OnProgress("latency", i+1, count, float64(sample.RTT.Microseconds())/1000)
 			}
 		}
 	}
 
-	minimum := 3
-	if count < minimum {
-		minimum = count
+	if len(samples) < requiredSuccessfulRuns(count) {
+		return samples, fmt.Errorf("%s latency test produced %d/%d valid samples", phase, len(samples), count)
 	}
-	if len(samples) < minimum {
-		return samples, fmt.Errorf("only %d of %d latency probes succeeded; need at least %d", len(samples), count, minimum)
-	}
-
 	return samples, nil
 }
 
@@ -459,15 +349,11 @@ func (c *Client) runParallelLatencyProbes(ctx context.Context, phase string, sta
 		wg.Add(1)
 		go func(seq int) {
 			defer wg.Done()
-			rtt, err := c.measureLatency(ctx, phase, seq)
+			sample, err := c.measureLatencySample(ctx, phase, seq)
 			if err != nil {
 				return
 			}
-			results <- LatencySample{
-				Timestamp: time.Now(),
-				RTT:       rtt,
-				Phase:     phase,
-			}
+			results <- sample
 		}(startSeq + i)
 	}
 
@@ -496,75 +382,52 @@ func (c *Client) calculateMedianRTT(samples []LatencySample) time.Duration {
 	return rtts[len(rtts)/2]
 }
 
-// quickBandwidthEstimate does a quick 100KB download to estimate bandwidth.
+// quickBandwidthEstimate does a verified 100KB download to estimate bandwidth.
 func (c *Client) quickBandwidthEstimate(ctx context.Context) float64 {
-	const preferredBytes int64 = 100_000
-	bytesToRequest := preferredBytes
-	if c.maxTransferBytes < bytesToRequest {
-		bytesToRequest = c.maxTransferBytes
-	}
-	if bytesToRequest <= 0 {
+	const estimateBytes = int64(100_000)
+	if c.maxTransferBytes < estimateBytes {
 		return 0
 	}
-
-	endpoint, err := c.endpoint("/__down", url.Values{
-		"bytes":  {strconv.FormatInt(bytesToRequest, 10)},
-		"measId": {"bandwidth-estimate-" + newMeasurementID()},
-	})
+	sample, err := c.measureDownload(ctx, "estimate", estimateBytes, 0)
 	if err != nil {
 		return 0
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	return sample.Mbps
+}
+
+func (c *Client) measureLatencySample(ctx context.Context, phase string, seq int) (LatencySample, error) {
+	startedAt := time.Now()
+	rtt, err := c.measureLatency(ctx, phase, seq)
+	endedAt := time.Now()
 	if err != nil {
-		return 0
+		return LatencySample{}, err
 	}
-	setRequestHeaders(req)
-	req.Header.Set("Cache-Control", "no-store")
-
-	start := time.Now()
-	resp, err := c.httpClient.Do(req)
-	if err != nil {
-		return 0
-	}
-	defer resp.Body.Close()
-	if err := requireStatusOK(resp, "bandwidth estimate"); err != nil {
-		return 0
-	}
-	if resp.ContentLength >= 0 && resp.ContentLength != bytesToRequest {
-		return 0
-	}
-
-	received, err := io.Copy(io.Discard, resp.Body)
-	if err != nil || received != bytesToRequest {
-		return 0
-	}
-
-	duration := time.Since(start)
-	if duration <= 0 {
-		return 0
-	}
-	return float64(received*8) / duration.Seconds() / 1e6
+	return LatencySample{
+		Timestamp:    endedAt,
+		StartedAt:    startedAt,
+		EndedAt:      endedAt,
+		RTT:          rtt,
+		Phase:        phase,
+		TimingSource: "httptrace",
+	}, nil
 }
 
 // measureLatency measures a single latency probe using precise timing.
 // RTT = GotFirstResponseByte - WroteRequest (excludes connection setup, TLS, DNS)
 func (c *Client) measureLatency(ctx context.Context, phase string, seq int) (time.Duration, error) {
-	endpoint, err := c.endpoint("/__down", url.Values{
+	measID := fmt.Sprintf("%d-%s-%d", time.Now().UnixNano(), phase, seq)
+	requestURL := buildMeasurementURL(c.cfg.ServerURL, "/__down", url.Values{
 		"bytes":  {"0"},
-		"measId": {newMeasurementID()},
+		"measId": {measID},
 		"during": {phase},
-		"seq":    {strconv.Itoa(seq)},
+		"seq":    {fmt.Sprintf("%d", seq)},
 	})
-	if err != nil {
-		return 0, err
-	}
 
-	// Set up precise timing via httptrace
 	var timing timingInfo
 	trace := createTrace(&timing)
 	ctx = httptrace.WithClientTrace(ctx, trace)
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, requestURL, nil)
 	if err != nil {
 		return 0, err
 	}
@@ -576,527 +439,790 @@ func (c *Client) measureLatency(ctx context.Context, phase string, seq int) (tim
 		return 0, err
 	}
 	defer resp.Body.Close()
-	if err := requireStatusOK(resp, "latency probe"); err != nil {
+	if err := requireMeasurementStatus(resp, http.StatusOK); err != nil {
 		return 0, err
 	}
-	if resp.ContentLength > 0 {
-		return 0, fmt.Errorf("latency probe returned Content-Length %d; expected 0", resp.ContentLength)
-	}
-	received, err := io.Copy(io.Discard, resp.Body)
+	received, err := consumeExactBody(resp.Body, 0)
 	if err != nil {
 		return 0, fmt.Errorf("read latency response: %w", err)
 	}
 	if received != 0 {
-		return 0, fmt.Errorf("latency probe returned %d body bytes; expected 0", received)
+		return 0, fmt.Errorf("latency response contained %d bytes; expected 0", received)
 	}
 
-	// RTT = time from request written to first response byte
-	// This excludes connection setup, TLS handshake, and DNS resolution
 	if timing.wroteRequest.IsZero() || timing.gotFirstByte.IsZero() {
-		// Fallback if trace didn't fire (shouldn't happen)
 		return 0, fmt.Errorf("timing trace failed")
 	}
-
 	rtt := timing.gotFirstByte.Sub(timing.wroteRequest)
 	if rtt <= 0 {
-		return 0, fmt.Errorf("latency timing was not positive")
+		return 0, fmt.Errorf("invalid latency duration %s", rtt)
 	}
 	return rtt, nil
 }
 
-// Profile configuration
+// Profile configuration used only for the small baseline estimate. Sustained
+// throughput is measured by fixed-duration windows below, not giant profiles.
 type profile struct {
 	Name  string
 	Bytes int64
 	Runs  int
 }
 
-// All download profiles matching web client (up to 1 Tbps)
-var allDownloadProfiles = []profile{
-	{"100kB", 100_000, 10},
-	{"1MB", 1_000_000, 8},
-	{"10MB", 10_000_000, 6},
-	{"25MB", 25_000_000, 4},
-	{"100MB", 100_000_000, 3},
-	{"250MB", 250_000_000, 2},
-	{"500MB", 500_000_000, 2},     // 1s at 4 Gbps
-	{"1GB", 1_000_000_000, 2},     // 1s at 8 Gbps
-	{"2GB", 2_000_000_000, 2},     // 1s at 16 Gbps
-	{"5GB", 5_000_000_000, 2},     // 1s at 40 Gbps
-	{"12GB", 12_000_000_000, 2},   // 1s at ~100 Gbps
-	{"50GB", 50_000_000_000, 2},   // 1s at 400 Gbps
-	{"100GB", 100_000_000_000, 2}, // 1s at 800 Gbps
-	{"125GB", 125_000_000_000, 2}, // 1s at 1 Tbps
-}
-
-// All upload profiles matching web client (up to 1 Tbps)
-var allUploadProfiles = []profile{
-	{"100kB", 100_000, 8},
-	{"1MB", 1_000_000, 6},
-	{"10MB", 10_000_000, 4},
-	{"25MB", 25_000_000, 4},
-	{"50MB", 50_000_000, 3},
-	{"100MB", 100_000_000, 2},
-	{"250MB", 250_000_000, 2},     // 1s at 2 Gbps
-	{"500MB", 500_000_000, 2},     // 1s at 4 Gbps
-	{"1GB", 1_000_000_000, 2},     // 1s at 8 Gbps
-	{"2GB", 2_000_000_000, 2},     // 1s at 16 Gbps
-	{"5GB", 5_000_000_000, 2},     // 1s at 40 Gbps
-	{"12GB", 12_000_000_000, 2},   // 1s at ~100 Gbps
-	{"50GB", 50_000_000_000, 2},   // 1s at 400 Gbps
-	{"100GB", 100_000_000_000, 2}, // 1s at 800 Gbps
-	{"125GB", 125_000_000_000, 2}, // 1s at 1 Tbps
-}
-
-var quickDownloadProfiles = []profile{
-	{"100kB", 100_000, 3},
-	{"1MB", 1_000_000, 3},
-}
-
-var quickUploadProfiles = []profile{
-	{"100kB", 100_000, 3},
-	{"1MB", 1_000_000, 3},
-}
-
-// Baseline profiles (always run first)
 var baselineDownloadProfiles = []profile{
-	{"100kB", 100_000, 10},
-	{"1MB", 1_000_000, 8},
+	{Name: "100kB", Bytes: 100_000, Runs: 3},
+	{Name: "1MB", Bytes: 1_000_000, Runs: 3},
 }
 
 var baselineUploadProfiles = []profile{
-	{"100kB", 100_000, 8},
-	{"1MB", 1_000_000, 6},
+	{Name: "100kB", Bytes: 100_000, Runs: 3},
+	{Name: "1MB", Bytes: 1_000_000, Runs: 3},
 }
 
-// estimateTransferTime estimates how long a transfer will take.
-func estimateTransferTime(bytes int64, speedMbps float64) time.Duration {
-	if speedMbps <= 0 {
-		return time.Hour // effectively infinite
-	}
-	seconds := float64(bytes*8) / (speedMbps * 1e6)
-	return time.Duration(seconds * float64(time.Second))
+const (
+	minWindowChunkBytes   = int64(100_000)
+	maxWindowChunkBytes   = int64(256 * 1024 * 1024)
+	targetRequestDuration = 250 * time.Millisecond
+	fullWindowDuration    = 1500 * time.Millisecond
+	quickWindowDuration   = 1 * time.Second
+)
+
+type windowPlan struct {
+	ChunkBytes       int64
+	Concurrency      int
+	WindowDuration   time.Duration
+	Windows          int
+	LoadedWindow     int
+	LoadedProbeCount int
 }
 
-// selectProfiles selects profiles based on estimated speed.
-func selectProfiles(estimatedSpeed float64, allProfiles []profile, baseline []profile, maxBytes int64) []profile {
-	selected := profilesWithinLimit(baseline, maxBytes)
-
-	// Add larger profiles based on estimated transfer time
-	for _, p := range allProfiles {
-		if p.Bytes <= 0 || p.Bytes > maxBytes {
-			continue
-		}
-		// Skip baseline profiles (already included)
-		if profileIn(p, baseline) {
-			continue
-		}
-
-		if estimateTransferTime(p.Bytes, estimatedSpeed) <= MaxTestDuration {
-			selected = append(selected, p)
-		}
+func requiredSuccessfulRuns(total int) int {
+	if total <= 1 {
+		return total
 	}
-
-	return selected
+	return (total + 1) / 2
 }
 
 func profilesWithinLimit(profiles []profile, maxBytes int64) []profile {
-	selected := make([]profile, 0, len(profiles))
-	for _, p := range profiles {
-		if p.Bytes > 0 && p.Bytes <= maxBytes {
-			selected = append(selected, p)
+	filtered := make([]profile, 0, len(profiles))
+	for _, candidate := range profiles {
+		if candidate.Bytes <= maxBytes {
+			filtered = append(filtered, candidate)
 		}
 	}
-	return selected
+	return filtered
 }
 
-func profileIn(candidate profile, profiles []profile) bool {
-	for _, p := range profiles {
-		if candidate.Name == p.Name {
-			return true
+// selectWindowPlan maps the baseline estimate to bounded request chunks and
+// parallel flows. Increasing link rates increase concurrency, never a single
+// allocation or request beyond maxWindowChunkBytes.
+func selectWindowPlan(estimatedMbps float64, maxBytes int64, quick bool) windowPlan {
+	if estimatedMbps <= 0 || math.IsNaN(estimatedMbps) || math.IsInf(estimatedMbps, 0) {
+		estimatedMbps = 10
+	}
+
+	concurrency := 1
+	switch {
+	case estimatedMbps >= 10_000:
+		concurrency = 16
+	case estimatedMbps >= 2_000:
+		concurrency = 8
+	case estimatedMbps >= 500:
+		concurrency = 4
+	case estimatedMbps >= 100:
+		concurrency = 2
+	}
+
+	target := estimatedMbps * 1e6 / 8 * targetRequestDuration.Seconds() / float64(concurrency)
+	chunkBytes := int64(math.Ceil(target/65536.0) * 65536)
+	if chunkBytes < minWindowChunkBytes {
+		chunkBytes = minWindowChunkBytes
+	}
+	if chunkBytes > maxWindowChunkBytes {
+		chunkBytes = maxWindowChunkBytes
+	}
+	if maxBytes > 0 && chunkBytes > maxBytes {
+		chunkBytes = maxBytes
+	}
+
+	plan := windowPlan{
+		ChunkBytes:       chunkBytes,
+		Concurrency:      concurrency,
+		WindowDuration:   fullWindowDuration,
+		Windows:          3,
+		LoadedWindow:     1,
+		LoadedProbeCount: 5,
+	}
+	if quick {
+		plan.WindowDuration = quickWindowDuration
+		plan.Windows = 1
+		plan.LoadedWindow = 0
+		plan.LoadedProbeCount = 3
+	}
+	return plan
+}
+
+// loadActivity records whether at least one measured transfer is active and
+// increments gapGeneration whenever the aggregate load falls to zero. A probe
+// is accepted only if active remained nonzero and the generation did not
+// change from probe start through probe end.
+type loadActivity struct {
+	mu            sync.Mutex
+	active        int
+	gapGeneration uint64
+}
+
+type loadActivitySnapshot struct {
+	active        int
+	gapGeneration uint64
+}
+
+func (activity *loadActivity) begin() {
+	if activity == nil {
+		return
+	}
+	activity.mu.Lock()
+	activity.active++
+	activity.mu.Unlock()
+}
+
+func (activity *loadActivity) end() {
+	if activity == nil {
+		return
+	}
+	activity.mu.Lock()
+	if activity.active > 0 {
+		activity.active--
+		if activity.active == 0 {
+			activity.gapGeneration++
 		}
 	}
-	return false
+	activity.mu.Unlock()
 }
 
-func minimumValidRuns(p profile) int {
-	if p.Runs >= 3 {
-		return 2
+func (activity *loadActivity) snapshot() loadActivitySnapshot {
+	activity.mu.Lock()
+	defer activity.mu.Unlock()
+	return loadActivitySnapshot{active: activity.active, gapGeneration: activity.gapGeneration}
+}
+
+func (activity *loadActivity) waitActive(ctx context.Context, timeout time.Duration) error {
+	deadline := time.NewTimer(timeout)
+	defer deadline.Stop()
+	ticker := time.NewTicker(2 * time.Millisecond)
+	defer ticker.Stop()
+
+	for {
+		if activity.snapshot().active > 0 {
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-deadline.C:
+			return fmt.Errorf("timed out waiting for sustained load")
+		case <-ticker.C:
+		}
 	}
-	return 1
 }
 
-// runDownloadTests runs download speed tests with adaptive profile selection.
+func medianProfileSpeed(samples []ThroughputSample, profileName string) float64 {
+	values := make([]float64, 0, len(samples))
+	for _, sample := range samples {
+		if sample.Profile == profileName {
+			values = append(values, sample.Mbps)
+		}
+	}
+	if len(values) == 0 {
+		return 10
+	}
+	return measurement.Percentile(values, 50)
+}
+
+// runDownloadTests runs small verified baselines, then bounded fixed-duration
+// windows. The selected window owns the loaded-latency probes.
 func (c *Client) runDownloadTests(ctx context.Context) ([]ThroughputSample, []LatencySample, error) {
-	if c.cfg.Quick {
-		profiles := profilesWithinLimit(quickDownloadProfiles, c.maxTransferBytes)
-		if len(profiles) == 0 {
-			return nil, nil, fmt.Errorf("server transfer limit %d is below the smallest download profile", c.maxTransferBytes)
-		}
-		samples, err := c.runProfiles(ctx, profiles, "download")
-		return samples, nil, err
+	profiles := profilesWithinLimit(baselineDownloadProfiles, c.maxTransferBytes)
+	if len(profiles) != len(baselineDownloadProfiles) {
+		return nil, nil, fmt.Errorf("server transfer limit %d is below the 1MB download baseline", c.maxTransferBytes)
 	}
-
-	var samples []ThroughputSample
-	var loadedLatency []LatencySample
-	phaseStart := time.Now()
-
-	// Phase 1: Run baseline profiles
-	baselineProfiles := profilesWithinLimit(baselineDownloadProfiles, c.maxTransferBytes)
-	if len(baselineProfiles) == 0 {
-		return nil, nil, fmt.Errorf("server transfer limit %d is below the smallest download profile", c.maxTransferBytes)
-	}
-	baselineSamples, err := c.runProfiles(ctx, baselineProfiles, "download")
+	baseline, err := c.runBaselineProfiles(ctx, profiles, "download")
 	if err != nil {
 		return nil, nil, err
 	}
-	samples = append(samples, baselineSamples...)
-
-	// Phase 2: Estimate speed from 1MB samples
-	var mbSpeeds []float64
-	for _, s := range samples {
-		if s.Profile == "1MB" {
-			mbSpeeds = append(mbSpeeds, s.Mbps)
-		}
+	plan := selectWindowPlan(medianProfileSpeed(baseline, "1MB"), c.maxTransferBytes, c.cfg.Quick)
+	windows, loaded, err := c.runSustainedWindows(ctx, "download", plan)
+	if err != nil {
+		return nil, nil, err
 	}
-
-	estimatedSpeed := 10.0 // default
-	if len(mbSpeeds) > 0 {
-		sort.Float64s(mbSpeeds)
-		estimatedSpeed = mbSpeeds[len(mbSpeeds)/2] // median
-	}
-
-	// Phase 3: Select and run larger profiles within time budget
-	selectedProfiles := selectProfiles(estimatedSpeed, allDownloadProfiles, baselineProfiles, c.maxTransferBytes)
-
-	for _, p := range selectedProfiles {
-		// Skip baseline (already run)
-		if profileIn(p, baselineProfiles) {
-			continue
-		}
-
-		// Check time budget
-		elapsed := time.Since(phaseStart)
-		remaining := TotalPhaseBudget - elapsed
-		estimatedBatchTime := estimateTransferTime(p.Bytes, estimatedSpeed) * time.Duration(p.Runs)
-
-		if estimatedBatchTime > remaining {
-			continue // Skip this batch
-		}
-
-		// Run profile
-		profileSamples, err := c.runProfiles(ctx, []profile{p}, "download")
-		if err != nil {
-			continue
-		}
-		samples = append(samples, profileSamples...)
-
-		// Run loaded latency probes during large downloads
-		if p.Bytes >= 10_000_000 && len(loadedLatency) < 5 {
-			latSamples, _ := c.runLatencyProbes(ctx, "download", 5-len(loadedLatency))
-			loadedLatency = append(loadedLatency, latSamples...)
-		}
-	}
-
-	return samples, loadedLatency, nil
+	return append(baseline, windows...), loaded, nil
 }
 
-// runUploadTests runs upload speed tests with adaptive profile selection.
+// runUploadTests is the upload counterpart to runDownloadTests.
 func (c *Client) runUploadTests(ctx context.Context) ([]ThroughputSample, []LatencySample, error) {
-	if c.cfg.Quick {
-		profiles := profilesWithinLimit(quickUploadProfiles, c.maxTransferBytes)
-		if len(profiles) == 0 {
-			return nil, nil, fmt.Errorf("server transfer limit %d is below the smallest upload profile", c.maxTransferBytes)
-		}
-		samples, err := c.runUploadProfiles(ctx, profiles)
-		return samples, nil, err
+	profiles := profilesWithinLimit(baselineUploadProfiles, c.maxTransferBytes)
+	if len(profiles) != len(baselineUploadProfiles) {
+		return nil, nil, fmt.Errorf("server transfer limit %d is below the 1MB upload baseline", c.maxTransferBytes)
 	}
-
-	var samples []ThroughputSample
-	var loadedLatency []LatencySample
-	phaseStart := time.Now()
-
-	// Phase 1: Run baseline profiles
-	baselineProfiles := profilesWithinLimit(baselineUploadProfiles, c.maxTransferBytes)
-	if len(baselineProfiles) == 0 {
-		return nil, nil, fmt.Errorf("server transfer limit %d is below the smallest upload profile", c.maxTransferBytes)
-	}
-	baselineSamples, err := c.runUploadProfiles(ctx, baselineProfiles)
+	baseline, err := c.runBaselineProfiles(ctx, profiles, "upload")
 	if err != nil {
 		return nil, nil, err
 	}
-	samples = append(samples, baselineSamples...)
-
-	// Phase 2: Estimate speed from 1MB samples
-	var mbSpeeds []float64
-	for _, s := range samples {
-		if s.Profile == "1MB" {
-			mbSpeeds = append(mbSpeeds, s.Mbps)
-		}
+	plan := selectWindowPlan(medianProfileSpeed(baseline, "1MB"), c.maxTransferBytes, c.cfg.Quick)
+	windows, loaded, err := c.runSustainedWindows(ctx, "upload", plan)
+	if err != nil {
+		return nil, nil, err
 	}
-
-	estimatedSpeed := 10.0 // default
-	if len(mbSpeeds) > 0 {
-		sort.Float64s(mbSpeeds)
-		estimatedSpeed = mbSpeeds[len(mbSpeeds)/2] // median
-	}
-
-	// Phase 3: Select and run larger profiles within time budget
-	selectedProfiles := selectProfiles(estimatedSpeed, allUploadProfiles, baselineProfiles, c.maxTransferBytes)
-
-	for _, p := range selectedProfiles {
-		// Skip baseline (already run)
-		if profileIn(p, baselineProfiles) {
-			continue
-		}
-
-		// Check time budget
-		elapsed := time.Since(phaseStart)
-		remaining := TotalPhaseBudget - elapsed
-		estimatedBatchTime := estimateTransferTime(p.Bytes, estimatedSpeed) * time.Duration(p.Runs)
-
-		if estimatedBatchTime > remaining {
-			continue // Skip this batch
-		}
-
-		// Run profile
-		profileSamples, err := c.runUploadProfiles(ctx, []profile{p})
-		if err != nil {
-			continue
-		}
-		samples = append(samples, profileSamples...)
-
-		// Run loaded latency probes during large uploads
-		if p.Bytes >= 10_000_000 && len(loadedLatency) < 5 {
-			latSamples, _ := c.runLatencyProbes(ctx, "upload", 5-len(loadedLatency))
-			loadedLatency = append(loadedLatency, latSamples...)
-		}
-	}
-
-	return samples, loadedLatency, nil
+	return append(baseline, windows...), loaded, nil
 }
 
-// runLatencyProbes runs a few latency probes.
-func (c *Client) runLatencyProbes(ctx context.Context, phase string, count int) ([]LatencySample, error) {
-	samples := make([]LatencySample, 0, count)
-	for i := 0; i < count; i++ {
-		rtt, err := c.measureLatency(ctx, phase, i)
-		if err != nil {
-			continue
-		}
-		samples = append(samples, LatencySample{
-			Timestamp: time.Now(),
-			RTT:       rtt,
-			Phase:     phase,
-		})
-	}
-	return samples, nil
-}
-
-// runProfiles runs download profiles.
-func (c *Client) runProfiles(ctx context.Context, profiles []profile, direction string) ([]ThroughputSample, error) {
+func (c *Client) runBaselineProfiles(ctx context.Context, profiles []profile, direction string) ([]ThroughputSample, error) {
 	var samples []ThroughputSample
 	totalRuns := 0
-	for _, p := range profiles {
-		totalRuns += p.Runs
+	for _, candidate := range profiles {
+		totalRuns += candidate.Runs
 	}
+	completed := 0
 
-	currentRun := 0
-	for _, p := range profiles {
-		if p.Bytes <= 0 || p.Bytes > c.maxTransferBytes {
-			return samples, fmt.Errorf("download profile %s requests %d bytes; server maximum is %d", p.Name, p.Bytes, c.maxTransferBytes)
-		}
-
-		validRuns := 0
+	for _, candidate := range profiles {
+		valid := make([]ThroughputSample, 0, candidate.Runs)
 		var lastErr error
-		for run := 0; run < p.Runs; run++ {
-			select {
-			case <-ctx.Done():
-				return samples, ctx.Err()
-			default:
+		for run := 0; run < candidate.Runs; run++ {
+			var sample ThroughputSample
+			var err error
+			if direction == "download" {
+				sample, err = c.measureDownload(ctx, candidate.Name, candidate.Bytes, run)
+			} else {
+				sample, err = c.measureUpload(ctx, candidate.Name, candidate.Bytes, run)
 			}
-
-			sample, err := c.measureDownload(ctx, p.Name, p.Bytes, run)
 			if err != nil {
 				lastErr = err
 				continue
 			}
-
-			samples = append(samples, sample)
-			validRuns++
-			currentRun++
-
+			sample.SampleKind = "baseline"
+			valid = append(valid, sample)
+			completed++
 			if c.cfg.OnProgress != nil {
-				c.cfg.OnProgress(direction, currentRun, totalRuns, sample.Mbps)
+				c.cfg.OnProgress(direction, completed, totalRuns, sample.Mbps)
 			}
 		}
-
-		minimum := minimumValidRuns(p)
-		if validRuns < minimum {
+		if len(valid) < requiredSuccessfulRuns(candidate.Runs) {
 			if lastErr == nil {
-				lastErr = fmt.Errorf("no measurement error was reported")
+				lastErr = fmt.Errorf("measurement canceled or incomplete")
 			}
-			return samples, fmt.Errorf("download profile %s produced %d valid samples; need at least %d: %w", p.Name, validRuns, minimum, lastErr)
+			return samples, fmt.Errorf("%s baseline %s produced %d/%d valid samples: %w",
+				direction, candidate.Name, len(valid), candidate.Runs, lastErr)
 		}
+		samples = append(samples, valid...)
 	}
-
 	return samples, nil
 }
 
-// measureDownload measures a single download using precise timing.
-// Body transfer time = bodyDone - GotFirstResponseByte (excludes connection, TLS, headers)
+func (c *Client) runSustainedWindows(ctx context.Context, direction string, plan windowPlan) ([]ThroughputSample, []LatencySample, error) {
+	if plan.ChunkBytes <= 0 || plan.Concurrency <= 0 || plan.Windows <= 0 {
+		return nil, nil, fmt.Errorf("invalid %s sustained-window plan: %#v", direction, plan)
+	}
+	windows := make([]ThroughputSample, 0, plan.Windows)
+	var loaded []LatencySample
+	for windowIndex := 0; windowIndex < plan.Windows; windowIndex++ {
+		withLoadedLatency := windowIndex == plan.LoadedWindow
+		sample, probes, err := c.runThroughputWindow(ctx, direction, plan, windowIndex, withLoadedLatency)
+		if err != nil {
+			return windows, loaded, err
+		}
+		windows = append(windows, sample)
+		loaded = append(loaded, probes...)
+		if c.cfg.OnProgress != nil {
+			c.cfg.OnProgress(direction, windowIndex+1, plan.Windows, sample.Mbps)
+		}
+	}
+	return windows, loaded, nil
+}
+
+type windowAggregate struct {
+	mu       sync.Mutex
+	bytes    int64
+	requests int
+	lastErr  error
+}
+
+func (aggregate *windowAggregate) success(sample ThroughputSample) {
+	aggregate.mu.Lock()
+	aggregate.bytes += sample.SizeBytes
+	aggregate.requests++
+	aggregate.mu.Unlock()
+}
+
+func (aggregate *windowAggregate) failure(err error) {
+	aggregate.mu.Lock()
+	aggregate.lastErr = err
+	aggregate.mu.Unlock()
+}
+
+func (aggregate *windowAggregate) snapshot() (int64, int, error) {
+	aggregate.mu.Lock()
+	defer aggregate.mu.Unlock()
+	return aggregate.bytes, aggregate.requests, aggregate.lastErr
+}
+
+func (c *Client) runThroughputWindow(
+	ctx context.Context,
+	direction string,
+	plan windowPlan,
+	windowIndex int,
+	withLoadedLatency bool,
+) (ThroughputSample, []LatencySample, error) {
+	activity := &loadActivity{}
+	aggregate := &windowAggregate{}
+	startGate := make(chan struct{})
+	stop := make(chan struct{})
+	var workers sync.WaitGroup
+
+	for workerIndex := 0; workerIndex < plan.Concurrency; workerIndex++ {
+		workers.Add(1)
+		go func(worker int) {
+			defer workers.Done()
+			<-startGate
+			requestIndex := 0
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case <-stop:
+					return
+				default:
+				}
+
+				profileName := fmt.Sprintf("window-%d", windowIndex+1)
+				runIndex := worker*1_000_000 + requestIndex
+				requestIndex++
+				var sample ThroughputSample
+				var err error
+				if direction == "download" {
+					sample, err = c.measureDownloadTracked(ctx, profileName, plan.ChunkBytes, runIndex, activity)
+				} else {
+					sample, err = c.measureUploadTracked(ctx, profileName, plan.ChunkBytes, runIndex, activity)
+				}
+				if err != nil {
+					aggregate.failure(err)
+					select {
+					case <-ctx.Done():
+						return
+					case <-stop:
+						return
+					case <-time.After(10 * time.Millisecond):
+					}
+					continue
+				}
+				aggregate.success(sample)
+			}
+		}(workerIndex)
+	}
+
+	windowStart := time.Now()
+	close(startGate)
+
+	timer := time.NewTimer(plan.WindowDuration)
+	defer timer.Stop()
+	probeContext, cancelProbes := context.WithCancel(ctx)
+	defer cancelProbes()
+	var stopOnce sync.Once
+	stopWorkers := func() {
+		stopOnce.Do(func() { close(stop) })
+	}
+
+	timerDone := false
+	probeDone := !withLoadedLatency
+	var probes []LatencySample
+	var probeErr error
+	probeResult := make(chan struct {
+		samples []LatencySample
+		err     error
+	}, 1)
+	if withLoadedLatency {
+		go func() {
+			samples, err := c.runLoadedLatencyProbes(probeContext, direction, plan.LoadedProbeCount, activity)
+			probeResult <- struct {
+				samples []LatencySample
+				err     error
+			}{samples: samples, err: err}
+		}()
+	}
+
+	for !timerDone || !probeDone {
+		select {
+		case <-ctx.Done():
+			stopWorkers()
+			cancelProbes()
+			workers.Wait()
+			return ThroughputSample{}, probes, ctx.Err()
+		case <-timer.C:
+			timerDone = true
+			// The configured duration is a stop deadline, not permission for
+			// latency retries to extend the load window indefinitely. Existing
+			// requests drain and remain in the aggregate; no new request begins.
+			stopWorkers()
+			cancelProbes()
+		case result := <-probeResult:
+			probes = result.samples
+			probeErr = result.err
+			probeDone = true
+		}
+	}
+
+	stopWorkers()
+	workers.Wait()
+	windowEnd := time.Now()
+	bytesTransferred, requestCount, lastErr := aggregate.snapshot()
+	if bytesTransferred <= 0 || requestCount == 0 {
+		if lastErr == nil {
+			lastErr = fmt.Errorf("no verified requests completed")
+		}
+		return ThroughputSample{}, probes, fmt.Errorf("%s window %d failed: %w", direction, windowIndex+1, lastErr)
+	}
+	if probeErr != nil {
+		return ThroughputSample{}, probes, fmt.Errorf("%s loaded-latency window %d: %w", direction, windowIndex+1, probeErr)
+	}
+
+	duration := windowEnd.Sub(windowStart)
+	if duration <= 0 {
+		return ThroughputSample{}, probes, fmt.Errorf("%s window %d has invalid duration %s", direction, windowIndex+1, duration)
+	}
+	return ThroughputSample{
+		Timestamp:    windowEnd,
+		Direction:    direction,
+		SizeBytes:    bytesTransferred,
+		Duration:     duration,
+		Mbps:         float64(bytesTransferred*8) / duration.Seconds() / 1e6,
+		Profile:      "window",
+		RunIndex:     windowIndex,
+		SampleKind:   "window",
+		WindowIndex:  windowIndex,
+		Concurrency:  plan.Concurrency,
+		ChunkBytes:   plan.ChunkBytes,
+		RequestCount: requestCount,
+		TimingSource: "aggregate-wall-clock",
+	}, probes, nil
+}
+
+func (c *Client) runLoadedLatencyProbes(ctx context.Context, phase string, count int, activity *loadActivity) ([]LatencySample, error) {
+	if count <= 0 {
+		return nil, nil
+	}
+	samples := make([]LatencySample, 0, count)
+	maxAttempts := count * 5
+	var lastErr error
+
+	for attempt := 0; attempt < maxAttempts && len(samples) < count; attempt++ {
+		if ctx.Err() != nil {
+			lastErr = ctx.Err()
+			break
+		}
+		if err := activity.waitActive(ctx, 2*time.Second); err != nil {
+			lastErr = err
+			if ctx.Err() != nil {
+				break
+			}
+			continue
+		}
+		before := activity.snapshot()
+		if before.active <= 0 {
+			continue
+		}
+		startedAt := time.Now()
+		rtt, err := c.measureLatency(ctx, phase, attempt)
+		endedAt := time.Now()
+		if err != nil {
+			lastErr = err
+			if ctx.Err() != nil {
+				break
+			}
+			continue
+		}
+		after := activity.snapshot()
+		overlapped := before.active > 0 && after.active > 0 && before.gapGeneration == after.gapGeneration
+		if !overlapped {
+			lastErr = fmt.Errorf("probe did not remain inside a continuous load interval")
+			continue
+		}
+
+		sample := LatencySample{
+			Timestamp:            endedAt,
+			StartedAt:            startedAt,
+			EndedAt:              endedAt,
+			RTT:                  rtt,
+			Phase:                phase,
+			LoadOverlapped:       true,
+			LoadTrackingAccurate: true,
+			TimingSource:         "httptrace",
+		}
+		samples = append(samples, sample)
+		if c.cfg.OnProgress != nil {
+			c.cfg.OnProgress("loaded-latency", len(samples), count, float64(rtt.Microseconds())/1000)
+		}
+		select {
+		case <-ctx.Done():
+			lastErr = ctx.Err()
+		case <-time.After(25 * time.Millisecond):
+		}
+	}
+
+	if len(samples) < requiredSuccessfulRuns(count) {
+		if lastErr == nil {
+			lastErr = fmt.Errorf("insufficient overlapping probes")
+		}
+		return samples, fmt.Errorf("%s loaded latency produced %d/%d continuously-overlapped probes: %w",
+			phase, len(samples), count, lastErr)
+	}
+	return samples, nil
+}
+
+// measureDownload measures one verified bounded request.
 func (c *Client) measureDownload(ctx context.Context, profileName string, numBytes int64, run int) (ThroughputSample, error) {
+	return c.measureDownloadTracked(ctx, profileName, numBytes, run, nil)
+}
+
+func (c *Client) measureDownloadTracked(
+	ctx context.Context,
+	profileName string,
+	numBytes int64,
+	run int,
+	activity *loadActivity,
+) (ThroughputSample, error) {
 	if numBytes < 0 || numBytes > c.maxTransferBytes {
-		return ThroughputSample{}, fmt.Errorf("download request size %d exceeds server maximum %d", numBytes, c.maxTransferBytes)
+		return ThroughputSample{}, fmt.Errorf("download size %d exceeds negotiated maximum %d", numBytes, c.maxTransferBytes)
 	}
 
-	endpoint, err := c.endpoint("/__down", url.Values{
-		"bytes":   {strconv.FormatInt(numBytes, 10)},
-		"measId":  {newMeasurementID()},
+	measID := fmt.Sprintf("%d-download-%d", time.Now().UnixNano(), run)
+	requestURL := buildMeasurementURL(c.cfg.ServerURL, "/__down", url.Values{
+		"bytes":   {fmt.Sprintf("%d", numBytes)},
+		"measId":  {measID},
 		"profile": {profileName},
-		"run":     {strconv.Itoa(run)},
+		"run":     {fmt.Sprintf("%d", run)},
 	})
-	if err != nil {
-		return ThroughputSample{}, err
-	}
 
-	// Set up precise timing via httptrace
 	var timing timingInfo
 	trace := createTrace(&timing)
-	ctx = httptrace.WithClientTrace(ctx, trace)
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	traceContext := httptrace.WithClientTrace(ctx, trace)
+	req, err := http.NewRequestWithContext(traceContext, http.MethodGet, requestURL, nil)
 	if err != nil {
 		return ThroughputSample{}, err
 	}
 	setRequestHeaders(req)
 	req.Header.Set("Cache-Control", "no-store")
 
+	requestStart := time.Now()
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
 		return ThroughputSample{}, err
 	}
 	defer resp.Body.Close()
-	if err := requireStatusOK(resp, "download measurement"); err != nil {
+	if err := requireMeasurementStatus(resp, http.StatusOK); err != nil {
 		return ThroughputSample{}, err
 	}
+	if contentType := resp.Header.Get("Content-Type"); !strings.HasPrefix(strings.ToLower(contentType), "application/octet-stream") {
+		return ThroughputSample{}, fmt.Errorf("unexpected download content type %q", contentType)
+	}
 	if resp.ContentLength >= 0 && resp.ContentLength != numBytes {
-		return ThroughputSample{}, fmt.Errorf("download Content-Length was %d; expected %d", resp.ContentLength, numBytes)
+		return ThroughputSample{}, fmt.Errorf("download Content-Length %d; expected %d", resp.ContentLength, numBytes)
 	}
 
-	// Read body - timing.gotFirstByte is set when first byte arrives
-	received, err := io.Copy(io.Discard, resp.Body)
+	if activity != nil {
+		activity.begin()
+		defer activity.end()
+	}
+	received, err := consumeExactBody(resp.Body, numBytes)
 	if err != nil {
 		return ThroughputSample{}, fmt.Errorf("read download body: %w", err)
 	}
-	if received != numBytes {
-		return ThroughputSample{}, fmt.Errorf("download returned %d bytes; expected %d", received, numBytes)
-	}
 	bodyDone := time.Now()
-
-	// Body transfer time only (excludes connection setup, TLS, headers)
-	var duration time.Duration
-	if timing.gotFirstByte.IsZero() {
-		return ThroughputSample{}, fmt.Errorf("download timing trace did not record the first response byte")
+	if received != numBytes {
+		return ThroughputSample{}, fmt.Errorf("download received %d bytes; expected %d", received, numBytes)
 	}
-	duration = bodyDone.Sub(timing.gotFirstByte)
 
+	duration := bodyDone.Sub(requestStart)
+	timingSource := "manual-body"
+	if !timing.gotFirstByte.IsZero() {
+		duration = bodyDone.Sub(timing.gotFirstByte)
+		timingSource = "httptrace-body"
+	}
 	if duration <= 0 {
-		return ThroughputSample{}, fmt.Errorf("download body duration was not positive")
+		return ThroughputSample{}, fmt.Errorf("invalid download duration %s", duration)
 	}
-
-	mbps := float64(received*8) / duration.Seconds() / 1e6
 
 	return ThroughputSample{
-		Timestamp: time.Now(),
-		Direction: "download",
-		SizeBytes: received,
-		Duration:  duration,
-		Mbps:      mbps,
-		Profile:   profileName,
-		RunIndex:  run,
+		Timestamp: bodyDone, Direction: "download", SizeBytes: received,
+		Duration: duration, Mbps: float64(received*8) / duration.Seconds() / 1e6,
+		Profile: profileName, RunIndex: run, TimingSource: timingSource,
 	}, nil
 }
 
-// runUploadProfiles runs upload profiles.
-func (c *Client) runUploadProfiles(ctx context.Context, profiles []profile) ([]ThroughputSample, error) {
-	var samples []ThroughputSample
-	totalRuns := 0
-	for _, p := range profiles {
-		totalRuns += p.Runs
-	}
+type zeroReader struct{}
 
-	currentRun := 0
-	for _, p := range profiles {
-		if p.Bytes <= 0 || p.Bytes > c.maxTransferBytes {
-			return samples, fmt.Errorf("upload profile %s requests %d bytes; server maximum is %d", p.Name, p.Bytes, c.maxTransferBytes)
-		}
-
-		validRuns := 0
-		var lastErr error
-		for run := 0; run < p.Runs; run++ {
-			select {
-			case <-ctx.Done():
-				return samples, ctx.Err()
-			default:
-			}
-
-			sample, err := c.measureUpload(ctx, p.Name, p.Bytes, run)
-			if err != nil {
-				lastErr = err
-				continue
-			}
-
-			samples = append(samples, sample)
-			validRuns++
-			currentRun++
-
-			if c.cfg.OnProgress != nil {
-				c.cfg.OnProgress("upload", currentRun, totalRuns, sample.Mbps)
-			}
-		}
-
-		minimum := minimumValidRuns(p)
-		if validRuns < minimum {
-			if lastErr == nil {
-				lastErr = fmt.Errorf("no measurement error was reported")
-			}
-			return samples, fmt.Errorf("upload profile %s produced %d valid samples; need at least %d: %w", p.Name, validRuns, minimum, lastErr)
-		}
-	}
-
-	return samples, nil
+func (zeroReader) Read(p []byte) (int, error) {
+	clear(p)
+	return len(p), nil
 }
 
-// measureUpload measures a single upload. Measurement API v1 uses the
-// server-side body-read duration and verifies the exact accepted byte count.
-func (c *Client) measureUpload(ctx context.Context, profileName string, numBytes int64, run int) (ThroughputSample, error) {
-	if numBytes < 0 || numBytes > c.maxTransferBytes {
-		return ThroughputSample{}, fmt.Errorf("upload request size %d exceeds server maximum %d", numBytes, c.maxTransferBytes)
-	}
+type timedRequestBody struct {
+	mu              sync.Mutex
+	reader          io.Reader
+	firstRead       time.Time
+	lastRead        time.Time
+	bytesRead       int64
+	activity        *loadActivity
+	activityStarted bool
+}
 
-	endpoint, err := c.endpoint("/__up", url.Values{
-		"measId":  {newMeasurementID()},
-		"profile": {profileName},
-		"run":     {strconv.Itoa(run)},
-	})
+func newTimedRequestBody(size int64) *timedRequestBody {
+	return newTimedRequestBodyWithActivity(size, nil)
+}
+
+func newTimedRequestBodyWithActivity(size int64, activity *loadActivity) *timedRequestBody {
+	return &timedRequestBody{
+		reader:   &io.LimitedReader{R: zeroReader{}, N: size},
+		activity: activity,
+	}
+}
+
+func (body *timedRequestBody) Read(p []byte) (int, error) {
+	started := time.Now()
+	n, err := body.reader.Read(p)
+	if n > 0 {
+		body.mu.Lock()
+		if body.firstRead.IsZero() {
+			body.firstRead = started
+			if body.activity != nil {
+				body.activity.begin()
+				body.activityStarted = true
+			}
+		}
+		body.lastRead = time.Now()
+		body.bytesRead += int64(n)
+		body.mu.Unlock()
+	}
+	return n, err
+}
+
+func (body *timedRequestBody) Close() error { return nil }
+
+func (body *timedRequestBody) finishActivity() {
+	body.mu.Lock()
+	defer body.mu.Unlock()
+	if body.activityStarted {
+		body.activity.end()
+		body.activityStarted = false
+	}
+}
+
+func (body *timedRequestBody) duration() time.Duration {
+	body.mu.Lock()
+	defer body.mu.Unlock()
+	if body.firstRead.IsZero() || body.lastRead.IsZero() {
+		return 0
+	}
+	return body.lastRead.Sub(body.firstRead)
+}
+
+func requireMeasurementStatus(resp *http.Response, expected int) error {
+	if resp.StatusCode == expected {
+		return nil
+	}
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, maxMeasurementErrorBytes))
+	detail := strings.TrimSpace(string(body))
+	if detail == "" {
+		detail = http.StatusText(resp.StatusCode)
+	}
+	return fmt.Errorf("measurement request returned HTTP %d: %s", resp.StatusCode, detail)
+}
+
+func buildMeasurementURL(baseURL, path string, values url.Values) string {
+	return strings.TrimRight(baseURL, "/") + path + "?" + values.Encode()
+}
+
+func consumeExactBody(reader io.Reader, expected int64) (int64, error) {
+	if expected < 0 {
+		return 0, fmt.Errorf("invalid expected body length %d", expected)
+	}
+	limit := expected
+	if expected < math.MaxInt64 {
+		limit++
+	}
+	n, err := io.Copy(io.Discard, io.LimitReader(reader, limit))
 	if err != nil {
-		return ThroughputSample{}, err
+		return n, err
+	}
+	if n != expected {
+		return n, fmt.Errorf("received %d bytes; expected %d", n, expected)
+	}
+	return n, nil
+}
+
+func decodeLimitedJSON(reader io.Reader, maxBytes int64, destination any) error {
+	if maxBytes <= 0 {
+		return fmt.Errorf("invalid JSON body limit %d", maxBytes)
+	}
+	limit := maxBytes
+	if maxBytes < math.MaxInt64 {
+		limit++
+	}
+	body, err := io.ReadAll(io.LimitReader(reader, limit))
+	if err != nil {
+		return err
+	}
+	if int64(len(body)) > maxBytes {
+		return fmt.Errorf("JSON body exceeds %d bytes", maxBytes)
+	}
+	decoder := json.NewDecoder(bytes.NewReader(body))
+	if err := decoder.Decode(destination); err != nil {
+		return err
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); err != io.EOF {
+		if err == nil {
+			return fmt.Errorf("unexpected trailing JSON value")
+		}
+		return fmt.Errorf("unexpected trailing JSON data: %w", err)
+	}
+	return nil
+}
+
+// measureUpload streams one bounded request and requires a receipt proving the
+// server consumed the exact body.
+func (c *Client) measureUpload(ctx context.Context, profileName string, numBytes int64, run int) (ThroughputSample, error) {
+	return c.measureUploadTracked(ctx, profileName, numBytes, run, nil)
+}
+
+func (c *Client) measureUploadTracked(
+	ctx context.Context,
+	profileName string,
+	numBytes int64,
+	run int,
+	activity *loadActivity,
+) (ThroughputSample, error) {
+	if numBytes < 0 || numBytes > c.maxTransferBytes {
+		return ThroughputSample{}, fmt.Errorf("upload size %d exceeds negotiated maximum %d", numBytes, c.maxTransferBytes)
+	}
+	if c.uploadReceiptVersion < protocol.UploadReceiptVersion {
+		return ThroughputSample{}, fmt.Errorf("server does not support verified upload receipts")
 	}
 
-	// Set up precise timing via httptrace
-	var timing timingInfo
-	trace := createTrace(&timing)
-	ctx = httptrace.WithClientTrace(ctx, trace)
+	measID := fmt.Sprintf("%d-upload-%d", time.Now().UnixNano(), run)
+	requestURL := buildMeasurementURL(c.cfg.ServerURL, "/__up", url.Values{
+		"measId":  {measID},
+		"profile": {profileName},
+		"run":     {fmt.Sprintf("%d", run)},
+	})
+	body := newTimedRequestBodyWithActivity(numBytes, activity)
+	defer body.finishActivity()
+	timing := timingInfo{onWroteRequest: body.finishActivity}
+	traceContext := httptrace.WithClientTrace(ctx, createTrace(&timing))
 
-	body := newGeneratedUploadBody(numBytes)
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, body)
+	req, err := http.NewRequestWithContext(traceContext, http.MethodPost, requestURL, body)
 	if err != nil {
 		return ThroughputSample{}, err
 	}
 	setRequestHeaders(req)
 	req.Header.Set("Content-Type", "application/octet-stream")
-	req.Header.Set("Cache-Control", "no-store")
 	req.ContentLength = numBytes
 
 	resp, err := c.httpClient.Do(req)
@@ -1104,49 +1230,44 @@ func (c *Client) measureUpload(ctx context.Context, profileName string, numBytes
 		return ThroughputSample{}, err
 	}
 	defer resp.Body.Close()
-	if err := requireStatusOK(resp, "upload measurement"); err != nil {
+	if err := requireMeasurementStatus(resp, http.StatusOK); err != nil {
 		return ThroughputSample{}, err
 	}
-
-	readBytes, firstRead, _ := body.snapshot()
-	if readBytes != numBytes {
-		return ThroughputSample{}, fmt.Errorf("HTTP transport consumed %d upload bytes; expected %d", readBytes, numBytes)
+	if contentType := resp.Header.Get("Content-Type"); !strings.HasPrefix(strings.ToLower(contentType), "application/json") {
+		return ThroughputSample{}, fmt.Errorf("unexpected upload receipt content type %q", contentType)
 	}
 
-	var duration time.Duration
-	if c.measurementAPIVersion >= measurement.APIVersion {
-		receipt, err := measurement.DecodeUploadReceipt(resp.Body)
-		if err != nil {
-			return ThroughputSample{}, fmt.Errorf("decode upload receipt: %w", err)
-		}
-		if receipt.AcceptedBytes != numBytes {
-			return ThroughputSample{}, fmt.Errorf("server accepted %d upload bytes; expected %d", receipt.AcceptedBytes, numBytes)
-		}
-		duration = time.Duration(receipt.ServerDurationNS)
-	} else {
-		if _, err := io.Copy(io.Discard, io.LimitReader(resp.Body, measurement.MaxReceiptBytes)); err != nil {
-			return ThroughputSample{}, fmt.Errorf("read upload response: %w", err)
-		}
-		if firstRead.IsZero() || timing.gotFirstByte.IsZero() {
-			return ThroughputSample{}, fmt.Errorf("legacy upload timing trace was incomplete")
-		}
-		duration = timing.gotFirstByte.Sub(firstRead)
+	var receipt protocol.UploadReceipt
+	if err := decodeLimitedJSON(resp.Body, maxUploadReceiptBodyBytes, &receipt); err != nil {
+		return ThroughputSample{}, fmt.Errorf("decode upload receipt: %w", err)
+	}
+	if !receipt.OK {
+		return ThroughputSample{}, fmt.Errorf("server rejected upload")
+	}
+	body.mu.Lock()
+	bytesRead := body.bytesRead
+	body.mu.Unlock()
+	if bytesRead != numBytes {
+		return ThroughputSample{}, fmt.Errorf("HTTP transport consumed %d upload bytes; expected %d", bytesRead, numBytes)
+	}
+	if receipt.AcceptedBytes != numBytes {
+		return ThroughputSample{}, fmt.Errorf("server accepted %d upload bytes; expected %d", receipt.AcceptedBytes, numBytes)
 	}
 
+	duration := time.Duration(receipt.ServerDurationNS)
+	timingSource := "server-receipt"
 	if duration <= 0 {
-		return ThroughputSample{}, fmt.Errorf("upload duration was not positive")
+		duration = body.duration()
+		timingSource = "client-body"
 	}
-
-	mbps := float64(numBytes*8) / duration.Seconds() / 1e6
+	if duration <= 0 {
+		return ThroughputSample{}, fmt.Errorf("invalid upload duration %s", duration)
+	}
 
 	return ThroughputSample{
-		Timestamp: time.Now(),
-		Direction: "upload",
-		SizeBytes: numBytes,
-		Duration:  duration,
-		Mbps:      mbps,
-		Profile:   profileName,
-		RunIndex:  run,
+		Timestamp: time.Now(), Direction: "upload", SizeBytes: receipt.AcceptedBytes,
+		Duration: duration, Mbps: float64(receipt.AcceptedBytes*8) / duration.Seconds() / 1e6,
+		Profile: profileName, RunIndex: run, TimingSource: timingSource,
 	}, nil
 }
 
@@ -1156,86 +1277,211 @@ func (c *Client) runPacketLossTest(ctx context.Context) (*PacketLossResult, erro
 	return c.runPacketLossTestWebRTC(ctx)
 }
 
-// calculateSummary computes summary statistics from samples.
-func (c *Client) calculateSummary(r *Results) Summary {
-	var summary Summary
-
-	// Download speed (p90)
-	var dlSpeeds []float64
-	for _, s := range r.ThroughputSamples {
-		if s.Direction == "download" {
-			dlSpeeds = append(dlSpeeds, s.Mbps)
+// throughputValues returns fixed-window samples when available. Baseline
+// requests exist only to tune the window plan and must not bias the headline
+// speed on fast links.
+func throughputValues(samples []ThroughputSample, direction string) []float64 {
+	windowValues := make([]float64, 0, len(samples))
+	fallbackValues := make([]float64, 0, len(samples))
+	for _, sample := range samples {
+		if sample.Direction != direction || sample.Duration < 10*time.Millisecond {
+			continue
+		}
+		fallbackValues = append(fallbackValues, sample.Mbps)
+		if sample.SampleKind == "window" || sample.Profile == "window" {
+			windowValues = append(windowValues, sample.Mbps)
 		}
 	}
-	if len(dlSpeeds) > 0 {
-		sort.Float64s(dlSpeeds)
-		summary.DownloadMbps = float64Pointer(percentile(dlSpeeds, 90))
+	if len(windowValues) > 0 {
+		return measurement.FilterIQR(windowValues)
 	}
+	return measurement.FilterIQR(fallbackValues)
+}
 
-	// Upload speed (p90)
-	var ulSpeeds []float64
-	for _, s := range r.ThroughputSamples {
-		if s.Direction == "upload" {
-			ulSpeeds = append(ulSpeeds, s.Mbps)
+func latencyValues(samples []LatencySample, phase string, requireOverlap bool) []float64 {
+	values := make([]float64, 0, len(samples))
+	for _, sample := range samples {
+		if sample.Phase != phase || (requireOverlap && !sample.LoadOverlapped) {
+			continue
 		}
+		values = append(values, float64(sample.RTT.Microseconds())/1000)
 	}
-	if len(ulSpeeds) > 0 {
-		sort.Float64s(ulSpeeds)
-		summary.UploadMbps = float64Pointer(percentile(ulSpeeds, 90))
+	return values
+}
+
+// calculateSummary computes the shared R-7/IQR summary statistics.
+func (c *Client) calculateSummary(results *Results) Summary {
+	download := throughputValues(results.ThroughputSamples, "download")
+	upload := throughputValues(results.ThroughputSamples, "upload")
+	unloaded := measurement.PrepareLatency(latencyValues(results.LatencySamples, "unloaded", false), 2)
+	downloadLoaded := measurement.FilterIQR(latencyValues(results.LatencySamples, "download", true))
+	uploadLoaded := measurement.FilterIQR(latencyValues(results.LatencySamples, "upload", true))
+
+	summary := Summary{
+		DownloadMbps:      measurement.Percentile(download, 90),
+		UploadMbps:        measurement.Percentile(upload, 90),
+		LatencyUnloadedMs: measurement.Percentile(unloaded, 50),
+		LatencyDownloadMs: measurement.Percentile(downloadLoaded, 90),
+		LatencyUploadMs:   measurement.Percentile(uploadLoaded, 90),
+		JitterMs:          measurement.Jitter(unloaded),
 	}
-
-	// Latency (median for unloaded, p90 for loaded)
-	var unloadedLatencies []float64
-	var downloadLatencies []float64
-	var uploadLatencies []float64
-
-	for _, s := range r.LatencySamples {
-		ms := float64(s.RTT.Microseconds()) / 1000
-		switch s.Phase {
-		case "unloaded":
-			unloadedLatencies = append(unloadedLatencies, ms)
-		case "download":
-			downloadLatencies = append(downloadLatencies, ms)
-		case "upload":
-			uploadLatencies = append(uploadLatencies, ms)
+	if results.PacketLoss != nil && !results.PacketLoss.Unavailable {
+		loss := results.PacketLoss.TransactionLossPercent
+		if loss == 0 && results.PacketLoss.LossPercent != 0 {
+			loss = results.PacketLoss.LossPercent
 		}
+		summary.PacketLossPercent = &loss
 	}
-
-	if len(unloadedLatencies) > 0 {
-		sort.Float64s(unloadedLatencies)
-		summary.LatencyUnloadedMs = float64Pointer(percentile(unloadedLatencies, 50))
-		summary.JitterMs = float64Pointer(percentile(unloadedLatencies, 90) - percentile(unloadedLatencies, 50))
-	}
-
-	if len(downloadLatencies) > 0 {
-		sort.Float64s(downloadLatencies)
-		summary.LatencyDownloadMs = float64Pointer(percentile(downloadLatencies, 90))
-	}
-
-	if len(uploadLatencies) > 0 {
-		sort.Float64s(uploadLatencies)
-		summary.LatencyUploadMs = float64Pointer(percentile(uploadLatencies, 90))
-	}
-
-	// Packet loss
-	if r.PacketLoss != nil && !r.PacketLoss.Unavailable {
-		summary.PacketLossPercent = float64Pointer(r.PacketLoss.LossPercent)
-	}
-
 	return summary
 }
 
-func float64Pointer(value float64) *float64 {
-	return &value
+func hasImpreciseTiming(results *Results) bool {
+	for _, sample := range results.ThroughputSamples {
+		if sample.SampleKind != "window" {
+			continue
+		}
+		if sample.TimingSource != "aggregate-wall-clock" {
+			return true
+		}
+	}
+	for _, sample := range results.LatencySamples {
+		if sample.TimingSource != "" && sample.TimingSource != "httptrace" {
+			return true
+		}
+		if sample.LoadOverlapped && !sample.LoadTrackingAccurate {
+			return true
+		}
+	}
+	return false
 }
 
-// percentile calculates the p-th percentile of sorted values.
-func percentile(sorted []float64, p float64) float64 {
-	if len(sorted) == 0 {
-		return 0
+func countWindows(samples []ThroughputSample, direction string) int {
+	count := 0
+	for _, sample := range samples {
+		if sample.Direction == direction && (sample.SampleKind == "window" || sample.Profile == "window") {
+			count++
+		}
 	}
-	idx := int(float64(len(sorted)-1) * p / 100)
-	return sorted[idx]
+	return count
+}
+
+func countLatency(samples []LatencySample, phase string, overlapOnly bool) int {
+	count := 0
+	for _, sample := range samples {
+		if sample.Phase == phase && (!overlapOnly || sample.LoadOverlapped) {
+			count++
+		}
+	}
+	return count
+}
+
+// assessTestConfidence is mirrored in web/js/speedtest.js. The score uses five
+// independently visible gates instead of allowing an unavailable measurement
+// to look like a stable zero.
+func (c *Client) assessTestConfidence(results *Results) TestConfidence {
+	var confidence TestConfidence
+	downloadExpected := !c.cfg.UploadOnly
+	uploadExpected := !c.cfg.DownloadOnly
+
+	downloadValues := throughputValues(results.ThroughputSamples, "download")
+	uploadValues := throughputValues(results.ThroughputSamples, "upload")
+	unloadedValues := measurement.PrepareLatency(latencyValues(results.LatencySamples, "unloaded", false), 2)
+
+	downloadWindows := countWindows(results.ThroughputSamples, "download")
+	uploadWindows := countWindows(results.ThroughputSamples, "upload")
+	unloadedCount := countLatency(results.LatencySamples, "unloaded", false)
+	downloadLoaded := countLatency(results.LatencySamples, "download", true)
+	uploadLoaded := countLatency(results.LatencySamples, "upload", true)
+
+	sampleAdequate := unloadedCount >= 10
+	if downloadExpected {
+		sampleAdequate = sampleAdequate && downloadWindows >= 3 && downloadLoaded >= 3
+	}
+	if uploadExpected {
+		sampleAdequate = sampleAdequate && uploadWindows >= 3 && uploadLoaded >= 3
+	}
+	confidence.Metrics.SampleCount = ConfidenceSampleCount{
+		DownloadWindows:       downloadWindows,
+		UploadWindows:         uploadWindows,
+		UnloadedLatency:       unloadedCount,
+		DownloadLoadedLatency: downloadLoaded,
+		UploadLoadedLatency:   uploadLoaded,
+		Adequate:              sampleAdequate,
+	}
+
+	downloadCV := measurement.CoefficientOfVariation(downloadValues)
+	uploadCV := measurement.CoefficientOfVariation(uploadValues)
+	latencyCV := measurement.CoefficientOfVariation(unloadedValues)
+	variabilityAcceptable := latencyCV < 50
+	if downloadExpected {
+		variabilityAcceptable = variabilityAcceptable && downloadCV < 30
+	}
+	if uploadExpected {
+		variabilityAcceptable = variabilityAcceptable && uploadCV < 30
+	}
+	confidence.Metrics.Variability = ConfidenceVariability{
+		Download:   downloadCV,
+		Upload:     uploadCV,
+		Latency:    latencyCV,
+		Acceptable: variabilityAcceptable,
+	}
+
+	overlapComplete := true
+	if downloadExpected {
+		overlapComplete = overlapComplete && downloadLoaded >= 3
+	}
+	if uploadExpected {
+		overlapComplete = overlapComplete && uploadLoaded >= 3
+	}
+	confidence.Metrics.LoadedOverlap = ConfidenceOverlap{
+		DownloadAccepted: downloadLoaded,
+		UploadAccepted:   uploadLoaded,
+		Complete:         overlapComplete,
+	}
+
+	packetComplete := results.PacketLoss != nil &&
+		!results.PacketLoss.Unavailable &&
+		results.PacketLoss.ForwardLossPercent != nil &&
+		results.PacketLoss.AcknowledgementsSent > 0 &&
+		results.PacketLoss.ReverseAcknowledgementLossPercent != nil
+	confidence.Metrics.PacketTest = ConfidencePacketTest{Completed: packetComplete}
+	timingAccurate := !hasImpreciseTiming(results)
+	confidence.Metrics.Timing = ConfidenceTiming{Accurate: timingAccurate}
+
+	score := 100
+	if !sampleAdequate {
+		score -= 20
+		confidence.Warnings = append(confidence.Warnings, "Insufficient fixed-window or latency samples for high confidence")
+	}
+	if !variabilityAcceptable {
+		score -= 25
+		confidence.Warnings = append(confidence.Warnings, "High variability in measurements")
+	}
+	if !overlapComplete {
+		score -= 25
+		confidence.Warnings = append(confidence.Warnings, "Loaded-latency overlap was incomplete")
+	}
+	if !packetComplete {
+		score -= 20
+		confidence.Warnings = append(confidence.Warnings, "Directional packet-loss test incomplete")
+	}
+	if !timingAccurate {
+		score -= 10
+		confidence.Warnings = append(confidence.Warnings, "Some measurements used fallback timing")
+	}
+	if score < 0 {
+		score = 0
+	}
+	confidence.OverallScore = score
+	switch {
+	case score >= 80:
+		confidence.Overall = "high"
+	case score >= 50:
+		confidence.Overall = "medium"
+	default:
+		confidence.Overall = "low"
+	}
+	return confidence
 }
 
 // calculateQuality determines network quality grades.
@@ -1248,63 +1494,63 @@ func (c *Client) calculateQuality(s Summary) NetworkQuality {
 }
 
 func gradeForStreaming(s Summary) string {
-	if s.DownloadMbps == nil || s.LatencyUnloadedMs == nil || s.JitterMs == nil || s.PacketLossPercent == nil {
-		return "N/A"
+	if s.PacketLossPercent == nil {
+		return "Incomplete"
 	}
-
-	if *s.DownloadMbps >= 50 && *s.LatencyUnloadedMs <= 25 &&
-		*s.JitterMs <= 5 && *s.PacketLossPercent <= 0.5 {
+	loss := *s.PacketLossPercent
+	if s.DownloadMbps >= 50 && s.LatencyUnloadedMs <= 25 &&
+		s.JitterMs <= 5 && loss <= 0.5 {
 		return "Great"
 	}
-	if *s.DownloadMbps >= 20 && *s.LatencyUnloadedMs <= 50 &&
-		*s.JitterMs <= 15 && *s.PacketLossPercent <= 1.5 {
+	if s.DownloadMbps >= 20 && s.LatencyUnloadedMs <= 50 &&
+		s.JitterMs <= 15 && loss <= 1.5 {
 		return "Good"
 	}
-	if *s.DownloadMbps >= 10 && *s.LatencyUnloadedMs <= 80 &&
-		*s.JitterMs <= 30 && *s.PacketLossPercent <= 3 {
+	if s.DownloadMbps >= 10 && s.LatencyUnloadedMs <= 80 &&
+		s.JitterMs <= 30 && loss <= 3 {
 		return "Okay"
 	}
 	return "Poor"
 }
 
 func gradeForGaming(s Summary) string {
-	if s.DownloadMbps == nil || s.LatencyUnloadedMs == nil || s.JitterMs == nil || s.PacketLossPercent == nil {
-		return "N/A"
+	if s.PacketLossPercent == nil {
+		return "Incomplete"
 	}
-
-	if *s.DownloadMbps >= 25 && *s.LatencyUnloadedMs <= 20 &&
-		*s.JitterMs <= 5 && *s.PacketLossPercent <= 0.1 {
+	loss := *s.PacketLossPercent
+	if s.DownloadMbps >= 25 && s.LatencyUnloadedMs <= 20 &&
+		s.JitterMs <= 5 && loss <= 0.1 {
 		return "Great"
 	}
-	if *s.DownloadMbps >= 15 && *s.LatencyUnloadedMs <= 40 &&
-		*s.JitterMs <= 10 && *s.PacketLossPercent <= 0.5 {
+	if s.DownloadMbps >= 15 && s.LatencyUnloadedMs <= 40 &&
+		s.JitterMs <= 10 && loss <= 0.5 {
 		return "Good"
 	}
-	if *s.DownloadMbps >= 5 && *s.LatencyUnloadedMs <= 80 &&
-		*s.JitterMs <= 20 && *s.PacketLossPercent <= 1 {
+	if s.DownloadMbps >= 5 && s.LatencyUnloadedMs <= 80 &&
+		s.JitterMs <= 20 && loss <= 1 {
 		return "Okay"
 	}
 	return "Poor"
 }
 
 func gradeForVideoChat(s Summary) string {
-	if s.DownloadMbps == nil || s.UploadMbps == nil || s.LatencyUnloadedMs == nil || s.JitterMs == nil || s.PacketLossPercent == nil {
-		return "N/A"
+	if s.PacketLossPercent == nil {
+		return "Incomplete"
 	}
-
-	if *s.DownloadMbps >= 10 && *s.UploadMbps >= 5 &&
-		*s.LatencyUnloadedMs <= 50 &&
-		*s.JitterMs <= 10 && *s.PacketLossPercent <= 1 {
+	loss := *s.PacketLossPercent
+	if s.DownloadMbps >= 10 && s.UploadMbps >= 5 &&
+		s.LatencyUnloadedMs <= 50 &&
+		s.JitterMs <= 10 && loss <= 1 {
 		return "Great"
 	}
-	if *s.DownloadMbps >= 5 && *s.UploadMbps >= 2 &&
-		*s.LatencyUnloadedMs <= 100 &&
-		*s.JitterMs <= 20 && *s.PacketLossPercent <= 2 {
+	if s.DownloadMbps >= 5 && s.UploadMbps >= 2 &&
+		s.LatencyUnloadedMs <= 100 &&
+		s.JitterMs <= 20 && loss <= 2 {
 		return "Good"
 	}
-	if *s.DownloadMbps >= 2 && *s.UploadMbps >= 1 &&
-		*s.LatencyUnloadedMs <= 150 &&
-		*s.JitterMs <= 40 && *s.PacketLossPercent <= 5 {
+	if s.DownloadMbps >= 2 && s.UploadMbps >= 1 &&
+		s.LatencyUnloadedMs <= 150 &&
+		s.JitterMs <= 40 && loss <= 5 {
 		return "Okay"
 	}
 	return "Poor"

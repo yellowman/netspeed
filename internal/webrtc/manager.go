@@ -2,7 +2,6 @@
 package webrtc
 
 import (
-	"encoding/json"
 	"fmt"
 	"log"
 	"sync"
@@ -10,6 +9,8 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/pion/webrtc/v3"
+
+	"github.com/yellowman/netspeed/internal/protocol"
 )
 
 // Manager handles WebRTC peer connections for packet loss testing.
@@ -21,10 +22,10 @@ type Manager struct {
 
 // Config holds WebRTC manager configuration.
 type Config struct {
-	ICEServers      []webrtc.ICEServer
-	IdleTimeout     time.Duration // Close session if no packets received for this duration
-	MaxSessionTime  time.Duration // Maximum session lifetime (safety net)
-	CleanupTicker   time.Duration // How often to clean up expired sessions
+	ICEServers     []webrtc.ICEServer
+	IdleTimeout    time.Duration // Close session if no packets received for this duration
+	MaxSessionTime time.Duration // Maximum session lifetime (safety net)
+	CleanupTicker  time.Duration // How often to clean up expired sessions
 }
 
 // DefaultConfig returns a default configuration.
@@ -50,25 +51,28 @@ type Session struct {
 
 // SessionStats tracks packet statistics for a session.
 type SessionStats struct {
-	mu           sync.Mutex
-	TotalRecv    int
-	LastSeq      int
-	StartTime    time.Time
-	LastRecvTime time.Time
+	mu                   sync.Mutex
+	TotalRecv            int
+	LastSeq              int
+	StartTime            time.Time
+	LastRecvTime         time.Time
+	ReceivedSequences    map[uint32]struct{}
+	DuplicateFrames      int
+	InvalidFrames        int
+	AcknowledgementsSent int
+	AckSendFailures      int
 }
 
-// PacketMessage is the JSON format for packets sent over the data channel.
-type PacketMessage struct {
-	Seq    int   `json:"seq"`
-	SentAt int64 `json:"sentAt"`
-	Size   int   `json:"size"`
-}
-
-// AckMessage is the JSON format for acknowledgments.
-type AckMessage struct {
-	Ack        int   `json:"ack"`
-	ReceivedAt int64 `json:"receivedAt"`
-	SentAt     int64 `json:"sentAt"`
+// PacketLossSnapshot is the server-observed half of a packet-loss test. The
+// client combines it with its acknowledgement set to distinguish forward loss
+// from reverse acknowledgement loss and round-trip transaction loss.
+type PacketLossSnapshot struct {
+	FrameSizeBytes       int
+	ForwardReceived      int
+	AcknowledgementsSent int
+	DuplicateFrames      int
+	InvalidFrames        int
+	AckSendFailures      int
 }
 
 // NewManager creates a new WebRTC manager.
@@ -159,8 +163,9 @@ func (m *Manager) HandleOffer(offerSDP string, testProfile string) (answerSDP st
 		CreatedAt:      now,
 		LastActivity:   now,
 		Stats: &SessionStats{
-			LastSeq:   -1,
-			StartTime: now,
+			LastSeq:           -1,
+			StartTime:         now,
+			ReceivedSequences: make(map[uint32]struct{}),
 		},
 		done: make(chan struct{}),
 	}
@@ -239,60 +244,97 @@ func (m *Manager) setupPacketLossChannel(session *Session, dc *webrtc.DataChanne
 	dc.OnOpen(func() {
 		log.Printf("Session %s: packet-loss channel opened", session.ID)
 		now := time.Now()
+		session.Stats.mu.Lock()
 		session.Stats.StartTime = now
-		// Update last activity when data channel opens
+		session.Stats.mu.Unlock()
+		// Update last activity when data channel opens.
 		session.mu.Lock()
 		session.LastActivity = now
 		session.mu.Unlock()
 	})
 
 	dc.OnClose(func() {
-		log.Printf("Session %s: packet-loss channel closed, received %d packets",
-			session.ID, session.Stats.TotalRecv)
+		totalRecv, _, _ := session.GetStats()
+		log.Printf("Session %s: packet-loss channel closed, received %d unique probes",
+			session.ID, totalRecv)
 	})
 
 	dc.OnMessage(func(msg webrtc.DataChannelMessage) {
-		// Parse the packet message
-		var pkt PacketMessage
-		if err := json.Unmarshal(msg.Data, &pkt); err != nil {
-			log.Printf("Session %s: failed to parse packet: %v", session.ID, err)
+		frame, err := protocol.DecodePacketFrame(msg.Data)
+		if err != nil || frame.Acknowledgement {
+			session.Stats.mu.Lock()
+			session.Stats.InvalidFrames++
+			session.Stats.mu.Unlock()
+			if err != nil {
+				log.Printf("Session %s: invalid packet-loss frame: %v", session.ID, err)
+			}
 			return
 		}
 
 		now := time.Now()
-
-		// Update last activity to prevent idle timeout
+		// Update last activity to prevent idle timeout.
 		session.mu.Lock()
 		session.LastActivity = now
 		session.mu.Unlock()
 
-		// Update stats
+		// Track unique forward-path probes separately from duplicates.
 		session.Stats.mu.Lock()
+		if _, exists := session.Stats.ReceivedSequences[frame.Sequence]; exists {
+			session.Stats.DuplicateFrames++
+			session.Stats.LastRecvTime = now
+			session.Stats.mu.Unlock()
+			// Duplicate probes are counted but not acknowledged again. This keeps
+			// acknowledgementsSent a denominator of unique forward probes, so the
+			// client's reverse-path loss calculation is not distorted by duplicate
+			// acknowledgements for the same sequence number.
+			return
+		}
+		session.Stats.ReceivedSequences[frame.Sequence] = struct{}{}
 		session.Stats.TotalRecv++
-		session.Stats.LastSeq = pkt.Seq
+		session.Stats.LastSeq = int(frame.Sequence)
 		session.Stats.LastRecvTime = now
 		session.Stats.mu.Unlock()
 
-		// Send ack with timestamps for RTT calculation
-		ack := AckMessage{
-			Ack:        pkt.Seq,
-			ReceivedAt: time.Now().UnixMilli(),
-			SentAt:     pkt.SentAt,
-		}
-		ackData, err := json.Marshal(ack)
-		if err != nil {
-			log.Printf("Session %s: failed to marshal ack: %v", session.ID, err)
+		ackData := protocol.EncodeAckFrame(
+			frame.Sequence,
+			frame.SentAtUnixMilli,
+			now.UnixMilli(),
+		)
+		if err := dc.Send(ackData); err != nil {
+			session.Stats.mu.Lock()
+			session.Stats.AckSendFailures++
+			session.Stats.mu.Unlock()
+			log.Printf("Session %s: failed to send ack: %v", session.ID, err)
 			return
 		}
-
-		if err := dc.Send(ackData); err != nil {
-			log.Printf("Session %s: failed to send ack: %v", session.ID, err)
-		}
+		session.Stats.mu.Lock()
+		session.Stats.AcknowledgementsSent++
+		session.Stats.mu.Unlock()
 	})
 
 	dc.OnError(func(err error) {
 		log.Printf("Session %s: data channel error: %v", session.ID, err)
 	})
+}
+
+// PacketLossSnapshot returns an immutable snapshot of the server-observed
+// packet-loss counters for an active session.
+func (m *Manager) PacketLossSnapshot(testID string) (PacketLossSnapshot, bool) {
+	session, ok := m.GetSession(testID)
+	if !ok {
+		return PacketLossSnapshot{}, false
+	}
+
+	session.Stats.mu.Lock()
+	defer session.Stats.mu.Unlock()
+	return PacketLossSnapshot{
+		FrameSizeBytes:       protocol.PacketFrameSize,
+		ForwardReceived:      len(session.Stats.ReceivedSequences),
+		AcknowledgementsSent: session.Stats.AcknowledgementsSent,
+		DuplicateFrames:      session.Stats.DuplicateFrames,
+		InvalidFrames:        session.Stats.InvalidFrames,
+		AckSendFailures:      session.Stats.AckSendFailures,
+	}, true
 }
 
 // GetSession returns a session by ID.

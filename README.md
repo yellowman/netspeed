@@ -11,12 +11,17 @@ comes in three parts:
 
 inspired by speed.cloudflare.com but you run it yourself.
 
-requires **Go 1.23.2 or newer**. The current phased repair status and remaining work are tracked in [`IMPROVEMENT_PLAN.md`](IMPROVEMENT_PLAN.md).
-
 ---
 
 quick start
 -----------
+
+requires Go 1.21.3 or newer.
+
+This archive contains the completed Phase 1 measurement-integrity and Phase 2
+measurement-methodology work. See [`MEASUREMENT_PROTOCOL_V2.md`](MEASUREMENT_PROTOCOL_V2.md)
+for the current measurement contract and [`IMPROVEMENT_PHASES.md`](IMPROVEMENT_PHASES.md)
+for the remaining WebRTC, service-hardening, deployment, and release-qualification phases.
 
 ```bash
 # build the daemon
@@ -95,14 +100,17 @@ for packet loss testing via webrtc, you'll also want:
 using the cli client
 --------------------
 
-the cli client works with your own netspeedd server or cloudflare's:
+the cli client defaults to a local netspeedd server:
 
 ```bash
-# test against your server
+# test against the local daemon
+./netspeed
+
+# test against another netspeedd server
 ./netspeed https://speed.example.com
 
-# test against cloudflare (default)
-./netspeed
+# legacy servers without verified upload receipts are download-only
+./netspeed --download-only --no-packet-loss https://speed.cloudflare.com
 
 # quick test (fewer samples)
 ./netspeed --quick
@@ -115,7 +123,7 @@ the cli client works with your own netspeedd server or cloudflare's:
 
 # quiet mode (just the numbers)
 ./netspeed --quiet
-# outputs: download_mbps  upload_mbps  latency_ms  loss_percent
+# outputs: download_mbps  upload_mbps  latency_ms  loss_percent (or n/a)
 ```
 
 **cli flags:**
@@ -139,14 +147,13 @@ the cli client works with your own netspeedd server or cloudflare's:
 what it measures
 ----------------
 
-- **download speed** - how fast you can pull data. the cli honors the server-advertised ceiling; the phase-1 browser is temporarily capped at 100mb per transfer.
-- **upload speed** - how fast you can push data. the cli streams generated request bodies; the phase-1 browser is temporarily capped at 50mb per transfer.
-- **latency** - round-trip time to the server
-- **loaded latency** - currently present, but guaranteed sustained-load overlap is the explicit phase-2 repair and is not yet release-qualified.
-- **jitter** - variation in latency
-- **packet loss** - currently uses webrtc datachannel round trips. exact-size, directional packet-loss semantics are the explicit phase-3 repair.
-
-phase 1 adds a verifiable measurement contract: `/meta` advertises the protocol version and transfer ceiling, measurement-api-v1 uploads return the accepted byte count and server body-read duration, downloads require exact byte counts, and both clients reject non-200 responses. unavailable measurements are shown as `N/A`/`null`; they are never treated as zero. legacy third-party upload endpoints remain bounded but cannot provide the v1 server receipt.
+- **download speed** - three bounded, fixed-duration windows after small baseline probes
+- **upload speed** - three bounded windows, with every request verified by an exact server receipt
+- **latency** - unloaded round-trip time using precise request/first-byte timing
+- **loaded latency** - probes accepted only when continuous download or upload traffic spans the entire probe
+- **jitter** - p90 latency minus median latency after warmup removal and conservative IQR filtering
+- **packet loss** - exact 1,200-byte WebRTC frames with transaction, forward, and reverse-acknowledgement loss reported separately
+- **confidence** - explicit gates for sample count, variability, overlap, timing, and packet-test completion
 
 the ui grades your connection for:
 - video streaming
@@ -164,7 +171,6 @@ netspeed/
 ├── internal/
 │   ├── config/          # configuration handling
 │   ├── server/          # http server and handlers
-│   ├── measurement/     # shared transfer protocol and validation
 │   ├── meta/            # client metadata extraction
 │   ├── locations/       # server location data
 │   └── webrtc/          # packet loss testing
@@ -183,27 +189,19 @@ netspeed/
 running the ui separately
 -------------------------
 
-if you want to serve the ui through nginx or another frontend:
+if you want to serve the ui from somewhere else (nginx, cdn, whatever):
 
 ```bash
 # run daemon without web-dir
 ./netspeedd -listen :8080
 
-# serve web/ and reverse-proxy /meta, /locations, /__down, /__up,
-# /api/*, and /cdn-cgi/* to netspeedd on the same public origin
+# serve web/ from your preferred static server
+# just make sure cors is enabled on the daemon
 ```
 
-the current ui uses relative urls, so a same-origin reverse proxy is required. configurable cross-origin api routing is scheduled for phase 6.
-
----
-
-tests
------
-
-```bash
-go test ./...
-node web/js/speedtest.test.js
-```
+The current browser client uses relative API paths. Serve it from `netspeedd` or put
+all daemon routes behind the same-origin reverse proxy. A configurable cross-origin API
+base and complete CORS/timing-exposure contract remain Phase 5 work.
 
 ---
 

@@ -9,29 +9,21 @@ that talks to a backend exposing these endpoints:
 - `GET /locations`
 - `GET /api/turn/credentials`
 - `POST /api/packet-test/offer`
-- (optional) `POST /api/packet-test/report`
+- `POST /api/packet-test/report`
 
 this is a **CLI-only** spec: it defines what requests the client makes,
 what responses it expects, how tests are orchestrated, and how results are
 displayed in the terminal. backend implementation details (TURN server config, HMAC secrets,
 etc.) are intentionally out of scope.
 
-## phase 1 normative amendment
-
-The following rules are implemented and override older examples in this document where they conflict:
-
-- the source baseline is Go 1.23.2 or newer;
-- `/meta` advertises `measurementApiVersion` and `maxTransferBytes`;
-- every measurement request must receive HTTP `200`, and downloads/latency probes must return exactly the requested byte count;
-- measurement API v1 uploads succeed only when the JSON receipt confirms the exact accepted byte count and a positive server body-read duration;
-- profiles larger than `maxTransferBytes` are never selected; legacy servers without capabilities are conservatively capped at 100 MB;
-- upload request bodies are generated as a stream and are not retained in a payload-size cache;
-- baseline throughput profiles require at least two valid samples and unloaded latency requires at least three valid probes;
-- unavailable metrics serialize as JSON `null`, print as `N/A`/blank, and cannot receive a quality grade.
-
-True sustained loaded-latency overlap and exact-size directional packet-loss semantics remain phase 2 and phase 3 work respectively; see `IMPROVEMENT_PLAN.md`.
-
 ---
+
+
+> **Phase 2 authority:** the implemented Go CLI requires measurement protocol
+> version 2. [`MEASUREMENT_PROTOCOL_V2.md`](MEASUREMENT_PROTOCOL_V2.md) is the
+> canonical wire and methodology contract. It supersedes pre-v2 giant-profile,
+> post-transfer loaded-latency, short JSON packet, and retained-payload examples.
+> The C-client material in section 14 remains a legacy design note until Phase 6.
 
 ## 1. command line interface
 
@@ -54,7 +46,7 @@ netspeed-cli
 # Run test against specific server
 netspeed-cli https://speed.example.com
 
-# Quick test (download only, fewer samples)
+# Quick test (fewer fixed windows and latency samples)
 netspeed-cli --quick
 
 # JSON output for scripting
@@ -113,8 +105,6 @@ netspeed-cli -v
 ```json
 {
   "hostname": "speed.example.com",
-  "measurementApiVersion": 1,
-  "maxTransferBytes": 1073741824,
   "clientIp": "203.0.113.42",
   "httpProtocol": "HTTP/2.0",
   "asn": 13254,
@@ -126,7 +116,11 @@ netspeed-cli -v
   "postalCode": "97701",
   "latitude": 44.0582,
   "longitude": -121.3153,
-  "timezone": "America/Los_Angeles"
+  "timezone": "America/Los_Angeles",
+  "maxTransferBytes": 1073741824,
+  "measurementProtocolVersion": 2,
+  "uploadReceiptVersion": 1,
+  "packetLossFrameVersion": 1
 }
 ```
 
@@ -147,71 +141,48 @@ netspeed-cli -v
 - method: `GET`
 - path: `/__down`
 - query parameters:
-  - `bytes` (string int, optional) - number of bytes to download. `0` or omitted = latency-only probe.
-  - `profile` (string, optional) - name of download profile: `100k`, `1M`, `10M`, `25M`, `100M`.
-  - `run` (string int, optional) - run index within a profile.
-  - `phase` (string, optional) - `unloaded`, `download`, `upload` (for latency probes).
+  - `bytes` - exact response-body length; `0` is a latency probe;
+  - `measId` - unique opaque correlation id;
+  - `profile` and `run` - diagnostic labels;
+  - `during` - `download`, `upload`, or omitted for unloaded probes.
 
-**response**
+**accepted response**
 
-- status: `200`
-- headers:
-  - `Content-Type: application/octet-stream`
-  - `Content-Length: <bytes>`
-- body: exactly `bytes` bytes of opaque data.
+- status `200`;
+- `Content-Type: application/octet-stream`;
+- `Content-Length`, when present, equals the requested byte count;
+- body contains exactly the requested number of bytes.
 
-**CLI behavior**
+For throughput, the Go client consumes the body without retaining it and times
+first response byte through completed body read. For latency, RTT is
+`GotFirstResponseByte - WroteRequest`. Any status, type, length, read, or timing
+mismatch invalidates the sample.
 
-- measure round-trip time using monotonic clock:
-
-  ```go
-  start := time.Now()
-  resp, err := client.Get(url)
-  // ... read body fully
-  duration := time.Since(start)
-  mbps := float64(received*8) / duration.Seconds() / 1e6
-  ```
-
-- for `bytes > 0`, compute throughput.
-- for `bytes == 0`, use `duration` as a latency sample.
-
----
-
-#### 2.1.3 `POST /__up` - upload
+#### 2.1.3 `POST /__up` - verified upload
 
 **request**
 
 - method: `POST`
 - path: `/__up`
-- query parameters:
-  - `profile` (string, optional: `100k`, `1M`, `10M`, `25M`, `50M`)
-  - `run` (string int, optional)
-  - `phase` (string, optional: `upload` for latency-under-load probes)
-- headers:
-  - `Content-Type: application/octet-stream`
-- body: binary payload of the desired size.
+- query parameters: unique `measId` plus diagnostic `profile` and `run` labels;
+- `Content-Type: application/octet-stream`;
+- exact `Content-Length`;
+- a bounded streaming body, never a retained profile-sized allocation.
 
-**response**
-
-- status: `200` only
-- body for measurement API v1:
+**accepted response**
 
 ```json
 {
   "ok": true,
   "acceptedBytes": 1000000,
-  "serverDurationNs": 12345678
+  "serverDurationNs": 123456789
 }
 ```
 
-**CLI behavior**
-
-- generate the body incrementally without a payload-sized allocation.
-- require `acceptedBytes` to equal the requested body size.
-- use `serverDurationNs` as the canonical upload duration for API v1.
-- reject malformed receipts, non-positive durations, non-`200` statuses, and incomplete request-body consumption.
-
----
+The client requires status `200`, JSON content type, receipt version 1, and
+`acceptedBytes` equal to the declared and actually generated body length. The
+server body-read duration is canonical; client request-body timing is a fallback.
+A truncated, oversized, rejected, or unverifiable upload is not a sample.
 
 #### 2.1.4 `GET /locations` - test locations
 
@@ -278,7 +249,7 @@ netspeed-cli -v
 {
   "sdp": "<offer-sdp>",
   "type": "offer",
-  "testProfile": "loss-basic"
+  "testProfile": "loss-exact-v1"
 }
 ```
 
@@ -296,294 +267,81 @@ netspeed-cli -v
 
 ## 3. measurement pipeline
 
-CLI runs tests in this sequence:
-
-1. Fetch metadata (`/meta`)
-2. Unloaded latency probes
-3. Download speed tests
-4. Upload speed tests
-5. Loaded latency probes (during download/upload)
-6. Packet loss test (WebRTC)
-
-### 3.1 precise timing methodology
-
-**CRITICAL: all timing measurements MUST exclude connection overhead.**
-
-the CLI uses `net/http/httptrace` to capture precise timing events:
-
-| Event | httptrace Hook | Description |
-|-------|----------------|-------------|
-| Connection Start | `ConnectStart` | TCP dial begins |
-| Connection Done | `ConnectDone` | TCP established |
-| TLS Start | `TLSHandshakeStart` | TLS negotiation begins |
-| TLS Done | `TLSHandshakeDone` | TLS established |
-| Request Written | `WroteRequest` | Request fully sent |
-| First Byte | `GotFirstResponseByte` | First response byte received |
-
-**download timing (throughput):**
-
-measure ONLY body transfer time, excluding connection setup, TLS, and headers:
-
-```
-Body Transfer Time = (body fully read) - GotFirstResponseByte
-```
-
-**latency timing:**
-
-measure network round-trip from request sent to first response byte:
-
-```
-RTT = GotFirstResponseByte - WroteRequest
-```
-
-**upload timing (throughput):**
-
-for measurement API v1, use the server body-read duration from the verified receipt:
-
-```
-Upload Time = time.Duration(receipt.ServerDurationNS)
-```
-
-For a legacy server, the fallback interval begins when the HTTP transport first reads the generated request body and ends at the first response byte.
-
-**timing implementation:**
-
-```go
-import "net/http/httptrace"
-
-type timingInfo struct {
-    wroteRequest      time.Time
-    gotFirstByte      time.Time
-    bodyReadComplete  time.Time
-}
-
-func createTrace(t *timingInfo) *httptrace.ClientTrace {
-    return &httptrace.ClientTrace{
-        WroteRequest: func(info httptrace.WroteRequestInfo) {
-            t.wroteRequest = time.Now()
-        },
-        GotFirstResponseByte: func() {
-            t.gotFirstByte = time.Now()
-        },
-    }
-}
-```
-
----
-
-### 3.2 download speed tests
-
-**profiles & sizes:**
-
-| Profile | Size (bytes) | Runs | Notes |
-|---------|--------------|------|-------|
-| 100kB | 100,000 | 10 | baseline when permitted by the server ceiling |
-| 1MB | 1,000,000 | 8 | baseline when permitted by the server ceiling |
-| 10MB | 10,000,000 | 6 | |
-| 25MB | 25,000,000 | 4 | |
-| 100MB | 100,000,000 | 3 | |
-| 250MB | 250,000,000 | 2 | |
-| 500MB | 500,000,000 | 2 | 1s at 4 Gbps |
-| 1GB | 1,000,000,000 | 2 | 1s at 8 Gbps |
-| 2GB | 2,000,000,000 | 2 | 1s at 16 Gbps |
-| 5GB | 5,000,000,000 | 2 | 1s at 40 Gbps |
-| 12GB | 12,000,000,000 | 2 | 1s at ~100 Gbps |
-| 50GB | 50,000,000,000 | 2 | 1s at 400 Gbps |
-| 100GB | 100,000,000,000 | 2 | 1s at 800 Gbps |
-| 125GB | 125,000,000,000 | 2 | 1s at 1 Tbps |
-
-**Note:** Sizes use decimal (kB/MB/GB) notation: 1 kB = 1,000 bytes, 1 MB = 1,000,000 bytes, 1 GB = 1,000,000,000 bytes.
-
-Only profiles whose size is less than or equal to `/meta.maxTransferBytes` are eligible. Listing a profile here does not authorize a client to exceed the advertised server ceiling.
-
-**per profile (with precise timing):**
-
-```go
-url := fmt.Sprintf("%s/__down?bytes=%d&profile=%s&run=%d", baseURL, sizeBytes, profile, runIndex)
-
-var timing timingInfo
-trace := createTrace(&timing)
-ctx := httptrace.WithClientTrace(context.Background(), trace)
-
-req, _ := http.NewRequestWithContext(ctx, "GET", url, nil)
-resp, err := client.Do(req)
-if err != nil {
-    return err
-}
-defer resp.Body.Close()
-if resp.StatusCode != http.StatusOK {
-    return fmt.Errorf("unexpected download status: %s", resp.Status)
-}
-
-// timing.gotFirstByte is set when the first body byte arrives.
-received, err := io.Copy(io.Discard, resp.Body)
-bodyDone := time.Now()
-if err != nil || received != sizeBytes {
-    return fmt.Errorf("incomplete download: received %d of %d bytes", received, sizeBytes)
-}
-
-// Body transfer time only (excludes connection, TLS, and headers).
-duration := bodyDone.Sub(timing.gotFirstByte)
-mbps := float64(received*8) / duration.Seconds() / 1e6
-```
-
----
-
-### 3.3 upload speed tests
-
-**profiles & sizes:**
-
-| Profile | Size (bytes) | Runs | Notes |
-|---------|--------------|------|-------|
-| 100kB | 100,000 | 8 | baseline when permitted by the server ceiling |
-| 1MB | 1,000,000 | 6 | baseline when permitted by the server ceiling |
-| 10MB | 10,000,000 | 4 | |
-| 25MB | 25,000,000 | 4 | |
-| 50MB | 50,000,000 | 3 | |
-| 100MB | 100,000,000 | 2 | |
-| 250MB | 250,000,000 | 2 | 1s at 2 Gbps |
-| 500MB | 500,000,000 | 2 | 1s at 4 Gbps |
-| 1GB | 1,000,000,000 | 2 | 1s at 8 Gbps |
-| 2GB | 2,000,000,000 | 2 | 1s at 16 Gbps |
-| 5GB | 5,000,000,000 | 2 | 1s at 40 Gbps |
-| 12GB | 12,000,000,000 | 2 | 1s at ~100 Gbps |
-| 50GB | 50,000,000,000 | 2 | 1s at 400 Gbps |
-| 100GB | 100,000,000,000 | 2 | 1s at 800 Gbps |
-| 125GB | 125,000,000,000 | 2 | 1s at 1 Tbps |
-
-**Note:** Sizes use decimal (kB/MB/GB) notation: 1 kB = 1,000 bytes, 1 MB = 1,000,000 bytes, 1 GB = 1,000,000,000 bytes.
-
-Only profiles whose size is less than or equal to `/meta.maxTransferBytes` are eligible. Upload payloads are streamed from a bounded generator rather than materialized and cached.
-
-**per profile (with precise timing):**
-
-```go
-url := fmt.Sprintf("%s/__up?profile=%s&run=%d", baseURL, profile, runIndex)
-
-body := newGeneratedUploadBody(sizeBytes)
-req, _ := http.NewRequestWithContext(ctx, "POST", url, body)
-req.ContentLength = sizeBytes
-req.Header.Set("Content-Type", "application/octet-stream")
-
-resp, err := client.Do(req)
-if err != nil {
-    return err
-}
-defer resp.Body.Close()
-if resp.StatusCode != http.StatusOK {
-    return fmt.Errorf("unexpected upload status: %s", resp.Status)
-}
-
-receipt, err := measurement.DecodeUploadReceipt(resp.Body)
-if err != nil {
-    return err
-}
-readBytes, _, _ := body.snapshot()
-if readBytes != sizeBytes || receipt.AcceptedBytes != sizeBytes {
-    return fmt.Errorf("upload byte-count mismatch")
-}
-
-duration := time.Duration(receipt.ServerDurationNS)
-mbps := float64(receipt.AcceptedBytes*8) / duration.Seconds() / 1e6
-```
-
----
-
-### 3.4 latency tests
-
-**phases:**
-
-1. **unloaded latency** - 20 probes with adaptive batching
-2. **latency during download** - 5 probes during large download
-3. **latency during upload** - 5 probes during large upload
-
-**latency measurement (with precise timing):**
-
-```go
-url := fmt.Sprintf("%s/__down?bytes=0&phase=%s&seq=%d", baseURL, phase, seq)
-
-var timing timingInfo
-trace := createTrace(&timing)
-ctx := httptrace.WithClientTrace(context.Background(), trace)
-
-req, _ := http.NewRequestWithContext(ctx, "GET", url, nil)
-resp, _ := client.Do(req)
-io.Copy(io.Discard, resp.Body)
-resp.Body.Close()
-
-// RTT = time from request sent to first response byte
-// This excludes connection setup, TLS, and DNS
-rtt := timing.gotFirstByte.Sub(timing.wroteRequest)
-```
-
-**adaptive batching:**
-
-```go
-// Phase 1: run first 3 probes sequentially
-for i := 0; i < 3; i++ {
-    sample := measureLatency(baseURL, "unloaded", i)
-    samples = append(samples, sample)
-}
-
-// Phase 2: decide strategy based on median RTT
-medianRTT := calculateMedian(samples)
-
-var useParallel bool
-if medianRTT < 50*time.Millisecond {
-    useParallel = true
-} else if medianRTT >= 100*time.Millisecond {
-    // High latency: check bandwidth
-    bandwidth := quickBandwidthEstimate(baseURL)
-    useParallel = bandwidth >= 2.0 // Mbps
-} else {
-    useParallel = true // 50-100ms
-}
-
-// Phase 3: run remaining 17 probes
-if useParallel {
-    // Batch 5 probes at a time using goroutines
-} else {
-    // Sequential probes
-}
-```
-
----
-
-### 3.5 packet loss test (WebRTC)
-
-**steps:**
-
-1. Fetch TURN credentials from `/api/turn/credentials`
-2. Create `pion/webrtc` peer connection with ICE servers
-3. Create data channel labeled `"packet-loss"`
-4. Exchange SDP via `/api/packet-test/offer`
-5. Send 1000 packets at 10ms intervals
-6. Wait 3 seconds for late acks
-7. Compute loss statistics
-
-```go
-const (
-    numPackets  = 1000
-    intervalMs  = 10
-    extraWaitMs = 3000
-)
-
-// Send packets
-ticker := time.NewTicker(10 * time.Millisecond)
-for seq := 0; seq < numPackets; seq++ {
-    msg := PacketMessage{Seq: seq, SentAt: time.Now().UnixMilli()}
-    dc.SendText(json.Marshal(msg))
-    <-ticker.C
-}
-
-// Wait for late acks
-time.Sleep(3 * time.Second)
-
-// Calculate results
-lossPercent := float64(numPackets-len(acks)) / float64(numPackets) * 100
-```
-
----
+The Phase 2 CLI runs:
+
+1. `GET /meta` and require measurement protocol 2;
+2. unloaded latency probes;
+3. download baselines followed by sustained download windows, with loaded
+   latency inside the selected window;
+4. upload baselines followed by sustained upload windows, with loaded latency
+   inside the selected window;
+5. the exact-frame WebRTC packet test unless disabled;
+6. shared summaries, grades, and confidence gates.
+
+### 3.1 verified baselines and fixed windows
+
+Each enabled direction runs three verified 100 kB requests and three verified
+1 MB requests. At least two requests in each group must succeed. The median 1 MB
+result chooses a bounded chunk and flow count; baselines do not influence the
+headline speed once window samples exist.
+
+Normal mode runs three 1.5-second windows. Quick mode runs one 1-second window.
+Workers repeatedly complete exact, independently verified requests. Aggregate
+window speed is verified bytes divided by elapsed wall-clock time. Request chunks
+are rounded to 64 KiB, never exceed 256 MiB or `maxTransferBytes`, and high rates
+scale through 1, 2, 4, 8, or 16 flows rather than giant requests.
+
+### 3.2 precise timing
+
+The CLI uses `net/http/httptrace`:
+
+- latency RTT: `GotFirstResponseByte - WroteRequest`;
+- download request body: first response byte through exact body completion;
+- upload request body: first body read through `WroteRequest`;
+- accepted upload throughput: daemon `serverDurationNs`, with client body timing
+  as a diagnostic fallback;
+- aggregate window: worker-release time through completion of all in-flight
+  verified requests after the stop signal.
+
+Connection setup and receipt waiting are not classified as transfer load.
+
+### 3.3 continuous loaded-latency proof
+
+A shared load owner tracks active transfer bodies and increments a generation
+every time the active count reaches zero. A loaded probe is retained only when
+load is active before and after the probe and the generation is unchanged. A
+probe spanning any gap is rejected and retried.
+
+Normal mode targets five probes in the middle window and requires at least three
+accepted probes per enabled direction. Quick mode targets three in its single
+window. Download load means response-body consumption; upload load means request-
+body transmission only. The window timer stops new transfers and further probe
+retries. Requests already in flight drain into the window aggregate. A timer
+expiry is successful only when the accepted probe quorum has already been met;
+otherwise that direction fails rather than allowing retries to extend the test.
+
+### 3.4 exact-size packet test
+
+The CLI creates an unordered `maxRetransmits: 0` data channel and sends exact
+1,200-byte binary frames defined in `MEASUREMENT_PROTOCOL_V2.md`. Sequence
+numbers advance only for successful local sends. The daemon acknowledges each
+unique valid probe once and returns authoritative counters from
+`POST /api/packet-test/report`.
+
+The result reports separately:
+
+- round-trip transaction loss;
+- server-observed forward probe loss;
+- reverse acknowledgement loss.
+
+Unavailable packet testing remains unavailable and never becomes numeric zero.
+
+### 3.5 shared statistics
+
+The Go and browser clients both use R-7 percentile interpolation, conservative
+1.5-IQR filtering, p90-minus-median jitter, and population coefficient of
+variation. Headline throughput is the R-7 p90 of fixed-window values; latency is
+the median after configured warmup removal and filtering.
 
 ## 4. CLI data model
 
@@ -635,31 +393,29 @@ type PacketLossResult struct {
 }
 
 type Summary struct {
-    DownloadMbps      *float64 `json:"downloadMbps"`
-    UploadMbps        *float64 `json:"uploadMbps"`
-    LatencyUnloadedMs *float64 `json:"latencyUnloadedMs"`
-    LatencyDownloadMs *float64 `json:"latencyDownloadMs"`
-    LatencyUploadMs   *float64 `json:"latencyUploadMs"`
-    JitterMs          *float64 `json:"jitterMs"`
-    PacketLossPercent *float64 `json:"packetLossPercent"`
+    DownloadMbps      float64 `json:"downloadMbps"`
+    UploadMbps        float64 `json:"uploadMbps"`
+    LatencyUnloadedMs float64 `json:"latencyUnloadedMs"`
+    LatencyDownloadMs float64 `json:"latencyDownloadMs"`
+    LatencyUploadMs   float64 `json:"latencyUploadMs"`
+    JitterMs          float64 `json:"jitterMs"`
+    PacketLossPercent float64 `json:"packetLossPercent"`
 }
 
 type Meta struct {
-    Hostname              string  `json:"hostname"`
-    MeasurementAPIVersion int     `json:"measurementApiVersion,omitempty"`
-    MaxTransferBytes      int64   `json:"maxTransferBytes,omitempty"`
-    ClientIP              string  `json:"clientIp"`
-    HTTPProtocol          string  `json:"httpProtocol"`
-    ASN                   int     `json:"asn"`
-    ASOrganization        string  `json:"asOrganization"`
-    Colo                  string  `json:"colo"`
-    Country               string  `json:"country"`
-    City                  string  `json:"city"`
-    Region                string  `json:"region"`
-    PostalCode            string  `json:"postalCode"`
-    Latitude              float64 `json:"latitude"`
-    Longitude             float64 `json:"longitude"`
-    Timezone              string  `json:"timezone,omitempty"`
+    Hostname       string  `json:"hostname"`
+    ClientIP       string  `json:"clientIp"`
+    HTTPProtocol   string  `json:"httpProtocol"`
+    ASN            int     `json:"asn"`
+    ASOrganization string  `json:"asOrganization"`
+    Colo           string  `json:"colo"`
+    Country        string  `json:"country"`
+    City           string  `json:"city"`
+    Region         string  `json:"region"`
+    PostalCode     string  `json:"postalCode"`
+    Latitude       float64 `json:"latitude"`
+    Longitude      float64 `json:"longitude"`
+    Timezone       string  `json:"timezone,omitempty"`
 }
 ```
 
@@ -1040,69 +796,29 @@ if some tests fail, still display available results:
 
 ---
 
-## 7. adaptive profile selection
+## 7. bounded window selection
 
-### 7.1 time budget constants
+The CLI no longer selects increasingly large profiles. It estimates a per-flow
+request intended to last about 250 ms:
 
-```go
-const (
-    MaxTestDuration      = 4 * time.Second  // max time for single profile selection
-    TotalDownloadBudget  = 8 * time.Second  // total download phase budget
-    TotalUploadBudget    = 8 * time.Second  // total upload phase budget
-)
+```text
+target bytes = estimated bits/s / 8 × 0.250 s / concurrency
 ```
 
-### 7.2 profile selection
+The chunk is rounded up to 64 KiB and bounded to 100,000 bytes through 256 MiB,
+then capped by the server's `maxTransferBytes`. Flow count is selected from the
+baseline estimate:
 
-```go
-func estimateTransferTime(bytes int64, speedMbps float64) time.Duration {
-    if speedMbps <= 0 {
-        return time.Hour // effectively infinite
-    }
-    seconds := float64(bytes*8) / (speedMbps * 1e6)
-    return time.Duration(seconds * float64(time.Second))
-}
+| estimate | flows |
+|---:|---:|
+| below 100 Mbps | 1 |
+| 100–499 Mbps | 2 |
+| 500–1,999 Mbps | 4 |
+| 2–9.999 Gbps | 8 |
+| 10 Gbps or more | 16 |
 
-func selectProfiles(estimatedSpeed float64, allProfiles map[string]Profile) map[string]Profile {
-    selected := map[string]Profile{
-        "100kB": allProfiles["100kB"],
-        "1MB":   allProfiles["1MB"],
-    }
-
-    for name, profile := range allProfiles {
-        if name == "100kB" || name == "1MB" {
-            continue
-        }
-        if estimateTransferTime(profile.Bytes, estimatedSpeed) <= MaxTestDuration {
-            selected[name] = profile
-        }
-    }
-
-    return selected
-}
-```
-
-### 7.3 batch skipping
-
-```go
-// During test execution
-for _, profile := range selectedProfiles {
-    elapsed := time.Since(phaseStart)
-    remaining := TotalDownloadBudget - elapsed
-    estimatedBatch := estimateTransferTime(profile.Bytes, currentSpeed) * time.Duration(profile.Runs)
-
-    if estimatedBatch > remaining {
-        if verbose {
-            fmt.Printf("  Skipping %s (insufficient time)\n", profile.Name)
-        }
-        continue
-    }
-
-    // Run profile tests
-}
-```
-
----
+Each flow reuses the bounded generator and issues complete requests until the
+window owner stops it. No profile-sized payload is cached.
 
 ## 8. network quality scoring
 
@@ -1310,19 +1026,13 @@ func newPeerConnection(turnCreds TURNCredentials) (*webrtc.PeerConnection, error
 }
 ```
 
-### 10.3 upload body generation
+### 10.3 payload generation
 
-upload request bodies must be generated incrementally from a bounded buffer. the implementation uses a deterministic zero-producing `io.ReadCloser` that tracks the exact number of bytes consumed by `net/http`; it must not allocate or cache a slice proportional to the selected profile size.
-
-```go
-body := newGeneratedUploadBody(sizeBytes)
-req, _ := http.NewRequestWithContext(ctx, http.MethodPost, url, body)
-req.ContentLength = sizeBytes
-
-resp, err := client.Do(req)
-// require status 200, then verify body.snapshot().readBytes == sizeBytes
-// and, for measurement api v1, receipt.acceptedBytes == sizeBytes.
-```
+Upload bodies are generated lazily from a bounded reader. The reader emits zero
+bytes, records first/last body reads, and participates in the load-activity
+tracker. It does not allocate or retain the requested body size. Every request
+sets an exact `Content-Length`, and its receipt must reconcile the same byte
+count.
 
 ### 10.4 terminal detection
 
@@ -1444,99 +1154,20 @@ Packet Loss Pattern: Burst
 
 ## 12. test confidence
 
-### 12.1 confidence assessment
+The Go and browser clients calculate the same five-gate 0–100 score:
 
-```go
-type ConfidenceLevel string
-const (
-    ConfidenceHigh   ConfidenceLevel = "high"
-    ConfidenceMedium ConfidenceLevel = "medium"
-    ConfidenceLow    ConfidenceLevel = "low"
-)
+| gate | normal-mode requirement | deduction |
+|---|---|---:|
+| sample adequacy | 3 windows and 3 accepted loaded probes per enabled direction; at least 10 unloaded probes | 20 |
+| variability | throughput CV below 30%; unloaded latency CV below 50% | 25 |
+| loaded overlap | required probes prove uninterrupted load | 25 |
+| packet test | directional server report completed and reverse-ACK loss is measurable | 20 |
+| timing accuracy | no imprecise timing fallback | 10 |
 
-type TestConfidence struct {
-    Level       ConfidenceLevel
-    Score       int // 0-100
-    Warnings    []string
-    SampleCount struct {
-        Download int
-        Upload   int
-        Latency  int
-    }
-}
-
-func assessConfidence(samples []ThroughputSample, latency []LatencySample, packetLoss *PacketLossResult) TestConfidence {
-    var warnings []string
-    score := 100
-
-    dlCount := countByDirection(samples, DirectionDownload)
-    ulCount := countByDirection(samples, DirectionUpload)
-    latCount := len(latency)
-
-    if dlCount < 20 {
-        score -= 20
-        warnings = append(warnings, "Insufficient download samples")
-    }
-    if ulCount < 15 {
-        score -= 15
-        warnings = append(warnings, "Insufficient upload samples")
-    }
-    if latCount < 10 {
-        score -= 15
-        warnings = append(warnings, "Insufficient latency samples")
-    }
-    if packetLoss == nil || packetLoss.Unavailable {
-        score -= 15
-        warnings = append(warnings, "Packet loss test incomplete")
-    }
-
-    // Check coefficient of variation
-    dlCV := coefficientOfVariation(filterByDirection(samples, DirectionDownload))
-    if dlCV > 30 {
-        score -= 20
-        warnings = append(warnings, "High download variability")
-    }
-
-    var level ConfidenceLevel
-    if score >= 80 {
-        level = ConfidenceHigh
-    } else if score >= 50 {
-        level = ConfidenceMedium
-    } else {
-        level = ConfidenceLow
-    }
-
-    return TestConfidence{
-        Level:    level,
-        Score:    max(0, score),
-        Warnings: warnings,
-        SampleCount: struct{ Download, Upload, Latency int }{
-            Download: dlCount,
-            Upload:   ulCount,
-            Latency:  latCount,
-        },
-    }
-}
-```
-
-### 12.2 confidence display
-
-```
-Test Confidence: High (92/100)
-  Samples: Download 31, Upload 25, Latency 18
-```
-
-or with warnings:
-
-```
-Test Confidence: Medium (65/100)
-  Samples: Download 12, Upload 8, Latency 5
-  Warnings:
-    - Insufficient download samples
-    - High download variability
-```
-
----
+Scores `80–100` are high, `50–79` medium, and lower scores low. JSON and verbose
+output expose the count, coefficient-of-variation, overlap, timing, and packet
+subrecords rather than a single unexplained badge. Quick mode deliberately has
+fewer windows and therefore does not claim normal-mode sample adequacy.
 
 ## 13. quick mode
 
@@ -1544,19 +1175,20 @@ Test Confidence: Medium (65/100)
 
 with `--quick` flag:
 
-- reduce sample counts to minimum viable
-- skip larger profiles
-- shorter timeouts
+- use five unloaded latency probes;
+- run one 1-second fixed window per enabled direction;
+- target three overlap-proven loaded probes in that window;
+- retain the same exact transfer and packet protocols;
+- report reduced confidence rather than pretending normal sample adequacy.
 
 ```go
 type QuickModeConfig struct {
-    DownloadProfiles []string      // ["100kB", "1MB"]
-    DownloadRuns     int           // 3
-    UploadProfiles   []string      // ["100kB", "1MB"]
-    UploadRuns       int           // 3
-    LatencyProbes    int           // 5
-    PacketCount      int           // 100
-    SkipLoadedLatency bool         // true
+    BaselineRuns       int           // 3 per 100kB/1MB baseline
+    Windows            int           // 1 per enabled direction
+    WindowDuration     time.Duration // 1 second
+    LoadedProbeCount   int           // 3
+    LatencyProbes      int           // 5
+    PacketCount        int           // unchanged: 1000
 }
 ```
 
@@ -1939,96 +1571,15 @@ the raw channel data. alternatively, implement DTLS using OpenSSL's DTLS API.
 
 ### 14.8 packet loss protocol over TURN
 
-once the TURN channel is established:
+The supported Go client uses the exact 1,200-byte `NSPL` binary frame defined in
+`MEASUREMENT_PROTOCOL_V2.md`, not the historical packed C structs or JSON packet.
+Frames include a version, type, sequence, send/receive timestamps, declared
+length, and deterministic padding. The client reconciles acknowledgements with
+the daemon report to distinguish transaction, forward, and reverse-ack loss.
 
-```c
-/* Packet loss test message format */
-typedef struct {
-    uint32_t seq;           /* Sequence number 0-999 */
-    int64_t  sent_at_ms;    /* Unix timestamp in ms */
-} __attribute__((packed)) packet_msg_t;
-
-typedef struct {
-    uint32_t seq;           /* Echoed sequence number */
-    int64_t  sent_at_ms;    /* Echoed send timestamp */
-    int64_t  recv_at_ms;    /* Server receive timestamp */
-} __attribute__((packed)) ack_msg_t;
-
-/* Send packets */
-void run_packet_loss_test(turn_conn_t *conn, packet_loss_result_t *result)
-{
-    const int NUM_PACKETS = 1000;
-    const int INTERVAL_MS = 10;
-
-    bool acked[NUM_PACKETS] = {0};
-    double rtts[NUM_PACKETS];
-    int ack_count = 0;
-
-    /* Send phase */
-    for (int seq = 0; seq < NUM_PACKETS; seq++) {
-        packet_msg_t msg = {
-            .seq = htonl(seq),
-            .sent_at_ms = htobe64(timing_now_ms()),
-        };
-        turn_send_channel_data(conn->sock, conn->channel, &msg, sizeof(msg));
-
-        /* Check for acks between sends */
-        while (turn_poll_readable(conn, 0)) {
-            ack_msg_t ack;
-            if (turn_recv_channel_data(conn->sock, &conn->channel,
-                                       &ack, sizeof(ack)) > 0) {
-                uint32_t ack_seq = ntohl(ack.seq);
-                if (ack_seq < NUM_PACKETS && !acked[ack_seq]) {
-                    acked[ack_seq] = true;
-                    rtts[ack_seq] = timing_now_ms() - be64toh(ack.sent_at_ms);
-                    ack_count++;
-                }
-            }
-        }
-
-        usleep(INTERVAL_MS * 1000);
-    }
-
-    /* Wait for late acks (3 seconds) */
-    int64_t deadline = timing_now_ms() + 3000;
-    while (timing_now_ms() < deadline) {
-        if (turn_poll_readable(conn, 100)) {
-            ack_msg_t ack;
-            if (turn_recv_channel_data(conn->sock, &conn->channel,
-                                       &ack, sizeof(ack)) > 0) {
-                uint32_t ack_seq = ntohl(ack.seq);
-                if (ack_seq < NUM_PACKETS && !acked[ack_seq]) {
-                    acked[ack_seq] = true;
-                    rtts[ack_seq] = timing_now_ms() - be64toh(ack.sent_at_ms);
-                    ack_count++;
-                }
-            }
-        }
-    }
-
-    /* Calculate results */
-    result->sent = NUM_PACKETS;
-    result->received = ack_count;
-    result->loss_percent = (double)(NUM_PACKETS - ack_count) / NUM_PACKETS * 100.0;
-
-    /* RTT statistics */
-    double valid_rtts[NUM_PACKETS];
-    int valid_count = 0;
-    for (int i = 0; i < NUM_PACKETS; i++) {
-        if (acked[i]) {
-            valid_rtts[valid_count++] = rtts[i];
-        }
-    }
-
-    if (valid_count > 0) {
-        stats_sort(valid_rtts, valid_count);
-        result->rtt_stats_ms.min = valid_rtts[0];
-        result->rtt_stats_ms.median = stats_percentile(valid_rtts, valid_count, 50);
-        result->rtt_stats_ms.p90 = stats_percentile(valid_rtts, valid_count, 90);
-        result->jitter_ms = result->rtt_stats_ms.p90 - result->rtt_stats_ms.median;
-    }
-}
-```
+The C client is not protocol-v2 compatible or release-qualified in this archive.
+Its TURN/SCTP implementation remains Phase 6 work and must not be treated as a
+supported alternative client.
 
 ### 14.9 Go implementation (using pion)
 

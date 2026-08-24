@@ -16,22 +16,12 @@ it covers:
 
 ---
 
-phase 1 normative amendment — measurement integrity
-===================================================
 
-phase 1 introduces measurement api version 1. where older examples in this document conflict with this amendment, this amendment controls:
-
-- `/meta` includes `measurementApiVersion: 1` and the configured `maxTransferBytes`.
-- `/__down` and `/__up` return `413 Request Entity Too Large` when a requested or received transfer exceeds `MaxBytes`.
-- successful downloads contain exactly the requested bytes.
-- successful uploads return an exact byte-counted json receipt with the server body-read duration.
-- a request-body read failure is a failed request, not a successful measurement.
-- measurement responses use `Cache-Control: no-store, no-transform`.
-- `Server-Timing` durations preserve fractional milliseconds.
-
-client methodology for sustained loaded latency is phase 2. exact-size directional packet-loss semantics are phase 3. those later concerns are intentionally not folded into the phase 1 wire-contract patch.
-
----
+> **Phase 2 authority:** [`MEASUREMENT_PROTOCOL_V2.md`](MEASUREMENT_PROTOCOL_V2.md)
+> is the canonical implemented measurement contract. It supersedes earlier
+> upload-sink, giant-profile, post-transfer loaded-latency, and short JSON packet
+> examples in this combined design document. Phases 3–5 still own lifecycle,
+> public-service hardening, and deployment/HTTP corrections.
 
 1. api surface
 ==============
@@ -71,8 +61,10 @@ returns per-client metadata similar to `https://speed.cloudflare.com/meta`, typi
   "latitude": 40.73061,
   "longitude": -73.935242,
   "timezone": "America/New_York",
-  "measurementApiVersion": 1,
-  "maxTransferBytes": 1073741824
+  "maxTransferBytes": 1073741824,
+  "measurementProtocolVersion": 2,
+  "uploadReceiptVersion": 1,
+  "packetLossFrameVersion": 1
 }
 ```
 
@@ -128,13 +120,11 @@ provides binary payloads for:
 **response**
 
 - status:
-  - `200 OK` on success
-  - `400 Bad Request` if `bytes` is syntactically invalid or negative
-  - `413 Request Entity Too Large` if `bytes` exceeds the configured maximum
+  - `200 OK` on success;
+  - `400 Bad Request` if `bytes` is invalid, negative, or exceeds the configured maximum.
 - headers:
   - `Content-Type: application/octet-stream`
   - `Content-Length: <bytes>`
-  - `Cache-Control: no-store, no-transform`
   - optional metadata headers (cf-style):
 
     ```http
@@ -166,66 +156,38 @@ provides binary payloads for:
    - if empty - 0
    - if non-integer - respond `400`
    - if negative - respond `400`
-   - if > `Config.MaxBytes`, respond `413`
+   - if greater than `Config.MaxBytes`, respond `400`; never clamp a measurement request.
 2. record `start := time.Now()` if `ServerTiming` enabled
 3. write headers (including `Content-Length`)
 4. if `bytes == 0`, write no body and return
 5. otherwise, stream `bytes` bytes using a reusable buffer (see section 3.4)
-6. if `ServerTiming` is enabled, emit the measured duration with fractional-millisecond precision, for example `Server-Timing: app;dur=0.347`
+6. if `ServerTiming` enabled, compute `durMs := time.Since(start) / time.Millisecond` and set `Server-Timing: app;dur=<durMs>`
 
 ---
 
-### 1.1.3 `POST /__up` - upload sink
+### 1.1.3 `POST /__up` - verified upload
 
-**purpose**
+The daemon reads the complete request body and distinguishes four outcomes:
 
-accepts large request bodies so the client can measure upload throughput and latency under load.
+- a declared length above `Config.MaxBytes` is rejected with `413`;
+- an undeclared body that reaches `MaxBytes + 1` is rejected with `413`;
+- a body shorter than its declared `Content-Length` is rejected with `400`;
+- any body-read failure is rejected with `400`.
 
-**request**
+A successful request returns JSON receipt version 1:
 
-- method: `POST`
-- path: `/__up`
-- query parameters:
-  - `measId` (optional, as with `/__down`)
-- headers:
-  - `Content-Type`: typically `application/octet-stream` (but server SHOULD ignore the type)
-  - `Content-Length` or `Transfer-Encoding: chunked`
-- body:
-  - arbitrary bytes
-  - potentially very large; must be bounded by configuration
+```json
+{
+  "ok": true,
+  "acceptedBytes": 1000000,
+  "serverDurationNs": 123456789
+}
+```
 
-**response**
-
-- status:
-  - `200 OK` only after the complete in-limit body has been read
-  - `413 Request Entity Too Large` for known or streamed bodies over `MaxBytes`
-  - a non-2xx status for request-body read failures
-- headers:
-  - `Content-Type: application/json; charset=utf-8`
-  - `Cache-Control: no-store, no-transform`
-  - optional `Server-Timing: app;dur=<fractional-ms>`
-- body on success:
-
-  ```json
-  {
-    "ok": true,
-    "acceptedBytes": 1000000,
-    "serverDurationNs": 12500000
-  }
-  ```
-
-**behavior**
-
-1. reject a known `Content-Length` above `MaxBytes` before accepting the sample.
-2. read at most `MaxBytes + 1` bytes so a chunked or otherwise unknown-length overrun is observable.
-3. return `413` if the lookahead byte exists; return a non-2xx status on any body-read error.
-4. record the body-read interval at nanosecond precision and include it in the receipt.
-5. log the exact accepted byte count, `measId`, client ip, and duration.
-6. return `200` only when the complete body was accepted.
-
-clients must require `acceptedBytes` to equal the number of bytes they attempted to send before accepting the sample.
-
----
+`acceptedBytes` is the exact number of bytes consumed. `serverDurationNs` spans
+daemon body reading and is the canonical per-request upload duration. The daemon
+sets JSON content type and `Cache-Control: no-store`. It never returns success for
+truncated or silently limited input.
 
 ### 1.1.4 `GET /locations` - colo list
 
@@ -358,7 +320,11 @@ type ClientMeta struct {
     PostalCode    string  `json:"postalCode"`
     Latitude      float64 `json:"latitude"`
     Longitude     float64 `json:"longitude"`
-    Timezone      string  `json:"timezone,omitempty"`
+    Timezone                   string  `json:"timezone,omitempty"`
+    MaxTransferBytes           int64   `json:"maxTransferBytes"`
+    MeasurementProtocolVersion int     `json:"measurementProtocolVersion"`
+    UploadReceiptVersion       int     `json:"uploadReceiptVersion"`
+    PacketLossFrameVersion     int     `json:"packetLossFrameVersion"`
 }
 
 type MetaProvider interface {
@@ -470,10 +436,12 @@ func clientIPFromRequest(r *http.Request, trustProxy bool) string {
 
 handler flow:
 
-1. build `ClientMeta` via `s.metaProvider.MetaFor(r)`
-2. set `Content-Type: application/json; charset=utf-8`
-3. set `Cache-Control: no-store`
-4. json encode to `w`
+1. build `ClientMeta` via `s.metaProvider.MetaFor(r)`;
+2. set `maxTransferBytes` and the three protocol capability versions from the
+   daemon's implemented contract;
+3. set `Content-Type: application/json; charset=utf-8`;
+4. set `Cache-Control: no-store`;
+5. JSON encode to `w`.
 
 edge cases: none; errors should be extremely rare.
 
@@ -495,7 +463,7 @@ handler flow:
            return
        }
        if v > s.cfg.MaxBytes {
-           http.Error(w, "bytes too large", http.StatusRequestEntityTooLarge)
+           http.Error(w, "bytes too large", http.StatusBadRequest)
            return
        }
        nBytes = v
@@ -506,7 +474,6 @@ handler flow:
 3. set headers:
    - `Content-Type`
    - `Content-Length`
-   - `Cache-Control: no-store, no-transform`
    - meta headers built from `MetaProvider` (optionally; or reuse same meta as `/meta`)
 4. if `nBytes == 0`, just `w.WriteHeader(http.StatusOK)` and return
 5. else, stream:
@@ -527,27 +494,22 @@ handler flow:
    }
    ```
 
-6. if `EnableServerTiming`, add a fractional-millisecond `Server-Timing` value
+6. if `EnableServerTiming`, compute `durMs` and add `Server-Timing` header
 
 ---
 
 ### 2.5.4 `/__up`
 
-handler flow:
+1. reject a known `Content-Length` above `MaxBytes` before consuming it;
+2. read at most `MaxBytes + 1` so chunked or unknown-length overflow is visible;
+3. reject read errors and declared-length mismatches;
+4. on success, calculate the body-read duration and emit the verified receipt;
+5. log the exact accepted bytes, correlation id, client address, duration, and
+   calculated rate.
 
-1. set `Cache-Control: no-store, no-transform`.
-2. reject a known `Content-Length > MaxBytes` with `413`.
-3. record the body-read start, then consume through a helper that reads at most `MaxBytes + 1` and propagates read errors.
-4. return `413` when the helper observes the lookahead byte; return `400` for a malformed/interrupted request body.
-5. compute the exact accepted byte count and body-read duration.
-6. set `Content-Type: application/json; charset=utf-8` and optional fractional `Server-Timing`.
-7. encode the measurement api v1 receipt:
-
-   ```json
-   {"ok":true,"acceptedBytes":1000000,"serverDurationNs":12500000}
-   ```
-
----
+The implementation is `protocol.ReadUpload`; a plain `io.LimitReader(...,
+MaxBytes)` is insufficient because reaching its artificial EOF does not reveal
+that more request data existed.
 
 ### 2.5.5 `/locations`
 
@@ -632,7 +594,7 @@ if you want to strictly validate allowed origins, you can:
 3.3 safety limits
 -----------------
 
-- `MaxBytes` must be enforced for both `/__down` and `/__up`; over-limit requests return `413`, never a successful truncated sample
+- `MaxBytes` must be enforced for both `/__down` and `/__up`
 - consider tighter defaults (e.g. 256 MiB) and allow override via config
 - implement server-level rate limiting (ip-based, token bucket) if you plan to expose it publicly
 
@@ -730,7 +692,7 @@ this spec defines a go-based speedtest backend that emulates the observable api 
 
 - `/meta` - per-client metadata (ip, geo, asn, colo)
 - `/__down` - download / latency endpoint with `bytes` control and optional cf-style meta headers and `Server-Timing`
-- `/__up` - upload sink that safely reads and discards large bodies
+- `/__up` - bounded upload endpoint with exact-byte receipt and read-duration proof
 - `/locations` - static list of test locations / colos
 - optional `/cdn-cgi/trace` for debugging
 
@@ -783,7 +745,7 @@ and adds:
 - **go backend extensions (same daemon or sidecar):**
   - `GET /api/turn/credentials` → mints short-lived turn creds
   - `POST /api/packet-test/offer` → webRTC sdp offer/answer
-  - optional `POST /api/packet-test/report` → client sends final stats for storage
+  - `POST /api/packet-test/report` → returns authoritative directional counters
 
 the browser never talks directly to the turn secret; it only sees derived username/password.
 
@@ -884,7 +846,7 @@ const pc = new RTCPeerConnection({
 {
   "sdp": "<browser-offer-sdp>",
   "type": "offer",
-  "testProfile": "loss-basic"   // optional; see below
+  "testProfile": "loss-exact-v1"
 }
 ```
 
@@ -914,437 +876,122 @@ const pc = new RTCPeerConnection({
 
 ### 1.4 data channel packet loss protocol
 
-#### 1.4.1 channel setup
+The client creates an unordered data channel with `maxRetransmits: 0`. Every
+message is an exact 1,200-byte binary frame; a short JSON object containing a
+`size` field is not compliant.
 
-- browser:
+#### 1.4.1 frame validation
 
-  ```ts
-  const dc = pc.createDataChannel('packet-loss', {
-    ordered: true,
-    maxRetransmits: 0
-  });
-  ```
+The 32-byte big-endian header contains magic `NSPL`, frame version 1, probe/ack
+type, header size, sequence, client send timestamp, daemon receive timestamp,
+and declared frame size. The remaining 1,168 bytes use deterministic
+sequence-derived padding. The daemon rejects wrong length, magic, version,
+header, declared length, type, or padding.
 
-- server:
+The daemon tracks unique valid forward sequences, duplicates, invalid frames,
+acknowledgements successfully submitted, and acknowledgement-send failures. It
+acknowledges each unique valid probe once; duplicates do not increase the reverse
+acknowledgement denominator.
 
-  - in `OnDataChannel` callback, expect label `"packet-loss"`.
-  - set `OnMessage` to handle incoming packets.
-  - optionally reply with acks.
+#### 1.4.2 test and report
 
-#### 1.4.2 packet format
+The supported clients send 1,000 probes at 10 ms intervals, wait three seconds
+for late acknowledgements, and then call `POST /api/packet-test/report` with the
+`testId` and transaction/RTT summary. The daemon snapshots the active session
+before closing it and returns:
 
-use a small json message per packet; binary is also fine but json is easier to inspect:
-
-```jsonc
+```json
 {
-  "seq": 123,                  // 0..N-1
-  "sentAt": 1701532800123,     // ms since epoch (client clock)
-  "size": 1200                 // intended payload size in bytes
+  "ok": true,
+  "protocolVersion": 2,
+  "frameSizeBytes": 1200,
+  "forwardReceived": 998,
+  "acknowledgementsSent": 998,
+  "duplicateFrames": 0,
+  "invalidFrames": 0,
+  "ackSendFailures": 0
 }
 ```
 
-ack from server:
-
-```jsonc
-{ "ack": 123 }
-```
-
-#### 1.4.3 test profile: `loss-basic`
-
-**parameters:**
-
-- total packets: `N = 1000`
-- size per packet: ~1200 bytes of payload (close to mtu but under)
-- send rate: 100 packets/sec (10 seconds)
-- direction: browser → server; server responds with acks
-
-**browser behavior:**
-
-1. after data channel opens, start a timer loop:
-
-   ```ts
-   const N = 1000;
-   const interval = 10; // ms, ~100 packets/sec
-   let seq = 0;
-   const acks = new Set<number>();
-
-   dc.onmessage = (ev) => {
-     const msg = JSON.parse(ev.data);
-     if (typeof msg.ack === 'number') acks.add(msg.ack);
-   };
-
-   const timer = setInterval(() => {
-     if (seq >= N) {
-       clearInterval(timer);
-       return;
-     }
-
-     const payloadSize = 1200;
-     const msg = {
-       seq,
-       sentAt: Date.now(),
-       size: payloadSize
-     };
-     dc.send(JSON.stringify(msg));
-     seq++;
-   }, interval);
-   ```
-
-2. after all packets are sent, wait `extraWaitMs` (e.g. 3000 ms) for late acks.
-3. compute:
-
-   ```ts
-   const sent = N;
-   const received = acks.size;
-   const lossPercent = (sent - received) / sent * 100;
-   ```
-
-4. optionally collect webRTC stats via `pc.getStats()` for rtt/jitter.
-
-5. optionally `POST /api/packet-test/report` with the final stats.
-
-**server behavior:**
-
-1. track:
-
-   ```go
-   totalRecv := 0
-   lastSeq := -1
-   ```
-
-2. on each message:
-
-   - parse json
-   - increment `totalRecv`
-   - write ack:
-
-     ```go
-     ack := map[string]int{"ack": seq}
-     // encode as json and send back
-     ```
-
-3. on channel close or timeout, log `(testId, totalRecv)`.
-
----
+These counters let clients calculate separately transaction loss, forward probe
+loss, and reverse acknowledgement loss. The complete frame layout and formulas
+are in `MEASUREMENT_PROTOCOL_V2.md`. WebRTC session ownership and close races are
+Phase 3 work, not silently broadened into this phase.
 
 ## 2. measurement pipeline
 
-the ui orchestrates four categories of tests:
+The daemon exposes bounded primitives; the Go and browser clients own the
+window orchestration.
 
-1. **download speed** (http `/__down`)
-2. **upload speed** (http `/__up`)
-3. **latency** (small `/__down?bytes=0` probes)
-4. **packet loss** (webrtc/turn)
+### 2.1 capabilities and exact transfers
 
-### 2.1 test profiles
+`GET /meta` advertises protocol 2, upload receipt 1, packet frame 1, and the
+largest individual request. `/__down` streams exactly the requested bytes or
+returns an error. `/__up` accepts exactly the declared/generated bytes or returns
+an error and, on success, emits the verified receipt.
 
-#### 2.1.1 download
+### 2.2 bounded fixed-duration windows
 
-example sizes (matching the screenshot):
+Each direction begins with three 100 kB and three 1 MB verified baselines. The
+client then runs three 1.5-second windows. Request chunks remain between 100,000
+bytes and 256 MiB, further capped by the daemon. Fast links scale with concurrent
+repeated requests rather than a single giant transfer.
 
-- 100 kB
-- 1 MB
-- 10 MB
-- 25 MB
-- 100 MB
+The daemon does not need a special window endpoint: every constituent request is
+independently bounded and verifiable. Only completed verified requests count in
+the client's aggregate window bytes.
 
-for each profile:
+### 2.3 continuous loaded latency
 
-- run 3–10 iterations.
-- record:
-  - start/end timestamps
-  - duration ms
-  - exact bytes transferred
-  - computed mbps.
+Clients issue zero-byte `/__down` probes while one selected throughput window is
+active. A probe is retained only if at least one transfer body remains active for
+the entire probe. Upload receipt wait does not count as outbound load. The daemon
+accepts opaque `during`/`measId` labels for logging but does not claim overlap on
+the client's behalf.
 
-http request shape:
+### 2.4 shared summaries
 
-```text
-GET /__down?bytes=<sizeInBytes>&profile=<label>&run=<i>
-```
-
-#### 2.1.2 upload
-
-sizes:
-
-- 100 kB
-- 1 MB
-- 10 MB
-- 25 MB
-- 50 MB
-
-for each profile:
-
-- generate payload in js (arraybuffer or blob).
-- `POST /__up?profile=<label>&run=<i>` with body size = profile size.
-- same captured metrics.
-
-#### 2.1.3 latency
-
-- **unloaded:** 20 sequential probes
-
-  ```text
-  GET /__down?bytes=0&phase=unloaded&seq=N
-  ```
-
-- **during download:**
-  - while a medium/large download test is in progress, send 5 probes:
-
-    ```text
-    GET /__down?bytes=0&phase=download&seq=N
-    ```
-
-- **during upload:** same idea with `phase=upload`.
-
-record per-probe rtt from browser.
-
-#### 2.1.4 packet loss
-
-- run a single `loss-basic` webrtc test as defined in section 1.4.
-- record:
-  - `sent`
-  - `received`
-  - `lossPercent`
-  - rtt stats & jitter from `getStats()`.
-
----
-
-### 2.2 client-side timing precision
-
-to get accurate throughput measurements, the client should use the **Resource Timing API** rather than wall-clock timing. wall-clock timing (`performance.now()` before and after `fetch()`) includes:
-
-- tcp connection establishment
-- tls handshake
-- request/response header parsing
-- tcp slow start
-
-these overheads can add 50-200ms to each measurement, significantly understating throughput for smaller transfers.
-
-#### 2.2.1 Resource Timing API
-
-the browser's `PerformanceResourceTiming` interface provides precise timing breakdown:
-
-```ts
-interface PerformanceResourceTiming {
-  startTime: number;        // fetch started
-  connectStart: number;     // tcp connection started
-  connectEnd: number;       // tcp connection completed
-  secureConnectionStart: number;  // tls handshake started (https only)
-  requestStart: number;     // browser started sending request
-  responseStart: number;    // first byte of response received
-  responseEnd: number;      // last byte of response received
-}
-```
-
-#### 2.2.2 download timing
-
-for download tests, measure only the body transfer time:
-
-```ts
-// after fetch completes
-const timing = performance.getEntriesByName(url, 'resource').pop();
-if (timing && timing.responseStart > 0 && timing.responseEnd > 0) {
-  // precise: just body transfer time (excludes connection, tls, headers)
-  durationMs = timing.responseEnd - timing.responseStart;
-}
-```
-
-this measures from first response byte to last response byte, excluding all connection overhead.
-
-#### 2.2.3 upload timing
-
-for upload tests, measure request send time:
-
-```ts
-const timing = performance.getEntriesByName(url, 'resource').pop();
-if (timing && timing.requestStart > 0 && timing.responseStart > 0) {
-  // request send time (excludes connection setup)
-  durationMs = timing.responseStart - timing.requestStart;
-}
-```
-
-this measures from when the browser started sending the request body to when the server's response arrived, which closely approximates the upload transfer time.
-
-#### 2.2.4 warmup phase
-
-even with precise timing, the first few requests suffer from tcp slow start. the client should perform a **warmup phase** before actual measurements:
-
-```ts
-async function runWarmup() {
-  // 3x small downloads + 3x small uploads to:
-  // - establish keep-alive connection
-  // - get past tcp slow start
-  // - prime connection pooling
-  for (let i = 0; i < 3; i++) {
-    await runDownload(1_000_000, 'warmup', i);  // 1MB
-  }
-  for (let i = 0; i < 3; i++) {
-    await runUpload(1_000_000, 'warmup', i);    // 1MB
-  }
-}
-```
-
-warmup results are discarded; they only serve to prime the connection.
-
-#### 2.2.5 clearing resource timing buffer
-
-call `performance.clearResourceTimings()` before each measurement to avoid buffer overflow and ensure `getEntriesByName()` returns the correct entry:
-
-```ts
-performance.clearResourceTimings();
-const response = await fetch(url, { ... });
-// read response body
-const timing = performance.getEntriesByName(url, 'resource').pop();
-```
-
----
-
-### 2.3 summary metrics
-
-from all collected samples:
-
-```ts
-type Summary = {
-  downloadMbps: number | null;        // e.g. 90th percentile of valid download samples
-  uploadMbps: number | null;          // 90th percentile of valid upload samples
-  latencyUnloadedMs: number | null;   // median unloaded latency
-  latencyDownloadMs: number | null;   // 90th percentile during-download
-  latencyUploadMs: number | null;     // 90th percentile during-upload
-  jitterMs: number | null;            // jitter estimate (p90 - median or stddev)
-  packetLossPercent: number | null;   // unavailable is null, never synthetic zero
-};
-```
-
-**example computations:**
-
-- `downloadMbps`:
-  - collect all download samples `mbps`.
-  - sort and take 90th percentile.
-
-- `jitterMs`:
-  - from unloaded latency:
-    - `jitter = p90(unloadedLatency) - median(unloadedLatency)`.
-
-- `packetLossPercent`:
-  - `lossPercent = (sent - received) / sent * 100`.
-
----
-
-### 2.3 network quality grading
-
-grades:
-
-```text
-Great, Good, Okay, Poor
-```
-
-thresholds (example, tweak to taste):
-
-```ts
-function gradeForStreaming(summary: Summary): NetworkQualityGrade {
-  const { downloadMbps, latencyUnloadedMs, jitterMs, packetLossPercent } = summary;
-
-  if (
-    downloadMbps >= 50 &&
-    latencyUnloadedMs <= 25 &&
-    jitterMs <= 5 &&
-    packetLossPercent <= 0.5
-  ) return 'Great';
-
-  if (
-    downloadMbps >= 20 &&
-    latencyUnloadedMs <= 50 &&
-    jitterMs <= 15 &&
-    packetLossPercent <= 1.5
-  ) return 'Good';
-
-  if (
-    downloadMbps >= 10 &&
-    latencyUnloadedMs <= 80 &&
-    jitterMs <= 30 &&
-    packetLossPercent <= 3
-  ) return 'Okay';
-
-  return 'Poor';
-}
-```
-
-gaming / video chat can be stricter on latency/jitter, looser on throughput.
-
----
+Supported clients use the R-7 p90 of valid fixed-window throughput values;
+median latency after warmup removal and conservative IQR filtering; R-7
+percentiles; p90-minus-median jitter; and population coefficient of variation.
+Missing packet loss remains null and grades that require it are incomplete.
 
 ## 3. frontend data model
 
-typescript types used by the spa:
+The detailed browser model lives in `netspeed-ui-spec.md`. The Phase 2 additions
+that the daemon must preserve on the wire are:
 
 ```ts
-type LatencySample = {
-  ts: number;
-  rttMs: number;
-  phase: 'unloaded' | 'download' | 'upload';
-};
-
 type ThroughputSample = {
-  ts: number;
   direction: 'download' | 'upload';
   sizeBytes: number;
   durationMs: number;
   mbps: number;
-  profile: '100k' | '1M' | '10M' | '25M' | '50M' | '100M';
-  runIndex: number;
+  profile: string;
+  sampleKind?: 'baseline' | 'window';
+  concurrency?: number;
+  chunkBytes?: number;
+  requestCount?: number;
 };
 
 type PacketLossResult = {
   sent: number;
   received: number;
-  lossPercent: number | null;
+  transactionLossPercent: number | null;
+  forwardSent: number;
+  forwardReceived: number;
+  forwardLossPercent: number | null;
+  acknowledgementsSent: number;
+  acknowledgementsReceived: number;
+  reverseAcknowledgementLossPercent: number | null;
+  frameSizeBytes: 1200;
   unavailable?: boolean;
-  rttStatsMs: {
-    min: number;
-    median: number;
-    p90: number;
-  };
-  jitterMs: number;
-};
-
-type Summary = {
-  downloadMbps: number | null;
-  uploadMbps: number | null;
-  latencyUnloadedMs: number | null;
-  latencyDownloadMs: number | null;
-  latencyUploadMs: number | null;
-  jitterMs: number | null;
-  packetLossPercent: number | null;
-};
-
-type NetworkQualityGrade = 'Great' | 'Good' | 'Okay' | 'Poor' | 'N/A';
-
-type NetworkQuality = {
-  videoStreaming: NetworkQualityGrade;
-  gaming: NetworkQualityGrade;
-  videoChatting: NetworkQualityGrade;
-};
-
-type Meta = {
-  hostname: string;
-  clientIp: string;
-  httpProtocol: string;
-  asn: number;
-  asOrganization: string;
-  colo: string;
-  country: string;
-  city: string;
-  region: string;
-  postalCode: string;
-  latitude: number;
-  longitude: number;
-  timezone?: string;
-  measurementApiVersion?: number;
-  maxTransferBytes?: number;
+  reason?: string;
 };
 ```
 
----
+Unknown packet loss is null, never zero. The packet report response is the
+source of the forward and acknowledgement-sent counters.
 
 ## 4. ui layout spec
 
@@ -1485,13 +1132,13 @@ expanded view shows:
 
 grid of cards, 2 columns on desktop.
 
-for each profile:
+show the two planning baselines and three aggregate fixed windows:
 
-- `100kB download test (10/10)`
-- `1MB download test (8/8)`
-- `10MB download test (6/6)`
-- `25MB download test (4/4)`
-- `100MB download test (3/3)`
+- `100kB download baseline (3/3)`
+- `1MB download baseline (3/3)`
+- `download window 1`
+- `download window 2 (loaded latency)`
+- `download window 3`
 
 **collapsed:**
 
@@ -1513,15 +1160,14 @@ for each profile:
 
 ### 4.7 upload measurements
 
-parallel grid of cards for upload profiles:
+parallel grid for upload baselines and fixed windows:
 
-- `100kB upload test`
-- `1MB upload test`
-- `10MB upload test`
-- `25MB upload test`
-- `50MB upload test`
+- `100kB upload baseline (3/3)`
+- `1MB upload baseline (3/3)`
+- three upload windows, with the middle window owning loaded latency
 
-same collapsed/expanded behavior as download.
+show aggregate bytes, duration, flow count, request count, and Mbps for each
+window. Same collapsed/expanded behavior as download.
 
 ---
 
@@ -1540,32 +1186,16 @@ simple row:
 
 ## 5. frontend flow
 
-high-level state machine:
-
-1. **idle**
-   - page loaded.
-   - meta/location fetched.
-   - ui shows “Start test” button.
-
-2. **running**
-   - disable “retest”, show “pause”.
-   - orchestrate tests in phases:
-     1. quick unloaded latency & small download/upload.
-     2. full download profiles.
-     3. full upload profiles.
-     4. during-download / during-upload latency probes.
-     5. webrtc packet loss test.
-   - stream interim results into ui.
-
-3. **complete**
-   - compute `Summary` + `NetworkQuality`.
-   - enable “retest”.
-   - expose “download results” (json) and “share link” actions.
-
-4. **error**
-   - if any step fails (no turn, blocked http, etc.), show minimal error banner but still show partial results when possible.
-
----
+1. **idle** — fetch metadata/locations and require protocol 2.
+2. **running** — unloaded latency; verified download baselines and three fixed
+   windows; verified upload baselines and three fixed windows; exact-frame packet
+   test; stream progress into the UI. Loaded probes are owned by the middle
+   throughput windows, not run afterward.
+3. **complete** — calculate shared summary, grades, diagnostics, and the five
+   confidence gates; expose JSON/share actions.
+4. **error/partial** — transfer-contract failures stop the affected required
+   phase; packet-test failure remains explicitly unavailable and does not become
+   zero loss.
 
 ## 6. backend summary (net new endpoints)
 
@@ -1575,7 +1205,10 @@ relative to the original http-only daemon, this spec adds:
   - returns temporary TURN username/password + ice servers.
 - `POST /api/packet-test/offer`
   - webRTC signaling: browser offer → server answer.
-- optional: `POST /api/packet-test/report`
-  - body: `PacketLossResult` + `Summary` for storing historical data.
+- `POST /api/packet-test/report`
+  - snapshots authoritative forward/ack counters, returns them, then closes the
+    session.
 
-everything else (meta, down, up, locations) is unchanged from the previous spec.
+`/meta` now advertises protocol capabilities, and `/__up` now returns a verified
+exact-byte receipt. These are required protocol changes, not optional storage
+features.

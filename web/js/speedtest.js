@@ -6,76 +6,58 @@
 const SpeedTest = (function() {
     'use strict';
 
-    // All available profile configurations
-    // Profiles scale from slow connections (128 Kbps) to extremely fast (1 Tbps)
+    // Phase 2 uses small verified baselines only. Headline throughput comes
+    // from repeated bounded requests inside fixed-duration windows; no profile
+    // can request or allocate gigabytes merely because the baseline was fast.
     const ALL_DOWNLOAD_PROFILES = {
-        '100kB': { bytes: 100 * 1000, runs: 10 },
-        '1MB':   { bytes: 1 * 1000 * 1000, runs: 8 },
-        '10MB':  { bytes: 10 * 1000 * 1000, runs: 6 },
-        '25MB':  { bytes: 25 * 1000 * 1000, runs: 4 },
-        '100MB': { bytes: 100 * 1000 * 1000, runs: 3 },
-        '250MB': { bytes: 250 * 1000 * 1000, runs: 2 },
-        '500MB': { bytes: 500 * 1000 * 1000, runs: 2 },    // 1s at 4 Gbps
-        '1GB':   { bytes: 1000 * 1000 * 1000, runs: 2 },   // 1s at 8 Gbps
-        '2GB':   { bytes: 2000 * 1000 * 1000, runs: 2 },   // 1s at 16 Gbps
-        '5GB':   { bytes: 5000 * 1000 * 1000, runs: 2 },   // 1s at 40 Gbps
-        '12GB':  { bytes: 12000 * 1000 * 1000, runs: 2 },  // 1s at ~100 Gbps
-        '50GB':  { bytes: 50000 * 1000 * 1000, runs: 2 },  // 1s at 400 Gbps
-        '100GB': { bytes: 100000 * 1000 * 1000, runs: 2 }, // 1s at 800 Gbps
-        '125GB': { bytes: 125000 * 1000 * 1000, runs: 2 }  // 1s at 1 Tbps
+        '100kB': { bytes: 100 * 1000, runs: 3 },
+        '1MB':   { bytes: 1 * 1000 * 1000, runs: 3 }
     };
 
     const ALL_UPLOAD_PROFILES = {
-        '100kB': { bytes: 100 * 1000, runs: 8 },
-        '1MB':   { bytes: 1 * 1000 * 1000, runs: 6 },
-        '10MB':  { bytes: 10 * 1000 * 1000, runs: 4 },
-        '25MB':  { bytes: 25 * 1000 * 1000, runs: 4 },
-        '50MB':  { bytes: 50 * 1000 * 1000, runs: 3 },
-        '100MB': { bytes: 100 * 1000 * 1000, runs: 2 },
-        '250MB': { bytes: 250 * 1000 * 1000, runs: 2 },    // 1s at 2 Gbps
-        '500MB': { bytes: 500 * 1000 * 1000, runs: 2 },    // 1s at 4 Gbps
-        '1GB':   { bytes: 1000 * 1000 * 1000, runs: 2 },   // 1s at 8 Gbps
-        '2GB':   { bytes: 2000 * 1000 * 1000, runs: 2 },   // 1s at 16 Gbps
-        '5GB':   { bytes: 5000 * 1000 * 1000, runs: 2 },   // 1s at 40 Gbps
-        '12GB':  { bytes: 12000 * 1000 * 1000, runs: 2 },  // 1s at ~100 Gbps
-        '50GB':  { bytes: 50000 * 1000 * 1000, runs: 2 },  // 1s at 400 Gbps
-        '100GB': { bytes: 100000 * 1000 * 1000, runs: 2 }, // 1s at 800 Gbps
-        '125GB': { bytes: 125000 * 1000 * 1000, runs: 2 }  // 1s at 1 Tbps
+        '100kB': { bytes: 100 * 1000, runs: 3 },
+        '1MB':   { bytes: 1 * 1000 * 1000, runs: 3 }
     };
 
-    // The phase-1 browser implementation still buffers transfers in memory.
-    // Keep a conservative local ceiling even when the server allows more;
-    // streaming/concurrent high-rate browser transfers are a later phase.
-    const LOCAL_DOWNLOAD_MAX_BYTES = 100 * 1000 * 1000;
-    const LOCAL_UPLOAD_MAX_BYTES = 50 * 1000 * 1000;
-    const LEGACY_SERVER_MAX_BYTES = 100 * 1000 * 1000;
+    const LEGACY_SERVER_TRANSFER_LIMIT_BYTES = 100 * 1000 * 1000;
+    const WEB_DOWNLOAD_FALLBACK_MEMORY_LIMIT_BYTES = 100 * 1000 * 1000;
+    const WEB_UPLOAD_FALLBACK_CHUNK_BYTES = 8 * 1024 * 1024;
+    const MIN_WINDOW_CHUNK_BYTES = 100 * 1000;
+    const MAX_WINDOW_CHUNK_BYTES = 256 * 1024 * 1024;
+    const TARGET_REQUEST_DURATION_MS = 250;
+    const WINDOW_DURATION_MS = 1500;
+    const WINDOW_COUNT = 3;
+    const LOADED_WINDOW_INDEX = 1;
+    const MAX_BROWSER_CONCURRENCY = 6;
 
-    let measurementApiVersion = 0;
-    let serverMaxTransferBytes = LEGACY_SERVER_MAX_BYTES;
+    const REQUIRED_MEASUREMENT_PROTOCOL_VERSION = 2;
+    const REQUIRED_UPLOAD_RECEIPT_VERSION = 1;
+    const REQUIRED_PACKET_LOSS_FRAME_VERSION = 1;
+    const PACKET_FRAME_SIZE = 1200;
+    const PACKET_FRAME_HEADER_SIZE = 32;
+    const PACKET_FRAME_VERSION = 1;
+    const PACKET_FRAME_PROBE = 1;
+    const PACKET_FRAME_ACK = 2;
+    const PACKET_FRAME_MAGIC = [0x4e, 0x53, 0x50, 0x4c]; // NSPL
 
-    function downloadTransferLimit() {
-        return Math.min(serverMaxTransferBytes, LOCAL_DOWNLOAD_MAX_BYTES);
-    }
+    const MAX_UPLOAD_RECEIPT_BYTES = 64 * 1024;
+    const MAX_PACKET_REPORT_BYTES = 64 * 1024;
+    const MAX_TURN_CREDENTIAL_BYTES = 64 * 1024;
+    const MAX_SIGNALING_BODY_BYTES = 1024 * 1024;
+    const MAX_META_BODY_BYTES = 1024 * 1024;
+    const MAX_LOCATIONS_BODY_BYTES = 1024 * 1024;
 
-    function uploadTransferLimit() {
-        return Math.min(serverMaxTransferBytes, LOCAL_UPLOAD_MAX_BYTES);
-    }
+    let serverMaxTransferBytes = LEGACY_SERVER_TRANSFER_LIMIT_BYTES;
+    let measurementProtocolVersion = 0;
+    let uploadReceiptVersion = 0;
+    let packetLossFrameVersion = 0;
+    let requestStreamingSupport;
 
-    // Maximum duration (seconds) for a single test to be included
-    // Profiles are selected if their estimated transfer time is under this limit
-    // This scales linearly from 128 Kbps to 1 Tbps
-    const MAX_TEST_DURATION_SECONDS = 4;
+    // Active plans are exposed for diagnostics. They contain bounded chunks and
+    // concurrency rather than the former giant profile table.
+    const DOWNLOAD_PROFILES = { ...ALL_DOWNLOAD_PROFILES };
+    const UPLOAD_PROFILES = { ...ALL_UPLOAD_PROFILES };
 
-    // Total time budget for download/upload test phases (seconds)
-    // Tests stop when this budget is exhausted
-    const TOTAL_DOWNLOAD_DURATION_SECONDS = 8;
-    const TOTAL_UPLOAD_DURATION_SECONDS = 8;
-
-    // Active profiles (set dynamically based on detected speed)
-    let DOWNLOAD_PROFILES = {};
-    let UPLOAD_PROFILES = {};
-
-    // Test configuration
     const CONFIG = {
         latencyProbes: 20,
         loadedLatencyProbes: 5,
@@ -84,120 +66,124 @@ const SpeedTest = (function() {
         packetLossExtraWait: 3000
     };
 
-    /**
-     * Calculate estimated transfer time in seconds
-     */
-    function estimateTransferTime(bytes, speedMbps) {
-        if (speedMbps <= 0) return Infinity;
-        // time = bits / bits_per_second
-        // bits = bytes * 8, bits_per_second = speedMbps * 1,000,000
-        return (bytes * 8) / (speedMbps * 1e6);
+    function supportsStreamingResponseBodies() {
+        return typeof Response !== 'undefined' &&
+            Response.prototype &&
+            'body' in Response.prototype &&
+            typeof ReadableStream !== 'undefined';
     }
 
-    /**
-     * Select appropriate download profiles based on estimated speed
-     * Uses linear scaling: include profiles where transfer time < MAX_TEST_DURATION_SECONDS
-     */
-    function selectDownloadProfiles(estimatedSpeedMbps) {
-        const limit = downloadTransferLimit();
-        const profiles = {};
-        for (const name of ['100kB', '1MB']) {
-            const profile = ALL_DOWNLOAD_PROFILES[name];
-            if (profile.bytes <= limit) profiles[name] = profile;
+    // Chromium requires duplex:'half' for request streams; other browsers may
+    // not expose the duplex getter at all. This feature test avoids attempting
+    // a streaming request where fetch would buffer or reject it.
+    function supportsStreamingRequestBodies() {
+        if (requestStreamingSupport !== undefined) return requestStreamingSupport;
+        if (typeof ReadableStream === 'undefined' || typeof Request === 'undefined') {
+            requestStreamingSupport = false;
+            return requestStreamingSupport;
         }
-
-        // Check larger profiles based on estimated transfer time
-        const largerProfiles = ['10MB', '25MB', '100MB', '250MB', '500MB', '1GB', '2GB', '5GB', '12GB', '50GB', '100GB', '125GB'];
-        for (const name of largerProfiles) {
-            const profile = ALL_DOWNLOAD_PROFILES[name];
-            if (!profile || profile.bytes > limit) continue;
-
-            const estimatedSeconds = estimateTransferTime(profile.bytes, estimatedSpeedMbps);
-            if (estimatedSeconds <= MAX_TEST_DURATION_SECONDS) {
-                profiles[name] = profile;
-            }
+        try {
+            let duplexAccessed = false;
+            const stream = new ReadableStream({ start(controller) { controller.close(); } });
+            const request = new Request('http://localhost/', {
+                method: 'POST',
+                body: stream,
+                get duplex() {
+                    duplexAccessed = true;
+                    return 'half';
+                }
+            });
+            requestStreamingSupport = duplexAccessed && !request.headers.has('Content-Type');
+        } catch (_) {
+            requestStreamingSupport = false;
         }
-
-        console.log(`Download profiles for ${estimatedSpeedMbps.toFixed(1)} Mbps:`, Object.keys(profiles));
-        return profiles;
+        return requestStreamingSupport;
     }
 
-    /**
-     * Select appropriate upload profiles based on estimated speed
-     * Uses linear scaling: include profiles where transfer time < MAX_TEST_DURATION_SECONDS
-     */
-    function selectUploadProfiles(estimatedSpeedMbps) {
-        const limit = uploadTransferLimit();
-        const profiles = {};
-        for (const name of ['100kB', '1MB']) {
-            const profile = ALL_UPLOAD_PROFILES[name];
-            if (profile.bytes <= limit) profiles[name] = profile;
-        }
-
-        // Check larger profiles based on estimated transfer time
-        const largerProfiles = ['10MB', '25MB', '50MB', '100MB', '250MB', '500MB', '1GB', '2GB', '5GB', '12GB', '50GB', '100GB', '125GB'];
-        for (const name of largerProfiles) {
-            const profile = ALL_UPLOAD_PROFILES[name];
-            if (!profile || profile.bytes > limit) continue;
-
-            const estimatedSeconds = estimateTransferTime(profile.bytes, estimatedSpeedMbps);
-            if (estimatedSeconds <= MAX_TEST_DURATION_SECONDS) {
-                profiles[name] = profile;
-            }
-        }
-
-        // Skip 50MB if 100MB will be included (100MB provides better data)
-        if (profiles['100MB'] && profiles['50MB']) {
-            delete profiles['50MB'];
-        }
-
-        console.log(`Upload profiles for ${estimatedSpeedMbps.toFixed(1)} Mbps:`, Object.keys(profiles));
-        return profiles;
+    function maxDownloadBytes() {
+        if (supportsStreamingResponseBodies()) return serverMaxTransferBytes;
+        return Math.min(serverMaxTransferBytes, WEB_DOWNLOAD_FALLBACK_MEMORY_LIMIT_BYTES);
     }
 
-    /**
-     * Estimate speed from test samples using median (robust to outliers)
-     * Being conservative avoids selecting profiles that take too long
-     */
-    function estimateSpeed(samples) {
-        if (samples.length === 0) return 0;
-        const sorted = [...samples].sort((a, b) => a - b);
-        // Use median - robust to outlier spikes that could cause
-        // profile selection based on unsustainable burst speeds
-        const midIndex = Math.floor(sorted.length / 2);
-        if (sorted.length % 2 === 0) {
-            // Even number of samples: average the two middle values
-            return (sorted[midIndex - 1] + sorted[midIndex]) / 2;
-        }
-        return sorted[midIndex];
+    function maxUploadBytes() {
+        return Math.min(serverMaxTransferBytes, WEB_UPLOAD_FALLBACK_CHUNK_BYTES);
     }
 
-    function minimumValidRuns(runs) {
-        return runs >= 3 ? 2 : 1;
-    }
-
-    function requireValidSamples(label, successfulRuns, configuredRuns) {
-        const minimum = minimumValidRuns(configuredRuns);
-        if (successfulRuns < minimum) {
-            throw new Error(`${label} produced ${successfulRuns} valid samples; need at least ${minimum}`);
-        }
-    }
-
-    function validateUploadReceipt(receipt, expectedBytes) {
-        if (receipt?.ok !== true || receipt.acceptedBytes !== expectedBytes ||
-            !Number.isSafeInteger(receipt.serverDurationNs) || receipt.serverDurationNs <= 0) {
-            throw new Error(`Invalid upload receipt for ${expectedBytes} bytes`);
-        }
-        return receipt.serverDurationNs / 1e6;
-    }
-
-    function getMeasurementCapabilities() {
-        return {
-            measurementApiVersion,
+    function maxUploadWindowChunkBytes() {
+        return Math.min(
             serverMaxTransferBytes,
-            downloadMaxBytes: downloadTransferLimit(),
-            uploadMaxBytes: uploadTransferLimit()
-        };
+            supportsStreamingRequestBodies() ? MAX_WINDOW_CHUNK_BYTES : WEB_UPLOAD_FALLBACK_CHUNK_BYTES
+        );
+    }
+
+    function requiredSuccessfulRuns(total) {
+        return total <= 1 ? total : Math.ceil(total / 2);
+    }
+
+    async function consumeResponseBody(response, expectedBytes) {
+        if (!Number.isSafeInteger(expectedBytes) || expectedBytes < 0) {
+            throw new Error(`Invalid expected response size: ${expectedBytes}`);
+        }
+
+        if (!response.body || typeof response.body.getReader !== 'function') {
+            if (expectedBytes > WEB_DOWNLOAD_FALLBACK_MEMORY_LIMIT_BYTES) {
+                throw new Error(`Streaming response bodies are unavailable; refusing to buffer ${expectedBytes} bytes`);
+            }
+            return (await response.arrayBuffer()).byteLength;
+        }
+
+        const reader = response.body.getReader();
+        let received = 0;
+        while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            received += value.byteLength;
+            if (received > expectedBytes) {
+                await reader.cancel('response exceeded expected length');
+                break;
+            }
+        }
+        return received;
+    }
+
+    async function readJSONBody(response, maxBytes) {
+        if (!Number.isSafeInteger(maxBytes) || maxBytes <= 0) {
+            throw new Error(`Invalid JSON response limit: ${maxBytes}`);
+        }
+
+        let bytes;
+        if (!response.body || typeof response.body.getReader !== 'function') {
+            const buffer = await response.arrayBuffer();
+            if (buffer.byteLength > maxBytes) throw new Error(`JSON response exceeds ${maxBytes} bytes`);
+            bytes = new Uint8Array(buffer);
+        } else {
+            const reader = response.body.getReader();
+            const chunks = [];
+            let received = 0;
+            while (true) {
+                const { done, value } = await reader.read();
+                if (done) break;
+                received += value.byteLength;
+                if (received > maxBytes) {
+                    await reader.cancel('JSON response exceeded limit');
+                    throw new Error(`JSON response exceeds ${maxBytes} bytes`);
+                }
+                chunks.push(value);
+            }
+            bytes = new Uint8Array(received);
+            let offset = 0;
+            for (const chunk of chunks) {
+                bytes.set(chunk, offset);
+                offset += chunk.byteLength;
+            }
+        }
+
+        const text = new TextDecoder().decode(bytes);
+        return JSON.parse(text);
+    }
+
+    function estimateSpeed(samples) {
+        return percentile(samples, 50);
     }
 
     // State
@@ -249,31 +235,12 @@ const SpeedTest = (function() {
      */
     async function fetchMeta() {
         const response = await fetch('/meta', { cache: 'no-store' });
-        if (!response.ok) throw new Error('Failed to fetch metadata');
-        const meta = await response.json();
-
-        const advertisedVersion = Number(meta.measurementApiVersion || 0);
-        const advertisedMax = Number(meta.maxTransferBytes || 0);
-        if (advertisedVersion >= 1) {
-            if (!Number.isSafeInteger(advertisedMax) || advertisedMax <= 0) {
-                throw new Error('Measurement API v1 did not advertise a valid maxTransferBytes');
-            }
-            measurementApiVersion = advertisedVersion;
-            serverMaxTransferBytes = advertisedMax;
-        } else if (Number.isSafeInteger(advertisedMax) && advertisedMax > 0) {
-            measurementApiVersion = 0;
-            serverMaxTransferBytes = advertisedMax;
-        } else {
-            measurementApiVersion = 0;
-            serverMaxTransferBytes = LEGACY_SERVER_MAX_BYTES;
+        if (!response.ok) throw new Error(`Failed to fetch metadata: HTTP ${response.status}`);
+        const contentType = (response.headers.get('Content-Type') || '').toLowerCase();
+        if (!contentType.startsWith('application/json')) {
+            throw new Error(`Metadata returned unexpected content type: ${contentType || 'missing'}`);
         }
-
-        if (downloadTransferLimit() < ALL_DOWNLOAD_PROFILES['100kB'].bytes ||
-            uploadTransferLimit() < ALL_UPLOAD_PROFILES['100kB'].bytes) {
-            throw new Error(`Server transfer limit ${serverMaxTransferBytes} is below the smallest browser profile`);
-        }
-
-        return meta;
+        return readJSONBody(response, MAX_META_BODY_BYTES);
     }
 
     /**
@@ -281,8 +248,12 @@ const SpeedTest = (function() {
      */
     async function fetchLocations() {
         const response = await fetch('/locations', { cache: 'no-store' });
-        if (!response.ok) throw new Error('Failed to fetch locations');
-        return response.json();
+        if (!response.ok) throw new Error(`Failed to fetch locations: HTTP ${response.status}`);
+        const contentType = (response.headers.get('Content-Type') || '').toLowerCase();
+        if (!contentType.startsWith('application/json')) {
+            throw new Error(`Locations returned unexpected content type: ${contentType || 'missing'}`);
+        }
+        return readJSONBody(response, MAX_LOCATIONS_BODY_BYTES);
     }
 
     /**
@@ -309,191 +280,298 @@ const SpeedTest = (function() {
         return null;
     }
 
-    /**
-     * Run a single download test
-     */
-    async function runDownload(bytes, profile, runIndex, phase = null) {
-        if (!Number.isSafeInteger(bytes) || bytes < 0 || bytes > downloadTransferLimit()) {
-            throw new Error(`Download size ${bytes} exceeds the browser/server limit ${downloadTransferLimit()}`);
+    function createLoadActivity() {
+        let active = 0;
+        let gapGeneration = 0;
+        let impreciseActive = 0;
+        let impreciseGeneration = 0;
+
+        return {
+            begin(accurate = true) {
+                const token = { accurate, ended: false };
+                active++;
+                if (!accurate) {
+                    impreciseActive++;
+                    impreciseGeneration++;
+                }
+                return token;
+            },
+            end(token) {
+                if (!token || token.ended) return;
+                token.ended = true;
+                if (active > 0) {
+                    active--;
+                    if (active === 0) gapGeneration++;
+                }
+                if (!token.accurate && impreciseActive > 0) impreciseActive--;
+            },
+            snapshot() {
+                return { active, gapGeneration, impreciseActive, impreciseGeneration };
+            },
+            async waitActive(timeoutMs = 2000, signal = abortController?.signal, shouldStop = () => false) {
+                const deadline = performance.now() + timeoutMs;
+                while (active <= 0) {
+                    if (signal?.aborted) throw new DOMException('Aborted', 'AbortError');
+                    if (shouldStop()) throw new Error('Sustained window ended');
+                    if (performance.now() >= deadline) throw new Error('Timed out waiting for sustained load');
+                    await sleep(2);
+                }
+            }
+        };
+    }
+
+    function createStreamingUploadBody(bytes, activity) {
+        const zeroChunk = new Uint8Array(64 * 1024);
+        let remaining = bytes;
+        let token = null;
+        let ended = false;
+        const finish = () => {
+            if (ended) return;
+            ended = true;
+            if (activity) activity.end(token);
+        };
+
+        return {
+            body: new ReadableStream({
+                pull(controller) {
+                    if (!token && activity) token = activity.begin(true);
+                    if (remaining <= 0) {
+                        controller.close();
+                        finish();
+                        return;
+                    }
+                    const count = Math.min(remaining, zeroChunk.byteLength);
+                    controller.enqueue(count === zeroChunk.byteLength ? zeroChunk : zeroChunk.subarray(0, count));
+                    remaining -= count;
+                    // Close on the next pull, after fetch has consumed the final
+                    // queued chunk. Closing and ending activity in this pull would
+                    // mark the upload inactive while the last bytes were still
+                    // buffered inside the request stream.
+                },
+                cancel() { finish(); }
+            }),
+            duplex: 'half',
+            finish,
+            loadTracking: 'request-stream'
+        };
+    }
+
+    function responseFromXHR(xhr) {
+        const headers = new Headers();
+        const raw = xhr.getAllResponseHeaders() || '';
+        for (const line of raw.trim().split(/[\r\n]+/)) {
+            if (!line) continue;
+            const index = line.indexOf(':');
+            if (index > 0) headers.append(line.slice(0, index).trim(), line.slice(index + 1).trim());
         }
-
-        const measId = `${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
-        let url = `/__down?bytes=${bytes}&measId=${measId}&profile=${profile}&run=${runIndex}`;
-        if (phase) url += `&during=${phase}`;
-
-        // Capture start time for manual fallback timing
-        const manualStart = performance.now();
-
-        const response = await fetch(url, {
-            cache: 'no-store',
-            signal: abortController?.signal
+        return new Response(xhr.response || new ArrayBuffer(0), {
+            status: xhr.status,
+            statusText: xhr.statusText,
+            headers
         });
+    }
 
-        if (!response.ok) throw new Error(`Download failed: ${response.status}`);
+    function uploadWithXHR(url, payload, activity) {
+        return new Promise((resolve, reject) => {
+            const xhr = new XMLHttpRequest();
+            let token = null;
+            let finished = false;
+            const finishActivity = () => {
+                if (finished) return;
+                finished = true;
+                if (activity) activity.end(token);
+            };
 
-        // Use arrayBuffer() to ensure response is fully received before checking timing
-        const buffer = await response.arrayBuffer();
-        const received = buffer.byteLength;
-        if (received !== bytes) {
-            throw new Error(`Download returned ${received} bytes; expected ${bytes}`);
+            xhr.open('POST', url, true);
+            xhr.responseType = 'arraybuffer';
+            xhr.setRequestHeader('Content-Type', 'application/octet-stream');
+            xhr.upload.onloadstart = () => {
+                if (!token && activity) token = activity.begin(true);
+            };
+            xhr.upload.onloadend = finishActivity;
+            xhr.onload = () => {
+                finishActivity();
+                resolve(responseFromXHR(xhr));
+            };
+            xhr.onerror = () => {
+                finishActivity();
+                reject(new Error('Upload network error'));
+            };
+            xhr.onabort = () => {
+                finishActivity();
+                reject(new DOMException('Aborted', 'AbortError'));
+            };
+
+            const signal = abortController?.signal;
+            const abort = () => xhr.abort();
+            if (signal) signal.addEventListener('abort', abort, { once: true });
+            xhr.onloadend = () => {
+                if (signal) signal.removeEventListener('abort', abort);
+            };
+            xhr.send(payload);
+        });
+    }
+
+    /**
+     * Run one exact, verified download request. When an activity tracker is
+     * supplied, only response-body consumption is marked as active load.
+     */
+    async function runDownload(bytes, profile, runIndex, phase = null, activity = null) {
+        if (!Number.isSafeInteger(bytes) || bytes < 0 || bytes > maxDownloadBytes()) {
+            throw new Error(`Download size ${bytes} exceeds negotiated maximum ${maxDownloadBytes()}`);
         }
 
-        const manualEnd = performance.now();
+        const measId = `${Date.now()}-${Math.random().toString(36).slice(2, 11)}`;
+        let url = `/__down?bytes=${bytes}&measId=${measId}&profile=${encodeURIComponent(profile)}&run=${runIndex}`;
+        if (phase) url += `&during=${encodeURIComponent(phase)}`;
 
-        // Use Resource Timing API to get precise body transfer time
-        // responseStart = first byte received, responseEnd = last byte received
-        const timing = await getResourceTiming(url);
+        const manualStart = performance.now();
+        const response = await fetch(url, { cache: 'no-store', signal: abortController?.signal });
+        if (!response.ok) {
+            const detail = (await response.text()).trim();
+            throw new Error(`Download failed: HTTP ${response.status}${detail ? `: ${detail}` : ''}`);
+        }
+        const contentType = (response.headers.get('Content-Type') || '').toLowerCase();
+        if (!contentType.startsWith('application/octet-stream')) {
+            throw new Error(`Download returned unexpected content type: ${contentType || 'missing'}`);
+        }
+        const contentLength = response.headers.get('Content-Length');
+        if (contentLength !== null && Number(contentLength) !== bytes) {
+            throw new Error(`Download Content-Length ${contentLength}; expected ${bytes}`);
+        }
+
+        const responseStreaming = Boolean(response.body && typeof response.body.getReader === 'function');
+        const token = activity?.begin(responseStreaming);
+        let received;
+        try {
+            received = await consumeResponseBody(response, bytes);
+        } finally {
+            if (activity) activity.end(token);
+        }
+        const manualEnd = performance.now();
+        if (received !== bytes) throw new Error(`Download received ${received} bytes; expected ${bytes}`);
+
         let durationMs;
         let timingSource;
-
-        if (timing && timing.responseStart > 0 && timing.responseEnd > 0) {
-            // Body transfer time (excludes connection, TLS, request headers)
-            const bodyTime = timing.responseEnd - timing.responseStart;
-
-            // For small/fast downloads, body time may be 0 or near-0.
-            // Fall back to requestStart->responseEnd which includes request overhead but avoids Infinity
-            if (bodyTime < 1 && timing.requestStart > 0) {
-                durationMs = timing.responseEnd - timing.requestStart;
-                timingSource = 'resource-timing-full';
-                resourceTimingUsed = true;
-            } else if (bodyTime >= 1) {
-                durationMs = bodyTime;
-                timingSource = 'resource-timing';
-                resourceTimingUsed = true;
-            }
-            // If bodyTime < 1 and requestStart is 0, fall through to manual timing
-        }
-
-        if (!durationMs) {
-            // Fallback: use manual timing (includes connection overhead)
+        if (activity) {
+            // A window uses one aggregate wall clock; looking up Resource Timing
+            // for every component request would insert an artificial idle gap
+            // before the worker can start its next bounded transfer.
             durationMs = manualEnd - manualStart;
-            timingSource = 'manual';
-            timingFallbackCount++;
-            console.log('Download timing fallback:', { profile, runIndex, timing, manualMs: durationMs });
-            if (callbacks.onTimingWarning) {
-                callbacks.onTimingWarning('download', 'Resource Timing API unavailable');
+            timingSource = 'window-component';
+        } else {
+            const timing = await getResourceTiming(url);
+            if (timing && timing.responseStart > 0 && timing.responseEnd > 0) {
+                const bodyTime = timing.responseEnd - timing.responseStart;
+                if (bodyTime < 1 && timing.requestStart > 0) {
+                    durationMs = timing.responseEnd - timing.requestStart;
+                    timingSource = 'resource-timing-full';
+                    resourceTimingUsed = true;
+                } else if (bodyTime >= 1) {
+                    durationMs = bodyTime;
+                    timingSource = 'resource-timing';
+                    resourceTimingUsed = true;
+                }
+            }
+            if (!durationMs) {
+                durationMs = manualEnd - manualStart;
+                timingSource = 'manual';
+                timingFallbackCount++;
+                if (callbacks.onTimingWarning) callbacks.onTimingWarning('download', 'Resource Timing API unavailable');
             }
         }
-
-        // Final guard against division by zero
-        if (durationMs < 0.1) {
-            durationMs = manualEnd - manualStart;
-            timingSource = 'manual-guard';
-        }
-        if (!Number.isFinite(durationMs) || durationMs <= 0) {
-            throw new Error('Download duration was not positive');
-        }
-
-        const mbps = (received * 8) / (durationMs / 1000) / 1e6;
+        if (!Number.isFinite(durationMs) || durationMs <= 0) throw new Error(`Invalid download duration: ${durationMs}`);
 
         return {
             ts: Date.now(),
             direction: 'download',
             sizeBytes: received,
             durationMs,
-            mbps,
+            mbps: (received * 8) / (durationMs / 1000) / 1e6,
             profile,
-            runIndex
+            runIndex,
+            timingSource
         };
     }
 
     /**
-     * Run a single upload test
+     * Run one exact, verified upload. Fixed-window callers pass a reusable
+     * bounded payload or a request-stream factory; direct callers retain the
+     * simple Uint8Array behavior used by the public measurement contract.
      */
-    async function runUpload(bytes, profile, runIndex, phase = null) {
-        if (!Number.isSafeInteger(bytes) || bytes < 0 || bytes > uploadTransferLimit()) {
-            throw new Error(`Upload size ${bytes} exceeds the browser/server limit ${uploadTransferLimit()}`);
+    async function runUpload(bytes, profile, runIndex, phase = null, activity = null, bodySource = null) {
+        if (uploadReceiptVersion < REQUIRED_UPLOAD_RECEIPT_VERSION) {
+            throw new Error('Server does not support verified upload receipts');
+        }
+        const windowBody = typeof bodySource === 'function' || bodySource instanceof Uint8Array;
+        const maximum = windowBody ? Math.min(serverMaxTransferBytes, MAX_WINDOW_CHUNK_BYTES) : maxUploadBytes();
+        if (!Number.isSafeInteger(bytes) || bytes < 0 || bytes > maximum) {
+            throw new Error(`Upload size ${bytes} exceeds browser maximum ${maximum}`);
         }
 
-        const measId = `${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
-        let url = `/__up?measId=${measId}&profile=${profile}&run=${runIndex}`;
-        if (phase) url += `&during=${phase}`;
+        const measId = `${Date.now()}-${Math.random().toString(36).slice(2, 11)}`;
+        let url = `/__up?measId=${measId}&profile=${encodeURIComponent(profile)}&run=${runIndex}`;
+        if (phase) url += `&during=${encodeURIComponent(phase)}`;
 
-        const payload = new Uint8Array(bytes);
+        let response;
+        let descriptor = null;
+        if (typeof bodySource === 'function') descriptor = bodySource(activity);
+        const body = descriptor?.body || bodySource || new Uint8Array(bytes);
 
-        // Capture start time for manual fallback timing
-        const manualStart = performance.now();
-
-        const response = await fetch(url, {
-            method: 'POST',
-            body: payload,
-            headers: { 'Content-Type': 'application/octet-stream' },
-            signal: abortController?.signal
-        });
-
-        if (!response.ok) throw new Error(`Upload failed: ${response.status}`);
-
-        let receipt = null;
-        if (measurementApiVersion >= 1) {
-            receipt = await response.json();
-            validateUploadReceipt(receipt, bytes);
+        if (!descriptor && activity && typeof XMLHttpRequest !== 'undefined' && body instanceof Uint8Array) {
+            response = await uploadWithXHR(url, body, activity);
         } else {
-            await response.arrayBuffer();
-        }
-
-        const manualEnd = performance.now();
-
-        // Use Resource Timing API for precise timing
-        const timing = await getResourceTiming(url);
-        let durationMs;
-        let timingSource;
-
-        // Measurement API v1 uses the server's exact body-read duration.
-        if (receipt) {
-            durationMs = validateUploadReceipt(receipt, bytes);
-            timingSource = 'upload-receipt';
-        }
-
-        // For legacy uploads, prefer Server-Timing if available.
-        // Server-Timing measures server-side: time from request start to body fully received
-        if (!durationMs && timing && timing.serverTiming && timing.serverTiming.length > 0) {
-            const serverDur = timing.serverTiming.find(st => st.name === 'app');
-            if (serverDur && serverDur.duration > 0) {
-                durationMs = serverDur.duration;
-                timingSource = 'server-timing';
-                resourceTimingUsed = true;
+            let token = null;
+            if (activity && !descriptor) token = activity.begin(false);
+            try {
+                const options = {
+                    method: 'POST',
+                    body,
+                    headers: { 'Content-Type': 'application/octet-stream' },
+                    cache: 'no-store',
+                    signal: abortController?.signal
+                };
+                if (descriptor?.duplex) options.duplex = descriptor.duplex;
+                response = await fetch(url, options);
+            } finally {
+                if (descriptor?.finish) descriptor.finish();
+                if (activity && !descriptor) activity.end(token);
             }
         }
 
-        // Fallback to Resource Timing requestStart -> responseStart
-        if (!durationMs && timing && timing.requestStart > 0 && timing.responseStart > 0) {
-            durationMs = timing.responseStart - timing.requestStart;
-            timingSource = 'resource-timing';
-            resourceTimingUsed = true;
+        if (!response.ok) {
+            const detail = (await response.text()).trim();
+            throw new Error(`Upload failed: HTTP ${response.status}${detail ? `: ${detail}` : ''}`);
+        }
+        const contentType = (response.headers.get('Content-Type') || '').toLowerCase();
+        if (!contentType.startsWith('application/json')) {
+            throw new Error(`Upload returned unexpected content type: ${contentType || 'missing'}`);
         }
 
-        // Last fallback: manual timing
-        if (!durationMs) {
-            durationMs = manualEnd - manualStart;
-            timingSource = 'manual';
-            timingFallbackCount++;
-            if (callbacks.onTimingWarning) {
-                callbacks.onTimingWarning('upload', 'Resource Timing API unavailable');
-            }
+        let receipt;
+        try {
+            receipt = await readJSONBody(response, MAX_UPLOAD_RECEIPT_BYTES);
+        } catch (err) {
+            throw new Error(`Invalid upload receipt: ${err.message}`);
         }
-
-        // Log first few uploads to verify timing source
-        if (runIndex < 2 && profile !== 'warmup') {
-            console.log(`Upload ${profile}/${runIndex}: ${timingSource}`, {
-                durationMs: durationMs.toFixed(1),
-                serverTiming: timing?.serverTiming?.map(st => ({ name: st.name, duration: st.duration }))
-            });
+        if (!receipt || receipt.ok !== true) throw new Error('Server rejected upload');
+        if (receipt.acceptedBytes !== bytes) {
+            throw new Error(`Server accepted ${receipt.acceptedBytes} upload bytes; expected ${bytes}`);
         }
-
+        const durationMs = Number(receipt.serverDurationNs) / 1e6;
         if (!Number.isFinite(durationMs) || durationMs <= 0) {
-            throw new Error('Upload duration was not positive');
+            throw new Error(`Invalid server upload duration: ${receipt.serverDurationNs}`);
         }
-
-        const mbps = (bytes * 8) / (durationMs / 1000) / 1e6;
 
         return {
             ts: Date.now(),
             direction: 'upload',
-            sizeBytes: bytes,
+            sizeBytes: receipt.acceptedBytes,
             durationMs,
-            mbps,
+            mbps: (receipt.acceptedBytes * 8) / (durationMs / 1000) / 1e6,
             profile,
-            runIndex
+            runIndex,
+            timingSource: 'server-receipt'
         };
     }
 
@@ -505,17 +583,19 @@ const SpeedTest = (function() {
         const measId = `${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
         const url = `/__down?bytes=0&measId=${measId}&during=${phase}&seq=${seq}`;
 
+        const startedAt = Date.now();
         const manualStart = performance.now();
         const response = await fetch(url, {
             cache: 'no-store',
             signal: abortController?.signal
         });
 
-        if (!response.ok) throw new Error(`Latency probe failed: ${response.status}`);
-        const body = await response.arrayBuffer();
-        if (body.byteLength !== 0) {
-            throw new Error(`Latency probe returned ${body.byteLength} bytes; expected 0`);
+        if (!response.ok) {
+            const detail = (await response.text()).trim();
+            throw new Error(`Latency probe failed: HTTP ${response.status}${detail ? `: ${detail}` : ''}`);
         }
+        const received = await consumeResponseBody(response, 0);
+        if (received !== 0) throw new Error(`Latency response contained ${received} bytes; expected 0`);
         const manualEnd = performance.now();
 
         // Try to get more accurate timing from Resource Timing API
@@ -544,20 +624,21 @@ const SpeedTest = (function() {
             }
         }
 
-        if (!Number.isFinite(rttMs) || rttMs <= 0) {
-            throw new Error('Latency timing was not positive');
-        }
-
         // Log first few probes to debug timing source
         if (seq < 3) {
             console.warn(`LATENCY PROBE ${seq}: ${rttMs.toFixed(2)}ms source=${timingSource}`,
                 timing ? { requestStart: timing.requestStart, responseStart: timing.responseStart } : 'no timing');
         }
 
+        const endedAt = Date.now();
         return {
-            ts: Date.now(),
+            ts: endedAt,
+            startedAt,
+            endedAt,
             rttMs,
-            phase
+            phase,
+            loadOverlapped: false,
+            timingSource
         };
     }
 
@@ -606,11 +687,11 @@ const SpeedTest = (function() {
             const start = performance.now();
             const response = await fetch(url, { cache: 'no-store', signal: abortController?.signal });
             if (!response.ok) return 0;
-            const body = await response.arrayBuffer();
-            if (body.byteLength !== bytes) return 0;
+            const received = await consumeResponseBody(response, bytes);
+            if (received !== bytes) return 0;
             const durationMs = performance.now() - start;
-            if (!Number.isFinite(durationMs) || durationMs <= 0) return 0;
-            const mbps = (bytes * 8) / (durationMs * 1000);
+            if (durationMs <= 0) return 0;
+            const mbps = (received * 8) / (durationMs * 1000);
             return mbps;
         } catch {
             return 0;
@@ -650,30 +731,32 @@ const SpeedTest = (function() {
             }
         }
 
+        if (samples.length === 0) {
+            throw new Error('Unloaded latency test produced no valid samples');
+        }
         if (samples.length >= totalProbes) {
             return samples;
         }
 
-        // Decide batching strategy based on latency and bandwidth
-        let useParallel = false;
-        if (samples.length > 0) {
-            const sortedRtts = samples.map(s => s.rttMs).sort((a, b) => a - b);
-            const medianRtt = sortedRtts[Math.floor(sortedRtts.length / 2)];
+        // Calculate median RTT from initial probes
+        const sortedRtts = samples.map(s => s.rttMs).sort((a, b) => a - b);
+        const medianRtt = sortedRtts[Math.floor(sortedRtts.length / 2)];
 
-            if (medianRtt < lowLatencyMs) {
-                // Low latency: definitely fast connection, use parallel
-                useParallel = true;
-                console.log(`Latency: median RTT ${medianRtt.toFixed(1)}ms (low), using parallel mode`);
-            } else if (medianRtt >= highLatencyMs) {
-                // High latency: check bandwidth to distinguish satellite from slow DSL
-                const bandwidth = await quickBandwidthEstimate();
-                useParallel = bandwidth >= minBandwidthMbps;
-                console.log(`Latency: median RTT ${medianRtt.toFixed(1)}ms (high), bandwidth ~${bandwidth.toFixed(1)} Mbps, using ${useParallel ? 'parallel' : 'sequential'} mode`);
-            } else {
-                // Medium latency (50-100ms): typical internet, use parallel
-                useParallel = true;
-                console.log(`Latency: median RTT ${medianRtt.toFixed(1)}ms (medium), using parallel mode`);
-            }
+        // Decide batching strategy based on latency and bandwidth
+        let useParallel;
+        if (medianRtt < lowLatencyMs) {
+            // Low latency: definitely fast connection, use parallel
+            useParallel = true;
+            console.log(`Latency: median RTT ${medianRtt.toFixed(1)}ms (low), using parallel mode`);
+        } else if (medianRtt >= highLatencyMs) {
+            // High latency: check bandwidth to distinguish satellite from slow DSL
+            const bandwidth = await quickBandwidthEstimate();
+            useParallel = bandwidth >= minBandwidthMbps;
+            console.log(`Latency: median RTT ${medianRtt.toFixed(1)}ms (high), bandwidth ~${bandwidth.toFixed(1)} Mbps, using ${useParallel ? 'parallel' : 'sequential'} mode`);
+        } else {
+            // Medium latency (50-100ms): typical internet, use parallel
+            useParallel = true;
+            console.log(`Latency: median RTT ${medianRtt.toFixed(1)}ms (medium), using parallel mode`);
         }
 
         // Phase 2: Run remaining probes (parallel or sequential based on connection quality)
@@ -740,781 +823,656 @@ const SpeedTest = (function() {
             }
         }
 
-        const minimum = Math.min(3, totalProbes);
-        if (samples.length < minimum) {
-            throw new Error(`Unloaded latency produced ${samples.length} valid probes; need at least ${minimum}`);
+        if (samples.length < requiredSuccessfulRuns(totalProbes)) {
+            throw new Error(`Unloaded latency test produced ${samples.length}/${totalProbes} valid samples`);
         }
-
         return samples;
     }
 
-    /**
-     * Run download tests with adaptive profile selection
-     * Runs baseline profiles first, then re-estimates before larger profiles
-     */
+    function selectWindowPlan(estimatedMbps, maxBytes, direction = 'download', quick = false) {
+        if (!Number.isFinite(estimatedMbps) || estimatedMbps <= 0) estimatedMbps = 10;
+
+        let concurrency = 1;
+        if (estimatedMbps >= 10000) concurrency = 16;
+        else if (estimatedMbps >= 2000) concurrency = 8;
+        else if (estimatedMbps >= 500) concurrency = 4;
+        else if (estimatedMbps >= 100) concurrency = 2;
+        concurrency = Math.min(concurrency, MAX_BROWSER_CONCURRENCY);
+
+        const target = estimatedMbps * 1e6 / 8 * (TARGET_REQUEST_DURATION_MS / 1000) / concurrency;
+        let chunkBytes = Math.ceil(target / 65536) * 65536;
+        chunkBytes = Math.max(MIN_WINDOW_CHUNK_BYTES, chunkBytes);
+        const clientMaximum = direction === 'upload'
+            ? maxUploadWindowChunkBytes()
+            : Math.min(maxDownloadBytes(), MAX_WINDOW_CHUNK_BYTES);
+        chunkBytes = Math.min(chunkBytes, clientMaximum);
+        if (Number.isSafeInteger(maxBytes) && maxBytes > 0) chunkBytes = Math.min(chunkBytes, maxBytes);
+
+        return {
+            chunkBytes,
+            concurrency,
+            windowDurationMs: quick ? 1000 : WINDOW_DURATION_MS,
+            windows: quick ? 1 : WINDOW_COUNT,
+            loadedWindow: quick ? 0 : LOADED_WINDOW_INDEX,
+            loadedProbeCount: quick ? 3 : CONFIG.loadedLatencyProbes,
+            direction
+        };
+    }
+
+    async function runBaselineProfiles(direction) {
+        const profiles = direction === 'download' ? ALL_DOWNLOAD_PROFILES : ALL_UPLOAD_PROFILES;
+        const totalRuns = Object.values(profiles).reduce((sum, profile) => sum + profile.runs, 0);
+        let completed = 0;
+        const samples = [];
+
+        for (const [profileName, profile] of Object.entries(profiles)) {
+            let successful = 0;
+            let lastError = null;
+            for (let run = 0; run < profile.runs; run++) {
+                if (abortController?.signal.aborted) break;
+                while (isPaused) await sleep(100);
+                try {
+                    const sample = direction === 'download'
+                        ? await runDownload(profile.bytes, profileName, run)
+                        : await runUpload(profile.bytes, profileName, run);
+                    sample.sampleKind = 'baseline';
+                    samples.push(sample);
+                    results.throughputSamples.push(sample);
+                    successful++;
+                    completed++;
+                    const callback = direction === 'download' ? callbacks.onDownloadProgress : callbacks.onUploadProgress;
+                    if (callback) callback(profileName, run + 1, profile.runs, sample, completed, totalRuns);
+                } catch (err) {
+                    lastError = err;
+                    console.error(`${direction} ${profileName} run ${run} failed:`, err);
+                }
+            }
+            if (successful < requiredSuccessfulRuns(profile.runs)) {
+                throw new Error(`${direction} baseline ${profileName} produced ${successful}/${profile.runs} valid samples${lastError ? `: ${lastError.message}` : ''}`);
+            }
+        }
+        return samples;
+    }
+
+    async function runLoadedLatencyProbes(
+        phase,
+        count,
+        activity,
+        probeFunction = runLatencyProbe,
+        shouldStop = () => false
+    ) {
+        const samples = [];
+        const maxAttempts = count * 5;
+        let lastError = null;
+
+        for (let attempt = 0; attempt < maxAttempts && samples.length < count; attempt++) {
+            if (shouldStop()) break;
+            try {
+                await activity.waitActive(2000, abortController?.signal, shouldStop);
+                const before = activity.snapshot();
+                if (before.active <= 0) continue;
+
+                const sample = await probeFunction(phase, attempt);
+                const after = activity.snapshot();
+                const overlapped = before.active > 0 && after.active > 0 &&
+                    before.gapGeneration === after.gapGeneration;
+                if (!overlapped) {
+                    lastError = new Error('probe did not remain inside a continuous load interval');
+                    continue;
+                }
+
+                sample.loadOverlapped = true;
+                sample.loadTrackingAccurate = before.impreciseActive === 0 && after.impreciseActive === 0 &&
+                    before.impreciseGeneration === after.impreciseGeneration;
+                samples.push(sample);
+                if (callbacks.onLatencyProgress) {
+                    callbacks.onLatencyProgress(phase, samples.length, count, sample);
+                }
+                await sleep(25);
+            } catch (err) {
+                if (err?.name === 'AbortError') throw err;
+                lastError = err;
+                if (shouldStop()) break;
+            }
+        }
+
+        if (samples.length < requiredSuccessfulRuns(count)) {
+            throw new Error(`${phase} loaded latency produced ${samples.length}/${count} continuously-overlapped probes${lastError ? `: ${lastError.message}` : ''}`);
+        }
+        return samples;
+    }
+
+    async function runThroughputWindow(direction, plan, windowIndex, withLoadedLatency) {
+        const activity = createLoadActivity();
+        let stopRequested = false;
+        let bytesTransferred = 0;
+        let requestCount = 0;
+        let lastError = null;
+        const profile = `window-${windowIndex + 1}`;
+
+        let uploadBodySource = null;
+        if (direction === 'upload') {
+            uploadBodySource = supportsStreamingRequestBodies()
+                ? activityForRequest => createStreamingUploadBody(plan.chunkBytes, activityForRequest)
+                : new Uint8Array(plan.chunkBytes);
+        }
+
+        let releaseWorkers;
+        const startGate = new Promise(resolve => { releaseWorkers = resolve; });
+        const workers = Array.from({ length: plan.concurrency }, (_, workerIndex) => (async () => {
+            await startGate;
+            let requestIndex = 0;
+            while (!stopRequested && !abortController?.signal.aborted) {
+                const runIndex = workerIndex * 1000000 + requestIndex++;
+                try {
+                    const sample = direction === 'download'
+                        ? await runDownload(plan.chunkBytes, profile, runIndex, direction, activity)
+                        : await runUpload(plan.chunkBytes, profile, runIndex, direction, activity, uploadBodySource);
+                    bytesTransferred += sample.sizeBytes;
+                    requestCount++;
+                } catch (err) {
+                    if (err?.name === 'AbortError') return;
+                    lastError = err;
+                    await sleep(10);
+                }
+            }
+        })());
+
+        const windowStart = performance.now();
+        releaseWorkers();
+        let probes = [];
+        let probeError = null;
+        const probePromise = withLoadedLatency
+            ? runLoadedLatencyProbes(
+                direction,
+                plan.loadedProbeCount,
+                activity,
+                runLatencyProbe,
+                () => stopRequested
+            )
+                .then(value => { probes = value; })
+                .catch(err => { probeError = err; })
+            : Promise.resolve();
+
+        // The timer stops new worker requests and probe retries. Already
+        // in-flight transfers drain and remain in the aggregate, but a gap-prone
+        // probe loop cannot extend a nominal 1.5-second window indefinitely.
+        await sleep(plan.windowDurationMs);
+        stopRequested = true;
+        await Promise.all([Promise.all(workers), probePromise]);
+        const windowEnd = performance.now();
+
+        if (abortController?.signal.aborted) throw new DOMException('Aborted', 'AbortError');
+        if (probeError) throw probeError;
+        if (requestCount === 0 || bytesTransferred <= 0) {
+            throw new Error(`${direction} window ${windowIndex + 1} completed no verified requests${lastError ? `: ${lastError.message}` : ''}`);
+        }
+        const durationMs = windowEnd - windowStart;
+        if (!Number.isFinite(durationMs) || durationMs <= 0) {
+            throw new Error(`${direction} window ${windowIndex + 1} has invalid duration ${durationMs}`);
+        }
+
+        return {
+            sample: {
+                ts: Date.now(),
+                direction,
+                sizeBytes: bytesTransferred,
+                durationMs,
+                mbps: (bytesTransferred * 8) / (durationMs / 1000) / 1e6,
+                profile: 'window',
+                runIndex: windowIndex,
+                sampleKind: 'window',
+                windowIndex,
+                concurrency: plan.concurrency,
+                chunkBytes: plan.chunkBytes,
+                requestCount,
+                timingSource: 'aggregate-wall-clock'
+            },
+            probes
+        };
+    }
+
+    async function runSustainedWindows(direction, plan) {
+        const windowSamples = [];
+        const loadedSamples = [];
+        for (let windowIndex = 0; windowIndex < plan.windows; windowIndex++) {
+            const measurement = await runThroughputWindow(
+                direction,
+                plan,
+                windowIndex,
+                windowIndex === plan.loadedWindow
+            );
+            windowSamples.push(measurement.sample);
+            loadedSamples.push(...measurement.probes);
+            results.throughputSamples.push(measurement.sample);
+            results.latencySamples.push(...measurement.probes);
+
+            const callback = direction === 'download' ? callbacks.onDownloadProgress : callbacks.onUploadProgress;
+            if (callback) callback(
+                `window-${windowIndex + 1}`,
+                1,
+                1,
+                measurement.sample,
+                windowIndex + 1,
+                plan.windows
+            );
+        }
+        return { windowSamples, loadedSamples };
+    }
+
     async function runDownloadTests() {
-        let totalRuns = 0;
-        const allSamples = [];
-
-        // Phase 1: Run all 100kB tests (baseline, always included)
-        const profile100k = ALL_DOWNLOAD_PROFILES['100kB'].bytes <= downloadTransferLimit()
-            ? ALL_DOWNLOAD_PROFILES['100kB'] : null;
-        const profile1m = ALL_DOWNLOAD_PROFILES['1MB'].bytes <= downloadTransferLimit()
-            ? ALL_DOWNLOAD_PROFILES['1MB'] : null;
-        const baselineRuns = (profile100k?.runs || 0) + (profile1m?.runs || 0);
-        if (baselineRuns === 0) {
-            throw new Error('No download profile fits the browser/server transfer limit');
-        }
-
-        const samplesFor100k = [];
-        if (profile100k) {
-            console.log('Download: running 100kB baseline tests...');
-            for (let i = 0; i < profile100k.runs; i++) {
-                if (abortController?.signal.aborted) break;
-                while (isPaused) await sleep(100);
-
-                try {
-                    const sample = await runDownload(profile100k.bytes, '100kB', i);
-                    samplesFor100k.push(sample.mbps);
-                    allSamples.push(sample.mbps);
-                    results.throughputSamples.push(sample);
-                    totalRuns++;
-
-                    if (callbacks.onDownloadProgress) {
-                        callbacks.onDownloadProgress('100kB', i + 1, profile100k.runs, sample, totalRuns, baselineRuns);
-                    }
-                } catch (err) {
-                    console.error(`Download 100kB run ${i} failed:`, err);
-                }
-            }
-            requireValidSamples('Download 100kB baseline', samplesFor100k.length, profile100k.runs);
-        }
-
-        // Phase 2: Run all 1MB tests (baseline, always included)
-        const samplesFor1MB = [];
-        if (profile1m) {
-            console.log('Download: running 1MB baseline tests...');
-            for (let i = 0; i < profile1m.runs; i++) {
-                if (abortController?.signal.aborted) break;
-                while (isPaused) await sleep(100);
-
-                try {
-                    const sample = await runDownload(profile1m.bytes, '1MB', i);
-                    samplesFor1MB.push(sample.mbps);
-                    allSamples.push(sample.mbps);
-                    results.throughputSamples.push(sample);
-                    totalRuns++;
-
-                    if (callbacks.onDownloadProgress) {
-                        callbacks.onDownloadProgress('1MB', i + 1, profile1m.runs, sample, totalRuns, baselineRuns);
-                    }
-                } catch (err) {
-                    console.error(`Download 1MB run ${i} failed:`, err);
-                }
-            }
-            requireValidSamples('Download 1MB baseline', samplesFor1MB.length, profile1m.runs);
-        }
-
-        // Phase 3: Estimate sustained speed from 1MB tests (after burst buffers depleted)
-        const estimatedSpeed = estimateSpeed(samplesFor1MB.length > 0 ? samplesFor1MB : samplesFor100k);
-        if (!Number.isFinite(estimatedSpeed) || estimatedSpeed <= 0) {
-            throw new Error('Download baseline did not produce a usable speed estimate');
-        }
-        DOWNLOAD_PROFILES = selectDownloadProfiles(estimatedSpeed);
-        console.log(`Download: estimated sustained speed ${estimatedSpeed.toFixed(1)} Mbps`);
-
-        // Phase 4: Run larger profiles with time budget
-        const largerProfiles = ['10MB', '25MB', '100MB', '250MB', '500MB', '1GB', '2GB', '5GB', '12GB', '50GB', '100GB', '125GB'];
-        const phase4StartTime = performance.now();
-        const timeBudgetMs = TOTAL_DOWNLOAD_DURATION_SECONDS * 1000;
-
-        // Calculate expected total runs for progress reporting (baseline + selected larger profiles)
-        let expectedTotal = baselineRuns;
-        for (const name of largerProfiles) {
-            if (DOWNLOAD_PROFILES[name]) {
-                expectedTotal += DOWNLOAD_PROFILES[name].runs;
-            }
-        }
-
-        for (const profileName of largerProfiles) {
-            if (abortController?.signal.aborted) break;
-            if (!DOWNLOAD_PROFILES[profileName]) continue;
-            const { bytes, runs } = DOWNLOAD_PROFILES[profileName];
-
-            // Check if entire batch can fit in remaining time budget
-            const elapsedMs = performance.now() - phase4StartTime;
-            const remainingMs = timeBudgetMs - elapsedMs;
-            const estimatedBatchTime = estimateTransferTime(bytes, estimatedSpeed) * runs * 1000;
-
-            if (estimatedBatchTime > remainingMs) {
-                console.log(`Download: skipping ${profileName} batch (${runs} runs, ~${(estimatedBatchTime / 1000).toFixed(1)}s) - only ${(remainingMs / 1000).toFixed(1)}s remaining`);
-                expectedTotal -= runs; // Adjust expected total for skipped batch
-                continue;
-            }
-
-            for (let run = 0; run < runs; run++) {
-                if (abortController?.signal.aborted) break;
-                while (isPaused) await sleep(100);
-
-                try {
-                    const sample = await runDownload(bytes, profileName, run);
-                    results.throughputSamples.push(sample);
-                    totalRuns++;
-
-                    if (callbacks.onDownloadProgress) {
-                        callbacks.onDownloadProgress(profileName, run + 1, runs, sample, totalRuns, expectedTotal);
-                    }
-                } catch (err) {
-                    console.error(`Download ${profileName} run ${run} failed:`, err);
-                    if (callbacks.onError) {
-                        callbacks.onError('download', profileName, run, err);
-                    }
-                }
-            }
-        }
-
-        const totalElapsed = (performance.now() - phase4StartTime) / 1000;
-        console.log(`Download: completed in ${totalElapsed.toFixed(1)}s`);
+        const baseline = await runBaselineProfiles('download');
+        const estimate = estimateSpeed(baseline.filter(sample => sample.profile === '1MB').map(sample => sample.mbps));
+        const plan = selectWindowPlan(estimate, serverMaxTransferBytes, 'download');
+        Object.assign(DOWNLOAD_PROFILES, ALL_DOWNLOAD_PROFILES, {
+            window: { bytes: plan.chunkBytes, runs: plan.windows, concurrency: plan.concurrency }
+        });
+        console.log('Download fixed-window plan:', plan);
+        return runSustainedWindows('download', plan);
     }
 
-    /**
-     * Run upload tests with adaptive profile selection
-     * Runs baseline profiles first, then re-estimates before larger profiles
-     */
     async function runUploadTests() {
-        let totalRuns = 0;
-        const allSamples = [];
+        const baseline = await runBaselineProfiles('upload');
+        const estimate = estimateSpeed(baseline.filter(sample => sample.profile === '1MB').map(sample => sample.mbps));
+        const plan = selectWindowPlan(estimate, serverMaxTransferBytes, 'upload');
+        Object.assign(UPLOAD_PROFILES, ALL_UPLOAD_PROFILES, {
+            window: { bytes: plan.chunkBytes, runs: plan.windows, concurrency: plan.concurrency }
+        });
+        console.log('Upload fixed-window plan:', plan);
+        return runSustainedWindows('upload', plan);
+    }
 
-        // Phase 1: Run all 100kB tests (baseline, always included)
-        const profile100k = ALL_UPLOAD_PROFILES['100kB'].bytes <= uploadTransferLimit()
-            ? ALL_UPLOAD_PROFILES['100kB'] : null;
-        const profile1m = ALL_UPLOAD_PROFILES['1MB'].bytes <= uploadTransferLimit()
-            ? ALL_UPLOAD_PROFILES['1MB'] : null;
-        const baselineRuns = (profile100k?.runs || 0) + (profile1m?.runs || 0);
-        if (baselineRuns === 0) {
-            throw new Error('No upload profile fits the browser/server transfer limit');
+    function writeUint64(view, offset, value) {
+        const normalized = Math.max(0, Math.floor(Number(value) || 0));
+        const high = Math.floor(normalized / 0x100000000);
+        const low = normalized % 0x100000000;
+        view.setUint32(offset, high, false);
+        view.setUint32(offset + 4, low, false);
+    }
+
+    function readUint64(view, offset) {
+        return view.getUint32(offset, false) * 0x100000000 + view.getUint32(offset + 4, false);
+    }
+
+    function encodePacketFrame(sequence, sentAtUnixMilli, acknowledgement = false, recvAtUnixMilli = 0) {
+        const frame = new Uint8Array(PACKET_FRAME_SIZE);
+        frame.set(PACKET_FRAME_MAGIC, 0);
+        frame[4] = PACKET_FRAME_VERSION;
+        frame[5] = acknowledgement ? PACKET_FRAME_ACK : PACKET_FRAME_PROBE;
+        const view = new DataView(frame.buffer);
+        view.setUint16(6, PACKET_FRAME_HEADER_SIZE, false);
+        view.setUint32(8, sequence >>> 0, false);
+        writeUint64(view, 12, sentAtUnixMilli);
+        writeUint64(view, 20, recvAtUnixMilli);
+        view.setUint32(28, PACKET_FRAME_SIZE, false);
+        for (let index = PACKET_FRAME_HEADER_SIZE; index < frame.byteLength; index++) {
+            frame[index] = (sequence + index * 31) & 0xff;
         }
+        return frame;
+    }
 
-        const samplesFor100k = [];
-        if (profile100k) {
-            console.log('Upload: running 100kB baseline tests...');
-            for (let i = 0; i < profile100k.runs; i++) {
-                if (abortController?.signal.aborted) break;
-                while (isPaused) await sleep(100);
-
-                try {
-                    const sample = await runUpload(profile100k.bytes, '100kB', i);
-                    samplesFor100k.push(sample.mbps);
-                    allSamples.push(sample.mbps);
-                    results.throughputSamples.push(sample);
-                    totalRuns++;
-
-                    if (callbacks.onUploadProgress) {
-                        callbacks.onUploadProgress('100kB', i + 1, profile100k.runs, sample, totalRuns, baselineRuns);
-                    }
-                } catch (err) {
-                    console.error(`Upload 100kB run ${i} failed:`, err);
-                }
-            }
-            requireValidSamples('Upload 100kB baseline', samplesFor100k.length, profile100k.runs);
+    function decodePacketFrame(input) {
+        let frame;
+        if (input instanceof ArrayBuffer) frame = new Uint8Array(input);
+        else if (ArrayBuffer.isView(input)) frame = new Uint8Array(input.buffer, input.byteOffset, input.byteLength);
+        else throw new Error('Invalid packet-loss frame type');
+        if (frame.byteLength !== PACKET_FRAME_SIZE) {
+            throw new Error(`Invalid packet-loss frame size ${frame.byteLength}; want ${PACKET_FRAME_SIZE}`);
         }
-
-        // Phase 2: Run all 1MB tests (baseline, always included)
-        const samplesFor1MB = [];
-        if (profile1m) {
-            console.log('Upload: running 1MB baseline tests...');
-            for (let i = 0; i < profile1m.runs; i++) {
-                if (abortController?.signal.aborted) break;
-                while (isPaused) await sleep(100);
-
-                try {
-                    const sample = await runUpload(profile1m.bytes, '1MB', i);
-                    samplesFor1MB.push(sample.mbps);
-                    allSamples.push(sample.mbps);
-                    results.throughputSamples.push(sample);
-                    totalRuns++;
-
-                    if (callbacks.onUploadProgress) {
-                        callbacks.onUploadProgress('1MB', i + 1, profile1m.runs, sample, totalRuns, baselineRuns);
-                    }
-                } catch (err) {
-                    console.error(`Upload 1MB run ${i} failed:`, err);
-                }
-            }
-            requireValidSamples('Upload 1MB baseline', samplesFor1MB.length, profile1m.runs);
+        for (let index = 0; index < PACKET_FRAME_MAGIC.length; index++) {
+            if (frame[index] !== PACKET_FRAME_MAGIC[index]) throw new Error('Invalid packet-loss frame magic');
         }
-
-        // Phase 3: Estimate sustained speed from 1MB tests (after burst buffers depleted)
-        const estimatedSpeed = estimateSpeed(samplesFor1MB.length > 0 ? samplesFor1MB : samplesFor100k);
-        if (!Number.isFinite(estimatedSpeed) || estimatedSpeed <= 0) {
-            throw new Error('Upload baseline did not produce a usable speed estimate');
+        if (frame[4] !== PACKET_FRAME_VERSION) {
+            throw new Error(`Invalid packet-loss frame version ${frame[4]}`);
         }
-        UPLOAD_PROFILES = selectUploadProfiles(estimatedSpeed);
-        console.log(`Upload: estimated sustained speed ${estimatedSpeed.toFixed(1)} Mbps`);
-
-        // Phase 4: Run larger profiles with time budget
-        const largerProfiles = ['10MB', '25MB', '50MB', '100MB', '250MB', '500MB', '1GB', '2GB', '5GB', '12GB', '50GB', '100GB', '125GB'];
-        const phase4StartTime = performance.now();
-        const timeBudgetMs = TOTAL_UPLOAD_DURATION_SECONDS * 1000;
-
-        // Calculate expected total runs for progress reporting (baseline + selected larger profiles)
-        let expectedTotal = baselineRuns;
-        for (const name of largerProfiles) {
-            if (UPLOAD_PROFILES[name]) {
-                expectedTotal += UPLOAD_PROFILES[name].runs;
+        const view = new DataView(frame.buffer, frame.byteOffset, frame.byteLength);
+        if (view.getUint16(6, false) !== PACKET_FRAME_HEADER_SIZE) throw new Error('Invalid packet-loss header size');
+        if (view.getUint32(28, false) !== PACKET_FRAME_SIZE) throw new Error('Invalid declared packet-loss frame size');
+        const sequence = view.getUint32(8, false);
+        for (let index = PACKET_FRAME_HEADER_SIZE; index < frame.byteLength; index++) {
+            if (frame[index] !== ((sequence + index * 31) & 0xff)) {
+                throw new Error(`Corrupt packet-loss padding at byte ${index}`);
             }
         }
+        if (frame[5] !== PACKET_FRAME_PROBE && frame[5] !== PACKET_FRAME_ACK) {
+            throw new Error(`Invalid packet-loss frame type ${frame[5]}`);
+        }
+        return {
+            acknowledgement: frame[5] === PACKET_FRAME_ACK,
+            sequence,
+            sentAtUnixMilli: readUint64(view, 12),
+            recvAtUnixMilli: readUint64(view, 20)
+        };
+    }
 
-        for (const profileName of largerProfiles) {
-            if (abortController?.signal.aborted) break;
-            if (!UPLOAD_PROFILES[profileName]) continue;
-            const { bytes, runs } = UPLOAD_PROFILES[profileName];
+    function boundedCount(value, maximum) {
+        const integer = Number.isFinite(value) ? Math.floor(value) : 0;
+        return Math.max(0, Math.min(maximum, integer));
+    }
 
-            // Check if entire batch can fit in remaining time budget
-            const elapsedMs = performance.now() - phase4StartTime;
-            const remainingMs = timeBudgetMs - elapsedMs;
-            const estimatedBatchTime = estimateTransferTime(bytes, estimatedSpeed) * runs * 1000;
+    function calculateLossPercent(sent, received) {
+        if (sent <= 0) return 0;
+        return ((sent - boundedCount(received, sent)) / sent) * 100;
+    }
 
-            if (estimatedBatchTime > remainingMs) {
-                console.log(`Upload: skipping ${profileName} batch (${runs} runs, ~${(estimatedBatchTime / 1000).toFixed(1)}s) - only ${(remainingMs / 1000).toFixed(1)}s remaining`);
-                expectedTotal -= runs; // Adjust expected total for skipped batch
-                continue;
-            }
-
-            for (let run = 0; run < runs; run++) {
-                if (abortController?.signal.aborted) break;
-                while (isPaused) await sleep(100);
-
-                try {
-                    const sample = await runUpload(bytes, profileName, run);
-                    results.throughputSamples.push(sample);
-                    totalRuns++;
-
-                    if (callbacks.onUploadProgress) {
-                        callbacks.onUploadProgress(profileName, run + 1, runs, sample, totalRuns, expectedTotal);
-                    }
-                } catch (err) {
-                    console.error(`Upload ${profileName} run ${run} failed:`, err);
-                    if (callbacks.onError) {
-                        callbacks.onError('upload', profileName, run, err);
-                    }
-                }
+    function validatePacketReport(report, probesSent, acknowledgementsReceived) {
+        const counters = [
+            ['forwardReceived', report.forwardReceived],
+            ['acknowledgementsSent', report.acknowledgementsSent],
+            ['ackSendFailures', report.ackSendFailures],
+            ['duplicateFrames', report.duplicateFrames],
+            ['invalidFrames', report.invalidFrames]
+        ];
+        for (const [name, value] of counters) {
+            if (!Number.isSafeInteger(value) || value < 0) {
+                throw new Error(`Packet report ${name} is invalid: ${value}`);
             }
         }
+        if (report.forwardReceived > probesSent) {
+            throw new Error(`Packet report forwardReceived ${report.forwardReceived} exceeds probes sent ${probesSent}`);
+        }
+        if (report.acknowledgementsSent > report.forwardReceived) {
+            throw new Error(`Packet report acknowledgementsSent ${report.acknowledgementsSent} exceeds forwardReceived ${report.forwardReceived}`);
+        }
+        if (report.ackSendFailures > report.forwardReceived ||
+            report.acknowledgementsSent + report.ackSendFailures !== report.forwardReceived) {
+            throw new Error('Packet report acknowledgement accounting is inconsistent');
+        }
+        if (!Number.isSafeInteger(acknowledgementsReceived) || acknowledgementsReceived < 0 ||
+            acknowledgementsReceived > report.acknowledgementsSent) {
+            throw new Error(`Client received ${acknowledgementsReceived} acknowledgements but daemon sent ${report.acknowledgementsSent}`);
+        }
+    }
 
-        const totalElapsed = (performance.now() - phase4StartTime) / 1000;
-        console.log(`Upload: completed in ${totalElapsed.toFixed(1)}s`);
+    function unavailablePacketResult(reason, sent = 0, received = 0, testId = undefined) {
+        return {
+            sent,
+            received,
+            lossPercent: null,
+            transactionLossPercent: null,
+            forwardSent: sent,
+            forwardReceived: 0,
+            forwardLossPercent: null,
+            acknowledgementsSent: 0,
+            acknowledgementsReceived: received,
+            reverseAcknowledgementLossPercent: null,
+            frameSizeBytes: PACKET_FRAME_SIZE,
+            duplicateFrames: 0,
+            invalidFrames: 0,
+            ackSendFailures: 0,
+            rttStatsMs: { min: 0, median: 0, p90: 0 },
+            jitterMs: 0,
+            testId,
+            unavailable: true,
+            reason
+        };
     }
 
     /**
-     * Get the largest available profile from a profiles object
-     */
-    function getLargestProfile(profiles, allProfiles, maxBytes) {
-        // Prefer profiles that exist in the dynamic set, falling back to ALL_*_PROFILES
-        const available = Object.keys(profiles).length > 0 ? profiles : allProfiles;
-        let largest = null;
-        let largestBytes = 0;
-        for (const [name, cfg] of Object.entries(available)) {
-            if (cfg.bytes > maxBytes) continue;
-            if (cfg.bytes > largestBytes) {
-                largest = { name, bytes: cfg.bytes };
-                largestBytes = cfg.bytes;
-            }
-        }
-        return largest || { name: '1MB', bytes: 1000000 };
-    }
-
-    /**
-     * Run latency probes during download
-     */
-    async function runLatencyDuringDownload() {
-        // Use largest available profile to saturate connection
-        const profile = getLargestProfile(DOWNLOAD_PROFILES, ALL_DOWNLOAD_PROFILES, downloadTransferLimit());
-        if (!profile) throw new Error('No download profile is available for loaded-latency testing');
-        const downloadPromise = runDownload(profile.bytes, profile.name, 0, 'download');
-
-        // Run latency probes concurrently
-        const probePromises = [];
-        for (let i = 0; i < CONFIG.loadedLatencyProbes; i++) {
-            await sleep(200); // Stagger probes
-            if (abortController?.signal.aborted) break;
-            probePromises.push(runLatencyProbe('download', i).then(sample => {
-                results.latencySamples.push(sample);
-                if (callbacks.onLatencyProgress) {
-                    callbacks.onLatencyProgress('download', i + 1, CONFIG.loadedLatencyProbes, sample);
-                }
-                return sample;
-            }));
-        }
-
-        await Promise.all([downloadPromise, ...probePromises]);
-    }
-
-    /**
-     * Run latency probes during upload
-     */
-    async function runLatencyDuringUpload() {
-        // Use largest available profile to saturate connection
-        const profile = getLargestProfile(UPLOAD_PROFILES, ALL_UPLOAD_PROFILES, uploadTransferLimit());
-        if (!profile) throw new Error('No upload profile is available for loaded-latency testing');
-        const uploadPromise = runUpload(profile.bytes, profile.name, 0, 'upload');
-
-        // Run latency probes concurrently
-        const probePromises = [];
-        for (let i = 0; i < CONFIG.loadedLatencyProbes; i++) {
-            await sleep(200); // Stagger probes
-            if (abortController?.signal.aborted) break;
-            probePromises.push(runLatencyProbe('upload', i).then(sample => {
-                results.latencySamples.push(sample);
-                if (callbacks.onLatencyProgress) {
-                    callbacks.onLatencyProgress('upload', i + 1, CONFIG.loadedLatencyProbes, sample);
-                }
-                return sample;
-            }));
-        }
-
-        await Promise.all([uploadPromise, ...probePromises]);
-    }
-
-    /**
-     * Run packet loss test via WebRTC
+     * Run an exact 1,200-byte WebRTC packet test and reconcile client ACKs with
+     * the daemon's authoritative forward-path counters before accepting it.
      */
     async function runPacketLossTest() {
+        let pc = null;
+        let dc = null;
+        let actualSent = 0;
+        let acknowledgementCount = 0;
+        let testId;
+
         try {
-            // Fetch TURN credentials
-            const credResponse = await fetch('/api/turn/credentials', { credentials: 'include' });
-            if (!credResponse.ok) {
-                // TURN not configured - return unavailable result
-                const unavailableResult = {
-                    sent: 0,
-                    received: 0,
-                    lossPercent: null,
-                    rttStatsMs: { min: 0, median: 0, p90: 0 },
-                    jitterMs: 0,
-                    unavailable: true,
-                    reason: 'TURN server not configured'
-                };
-                results.packetLoss = unavailableResult;
-                return unavailableResult;
+            if (measurementProtocolVersion < REQUIRED_MEASUREMENT_PROTOCOL_VERSION ||
+                packetLossFrameVersion < REQUIRED_PACKET_LOSS_FRAME_VERSION) {
+                const result = unavailablePacketResult(
+                    `Server packet-loss protocol is too old (measurement ${measurementProtocolVersion}, frame ${packetLossFrameVersion})`
+                );
+                results.packetLoss = result;
+                return result;
             }
-            const turnCreds = await credResponse.json();
 
-            // Create RTCPeerConnection
-            // Separate STUN (no credentials) from TURN/TURNS (with credentials)
-            const iceServers = [];
-            const stunUrls = turnCreds.servers.filter(s => s.startsWith('stun:') || s.startsWith('stuns:'));
-            const turnUrls = turnCreds.servers.filter(s => s.startsWith('turn:') || s.startsWith('turns:'));
+            const credResponse = await fetch('/api/turn/credentials', {
+                credentials: 'include',
+                cache: 'no-store',
+                signal: abortController?.signal
+            });
+            if (!credResponse.ok) throw new Error(`TURN credentials failed: HTTP ${credResponse.status}`);
+            const credType = (credResponse.headers.get('Content-Type') || '').toLowerCase();
+            if (!credType.startsWith('application/json')) throw new Error('TURN credentials returned non-JSON data');
+            const turnCreds = await readJSONBody(credResponse, MAX_TURN_CREDENTIAL_BYTES);
+            const servers = Array.isArray(turnCreds.servers) ? turnCreds.servers : [];
+            const turnUrls = servers.filter(url => typeof url === 'string' && (url.startsWith('turn:') || url.startsWith('turns:')));
+            if (turnUrls.length === 0) throw new Error('TURN server not configured');
 
-            if (stunUrls.length > 0) {
-                iceServers.push({ urls: stunUrls });
-            }
-            if (turnUrls.length > 0) {
-                iceServers.push({
+            pc = new RTCPeerConnection({
+                iceServers: [{
                     urls: turnUrls,
                     username: turnCreds.username,
                     credential: turnCreds.credential
-                });
-            }
-
-            const pc = new RTCPeerConnection({
-                iceServers: iceServers,
-                iceTransportPolicy: 'all'
+                }],
+                iceTransportPolicy: 'relay'
             });
-
-            // Create data channel for packet loss test
-            const dc = pc.createDataChannel('packet-loss', {
-                ordered: false,
-                maxRetransmits: 0
-            });
-            // Use arraybuffer for synchronous decoding (avoids race condition with async Blob.text())
+            dc = pc.createDataChannel('packet-loss', { ordered: false, maxRetransmits: 0 });
             dc.binaryType = 'arraybuffer';
 
-            // Create offer and set local description to start ICE gathering
+            const sendTimes = new Map();
+            const acknowledgements = new Map();
+            const rttSamples = [];
+            dc.onmessage = event => {
+                try {
+                    const frame = decodePacketFrame(event.data);
+                    if (!frame.acknowledgement || !sendTimes.has(frame.sequence) || acknowledgements.has(frame.sequence)) return;
+                    acknowledgements.set(frame.sequence, frame);
+                    const rtt = Date.now() - sendTimes.get(frame.sequence);
+                    if (Number.isFinite(rtt) && rtt > 0 && rtt < 30000) rttSamples.push(rtt);
+                } catch (err) {
+                    console.warn('Ignoring invalid packet-loss acknowledgement:', err.message);
+                }
+            };
+
+            let rejectOpen;
+            const opened = new Promise((resolve, reject) => {
+                rejectOpen = reject;
+                const timeout = setTimeout(() => reject(new Error('ICE connection timeout')), 15000);
+                dc.onopen = () => { clearTimeout(timeout); resolve(); };
+                dc.onerror = () => { clearTimeout(timeout); reject(new Error('Data channel error')); };
+            });
+            pc.oniceconnectionstatechange = () => {
+                if (pc.iceConnectionState === 'failed' || pc.iceConnectionState === 'disconnected') {
+                    rejectOpen?.(new Error(`ICE connection ${pc.iceConnectionState}`));
+                }
+            };
+
             const offer = await pc.createOffer();
             await pc.setLocalDescription(offer);
-
-            // Now wait for ICE gathering to complete
             await new Promise((resolve, reject) => {
                 const timeout = setTimeout(() => reject(new Error('ICE gathering timeout')), 10000);
-
-                // Check if already complete
                 if (pc.iceGatheringState === 'complete') {
                     clearTimeout(timeout);
                     resolve();
                     return;
                 }
-
-                pc.onicecandidate = (event) => {
-                    if (event.candidate === null) {
-                        clearTimeout(timeout);
-                        resolve();
-                    }
-                };
-
-                pc.onicegatheringstatechange = () => {
+                const complete = () => {
                     if (pc.iceGatheringState === 'complete') {
                         clearTimeout(timeout);
                         resolve();
                     }
                 };
+                pc.onicecandidate = event => { if (event.candidate === null) complete(); };
+                pc.onicegatheringstatechange = complete;
             });
 
-            // Exchange SDP with server
             const offerResponse = await fetch('/api/packet-test/offer', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 credentials: 'include',
+                cache: 'no-store',
+                signal: abortController?.signal,
                 body: JSON.stringify({
                     sdp: pc.localDescription.sdp,
                     type: pc.localDescription.type,
-                    testProfile: 'loss-basic'
+                    testProfile: 'loss-exact-v1'
                 })
             });
+            if (!offerResponse.ok) throw new Error(`Packet test offer failed: HTTP ${offerResponse.status}`);
+            const offerType = (offerResponse.headers.get('Content-Type') || '').toLowerCase();
+            if (!offerType.startsWith('application/json')) throw new Error('Packet test offer returned non-JSON data');
+            const answer = await readJSONBody(offerResponse, MAX_SIGNALING_BODY_BYTES);
+            testId = answer.testId;
+            if (!testId || !answer.sdp || answer.type !== 'answer') throw new Error('Packet test offer returned an invalid answer');
+            await pc.setRemoteDescription({ sdp: answer.sdp, type: answer.type });
+            if (dc.readyState !== 'open') await opened;
 
-            if (!offerResponse.ok) {
-                throw new Error('Packet test offer failed');
-            }
-
-            const answer = await offerResponse.json();
-            await pc.setRemoteDescription(new RTCSessionDescription({
-                sdp: answer.sdp,
-                type: answer.type
-            }));
-
-            const testId = answer.testId;
-
-            // Wait for data channel to open with ICE connection monitoring
-            await new Promise((resolve, reject) => {
-                const timeout = setTimeout(() => reject(new Error('ICE connection timeout')), 15000);
-
-                // Monitor ICE connection state for failures
-                pc.oniceconnectionstatechange = () => {
-                    const state = pc.iceConnectionState;
-                    if (state === 'failed') {
-                        clearTimeout(timeout);
-                        reject(new Error('ICE connection failed'));
-                    } else if (state === 'disconnected') {
-                        // Give it a moment to recover before failing
-                        setTimeout(() => {
-                            if (pc.iceConnectionState === 'disconnected' || pc.iceConnectionState === 'failed') {
-                                clearTimeout(timeout);
-                                reject(new Error('ICE connection disconnected'));
-                            }
-                        }, 2000);
-                    }
-                };
-
-                if (dc.readyState === 'open') {
-                    clearTimeout(timeout);
-                    resolve();
-                } else {
-                    dc.onopen = () => {
-                        clearTimeout(timeout);
-                        resolve();
-                    };
-                    dc.onerror = (err) => {
-                        clearTimeout(timeout);
-                        reject(new Error('Data channel error: ' + (err.message || 'unknown')));
-                    };
-                }
-            });
-
-            // Run packet loss test
-            const N = CONFIG.packetLossPackets;
-            const acks = new Map();
-            const rttSamples = [];
-            let seq = 0;
-
-            const textDecoder = new TextDecoder();
-            dc.onmessage = (event) => {
+            for (let attempt = 0; attempt < CONFIG.packetLossPackets; attempt++) {
+                if (abortController?.signal.aborted) throw new DOMException('Aborted', 'AbortError');
+                const sentAt = Date.now();
+                // Number only successfully submitted probes. A local send
+                // failure is not network loss and must not create a sequence
+                // hole in the loss-pattern analysis.
+                const sequence = actualSent;
                 try {
-                    // Synchronously decode ArrayBuffer or handle string
-                    let data = event.data;
-                    if (data instanceof ArrayBuffer) {
-                        data = textDecoder.decode(data);
-                    }
-                    const msg = JSON.parse(data);
-                    if (typeof msg.ack === 'number' && typeof msg.receivedAt === 'number') {
-                        acks.set(msg.ack, msg.receivedAt);
-                        // Calculate RTT if we have the send time
-                        const sendTime = msg.sentAt;
-                        if (sendTime) {
-                            rttSamples.push(Date.now() - sendTime);
-                        }
-                    }
-                } catch (e) {
-                    console.log('Failed to parse ack:', event.data, e);
+                    dc.send(encodePacketFrame(sequence, sentAt, false, 0));
+                    sendTimes.set(sequence, sentAt);
+                    actualSent++;
+                } catch (_) {
+                    // A send failure is not counted as an on-wire probe.
                 }
-            };
-
-            // Send packets
-            await new Promise((resolve) => {
-                const interval = setInterval(() => {
-                    if (seq >= N || abortController?.signal.aborted) {
-                        clearInterval(interval);
-                        resolve();
-                        return;
-                    }
-
-                    const msg = {
-                        seq,
-                        sentAt: Date.now(),
-                        size: 1200
-                    };
-                    try {
-                        dc.send(JSON.stringify(msg));
-                    } catch (e) {
-                        // Channel may have closed
-                    }
-                    seq++;
-
-                    if (callbacks.onPacketLossProgress) {
-                        callbacks.onPacketLossProgress(seq, N, acks.size);
-                    }
-                }, CONFIG.packetLossInterval);
-            });
-
-            // Wait for late acks
+                if (callbacks.onPacketLossProgress) {
+                    callbacks.onPacketLossProgress(attempt + 1, CONFIG.packetLossPackets, acknowledgements.size);
+                }
+                await sleep(CONFIG.packetLossInterval);
+            }
+            if (actualSent === 0) throw new Error('No exact-size packet probes were sent');
             await sleep(CONFIG.packetLossExtraWait);
 
-            // Calculate results
-            const sent = N;
-            const received = acks.size;
-            const lossPercent = ((sent - received) / sent) * 100;
+            acknowledgementCount = acknowledgements.size;
+            const transactionLoss = calculateLossPercent(actualSent, acknowledgementCount);
+            const cleanedRTT = cleanMeasurements(rttSamples);
+            const rttStats = {
+                min: percentile(cleanedRTT, 0),
+                median: percentile(cleanedRTT, 50),
+                p90: percentile(cleanedRTT, 90)
+            };
+            const jitterMs = jitter(cleanedRTT);
 
-            console.log('Packet loss test results:', {
-                sent,
-                received,
-                lossPercent: lossPercent.toFixed(2) + '%',
-                rttSamplesCount: rttSamples.length,
-                rttSamplesSlice: rttSamples.slice(0, 5)
-            });
-
-            // Detect if this looks like a connection failure rather than actual packet loss
-            // Check if responses suddenly stopped (connection died) vs random loss throughout
-            let likelyConnectionIssue = false;
-            let connectionIssueReason = '';
-
-            if (received === 0) {
-                // No responses at all - definitely a connection issue
-                likelyConnectionIssue = true;
-                connectionIssueReason = 'No responses received - connection failed';
-            } else if (lossPercent > 10) {
-                // Check the pattern: did responses stop after some point?
-                // Get the highest sequence number that got an ack
-                const ackedSeqs = Array.from(acks.keys()).sort((a, b) => a - b);
-                const maxAckedSeq = ackedSeqs[ackedSeqs.length - 1];
-                const minAckedSeq = ackedSeqs[0];
-
-                // If we got acks for early packets but not late ones, connection likely died
-                // Check what % of the last 20% of packets got acks
-                const lateThreshold = Math.floor(sent * 0.8);
-                const lateAcks = ackedSeqs.filter(seq => seq >= lateThreshold).length;
-                const expectedLateAcks = sent - lateThreshold;
-                const lateAckPercent = (lateAcks / expectedLateAcks) * 100;
-
-                // If we got less than 50% of the late packets but more than 80% of early ones,
-                // it's likely the connection died partway through
-                const earlyAcks = ackedSeqs.filter(seq => seq < lateThreshold).length;
-                const earlyAckPercent = (earlyAcks / lateThreshold) * 100;
-
-                console.log('Packet loss pattern analysis:', {
-                    earlyAckPercent: earlyAckPercent.toFixed(1) + '%',
-                    lateAckPercent: lateAckPercent.toFixed(1) + '%',
-                    maxAckedSeq,
-                    totalSent: sent
-                });
-
-                if (earlyAckPercent > 80 && lateAckPercent < 50) {
-                    likelyConnectionIssue = true;
-                    connectionIssueReason = `Connection died mid-test - last response at packet ${maxAckedSeq}/${sent}`;
-                } else if (lossPercent > 50) {
-                    // Very high loss throughout - something is wrong
-                    likelyConnectionIssue = true;
-                    connectionIssueReason = `Connection unstable - received only ${received}/${sent} responses`;
-                }
-            }
-
-            if (likelyConnectionIssue) {
-                console.warn('Packet loss test:', connectionIssueReason);
-                const unavailableResult = {
-                    sent,
-                    received,
-                    lossPercent: null,
-                    rttStatsMs: { min: 0, median: 0, p90: 0 },
-                    jitterMs: 0,
-                    unavailable: true,
-                    reason: connectionIssueReason
-                };
-                results.packetLoss = unavailableResult;
-
-                // Clean up
-                dc.close();
-                pc.close();
-                return unavailableResult;
-            }
-
-            // Calculate RTT stats
-            rttSamples.sort((a, b) => a - b);
-            const rttMin = rttSamples.length > 0 ? rttSamples[0] : 0;
-            const rttMedian = rttSamples.length > 0 ? rttSamples[Math.floor(rttSamples.length / 2)] : 0;
-            const rttP90 = rttSamples.length > 0 ? rttSamples[Math.floor(rttSamples.length * 0.9)] : 0;
-
-            // Calculate jitter (average deviation from mean)
-            let jitterMs = 0;
-            if (rttSamples.length > 1) {
-                const mean = rttSamples.reduce((a, b) => a + b, 0) / rttSamples.length;
-                jitterMs = rttSamples.reduce((sum, rtt) => sum + Math.abs(rtt - mean), 0) / rttSamples.length;
-            }
-
-            // Collect data channel stats before closing
             results.dataChannelStats = await collectDataChannelStats(pc);
+            results.lossPattern = analyzeLossPattern(actualSent, acknowledgements);
 
-            // Analyze loss pattern
-            results.lossPattern = analyzeLossPattern(sent, acks);
+            const reportResponse = await fetch('/api/packet-test/report', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                credentials: 'include',
+                cache: 'no-store',
+                signal: abortController?.signal,
+                body: JSON.stringify({
+                    testId,
+                    sent: actualSent,
+                    received: acknowledgementCount,
+                    lossPercent: transactionLoss,
+                    rttMinMs: rttStats.min,
+                    rttMedianMs: rttStats.median,
+                    rttP90Ms: rttStats.p90,
+                    jitterMs
+                })
+            });
+            if (!reportResponse.ok) throw new Error(`Packet report failed: HTTP ${reportResponse.status}`);
+            const reportType = (reportResponse.headers.get('Content-Type') || '').toLowerCase();
+            if (!reportType.startsWith('application/json')) throw new Error('Packet report returned non-JSON data');
+            const report = await readJSONBody(reportResponse, MAX_PACKET_REPORT_BYTES);
+            if (!report.ok || report.protocolVersion < REQUIRED_MEASUREMENT_PROTOCOL_VERSION ||
+                report.frameSizeBytes !== PACKET_FRAME_SIZE) {
+                throw new Error('Packet report did not satisfy the exact-frame protocol');
+            }
+            validatePacketReport(report, actualSent, acknowledgementCount);
+
+            const forwardReceived = report.forwardReceived;
+            const acknowledgementsSent = report.acknowledgementsSent;
+            const acknowledgementsReceived = acknowledgementCount;
+            const forwardLoss = calculateLossPercent(actualSent, forwardReceived);
+            const reverseLoss = acknowledgementsSent > 0
+                ? calculateLossPercent(acknowledgementsSent, acknowledgementsReceived)
+                : null;
 
             const result = {
-                sent,
-                received,
-                lossPercent,
-                rttStatsMs: {
-                    min: rttMin,
-                    median: rttMedian,
-                    p90: rttP90
-                },
+                sent: actualSent,
+                received: acknowledgementCount,
+                lossPercent: transactionLoss,
+                transactionLossPercent: transactionLoss,
+                forwardSent: actualSent,
+                forwardReceived,
+                forwardLossPercent: forwardLoss,
+                acknowledgementsSent,
+                acknowledgementsReceived,
+                reverseAcknowledgementLossPercent: reverseLoss,
+                frameSizeBytes: report.frameSizeBytes,
+                duplicateFrames: Math.max(0, Number(report.duplicateFrames) || 0),
+                invalidFrames: Math.max(0, Number(report.invalidFrames) || 0),
+                ackSendFailures: Math.max(0, Number(report.ackSendFailures) || 0),
+                rttStatsMs: rttStats,
                 jitterMs,
                 testId
             };
-
             results.packetLoss = result;
-
-            // Clean up
-            dc.close();
-            pc.close();
-
-            // Report results (optional)
-            try {
-                await fetch('/api/packet-test/report', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({
-                        testId,
-                        sent,
-                        received,
-                        lossPercent,
-                        rttMinMs: rttMin,
-                        rttMedianMs: rttMedian,
-                        rttP90Ms: rttP90,
-                        jitterMs
-                    })
-                });
-            } catch (e) {
-                // Ignore report failures
-            }
-
             return result;
         } catch (err) {
+            if (err?.name === 'AbortError') throw err;
             console.error('Packet loss test failed:', err);
-
-            // Determine reason for failure
-            let reason = 'WebRTC connection failed';
-            if (err.message?.includes('ICE connection timeout')) {
-                reason = 'ICE connection timeout';
-            } else if (err.message?.includes('ICE connection failed')) {
-                reason = 'ICE connection failed';
-            } else if (err.message?.includes('ICE connection disconnected')) {
-                reason = 'ICE connection disconnected';
-            } else if (err.message?.includes('ICE gathering timeout')) {
-                reason = 'ICE gathering timeout';
-            } else if (err.message?.includes('Data channel error')) {
-                reason = 'Data channel error';
-            } else if (err.message?.includes('offer failed')) {
-                reason = 'Server rejected connection';
-            }
-
-            const unavailableResult = {
-                sent: 0,
-                received: 0,
-                lossPercent: null,
-                rttStatsMs: { min: 0, median: 0, p90: 0 },
-                jitterMs: 0,
-                unavailable: true,
-                reason: reason
-            };
-            results.packetLoss = unavailableResult;
-
-            if (callbacks.onError) {
-                callbacks.onError('packetLoss', null, null, err);
-            }
-            return unavailableResult;
+            const result = unavailablePacketResult(
+                err?.message || 'WebRTC packet test failed',
+                actualSent,
+                acknowledgementCount,
+                testId
+            );
+            results.packetLoss = result;
+            if (callbacks.onError) callbacks.onError('packetLoss', null, null, err);
+            return result;
+        } finally {
+            try { dc?.close(); } catch (_) {}
+            try { pc?.close(); } catch (_) {}
         }
     }
 
+    function throughputValues(samples, direction) {
+        const windows = [];
+        const fallback = [];
+        for (const sample of samples) {
+            if (sample.direction !== direction || !Number.isFinite(sample.mbps) ||
+                sample.mbps <= 0 || sample.durationMs < 10) continue;
+            fallback.push(sample.mbps);
+            if (sample.sampleKind === 'window' || sample.profile === 'window') windows.push(sample.mbps);
+        }
+        return filterOutliers(windows.length > 0 ? windows : fallback);
+    }
+
+    function latencyValues(samples, phase, requireOverlap = false) {
+        const values = [];
+        for (const sample of samples) {
+            if (sample.phase !== phase || (requireOverlap && sample.loadOverlapped !== true)) continue;
+            values.push(sample.rttMs);
+        }
+        return values;
+    }
+
     /**
-     * Calculate summary statistics
+     * Calculate the same R-7/IQR summary as the Go client. Baselines tune the
+     * window plan but never bias headline throughput when window samples exist.
      */
     function calculateSummary() {
-        // Filter throughput samples by minimum duration for accurate timing.
-        // Samples under 10ms are too short for reliable speed calculation
-        // due to timing resolution limits.
-        const MIN_DURATION_MS = 10;
-
-        const dlSamples = results.throughputSamples
-            .filter(s => s.direction === 'download' && s.durationMs >= MIN_DURATION_MS)
-            .map(s => s.mbps);
-        const ulSamples = results.throughputSamples
-            .filter(s => s.direction === 'upload' && s.durationMs >= MIN_DURATION_MS)
-            .map(s => s.mbps);
-
-        console.log('Throughput filtering:', {
-            dlTotal: results.throughputSamples.filter(s => s.direction === 'download').length,
-            dlAfterFilter: dlSamples.length,
-            ulTotal: results.throughputSamples.filter(s => s.direction === 'upload').length,
-            ulAfterFilter: ulSamples.length
-        });
-
-        // Get all unloaded latency samples, then skip the first 2 which often have
-        // cold-start overhead (connection setup, TLS, etc) that skews jitter
-        const allLatUnloaded = results.latencySamples
-            .filter(s => s.phase === 'unloaded')
-            .map(s => s.rttMs);
-        const latUnloadedRaw = allLatUnloaded.slice(2); // Skip first 2 probes
-
-        // Filter outliers using IQR method to remove browser timing artifacts
-        const latUnloaded = filterOutliers(latUnloadedRaw);
-
-        const latDownload = results.latencySamples
-            .filter(s => s.phase === 'download')
-            .map(s => s.rttMs);
-        const latUpload = results.latencySamples
-            .filter(s => s.phase === 'upload')
-            .map(s => s.rttMs);
-
-        console.log('Sample counts:', {
-            downloads: dlSamples.length,
-            uploads: ulSamples.length,
-            latencyUnloaded: latUnloaded.length,
-            packetLoss: results.packetLoss
-        });
-        console.log('Sample values:', {
-            dlSamples: dlSamples.slice(0, 5),
-            ulSamples: ulSamples.slice(0, 5),
-            latUnloaded: latUnloaded.slice(0, 5)
-        });
+        const download = throughputValues(results.throughputSamples, 'download');
+        const upload = throughputValues(results.throughputSamples, 'upload');
+        const unloaded = prepareLatency(latencyValues(results.latencySamples, 'unloaded'), 2);
+        const downloadLoaded = filterOutliers(latencyValues(results.latencySamples, 'download', true));
+        const uploadLoaded = filterOutliers(latencyValues(results.latencySamples, 'upload', true));
+        const transactionLoss = results.packetLoss && !results.packetLoss.unavailable
+            ? Number(results.packetLoss.transactionLossPercent ?? results.packetLoss.lossPercent)
+            : null;
 
         return {
-            downloadMbps: percentileOrNull(dlSamples, 90),
-            uploadMbps: percentileOrNull(ulSamples, 90),
-            latencyUnloadedMs: percentileOrNull(latUnloaded, 50),
-            latencyDownloadMs: percentileOrNull(latDownload, 90),
-            latencyUploadMs: percentileOrNull(latUpload, 90),
-            jitterMs: latUnloaded.length > 0
-                ? percentile(latUnloaded, 90) - percentile(latUnloaded, 50)
-                : null,
-            packetLossPercent: results.packetLoss && !results.packetLoss.unavailable &&
-                Number.isFinite(results.packetLoss.lossPercent)
-                ? results.packetLoss.lossPercent
-                : null
+            downloadMbps: percentile(download, 90),
+            uploadMbps: percentile(upload, 90),
+            latencyUnloadedMs: percentile(unloaded, 50),
+            latencyDownloadMs: percentile(downloadLoaded, 90),
+            latencyUploadMs: percentile(uploadLoaded, 90),
+            jitterMs: jitter(unloaded),
+            packetLossPercent: Number.isFinite(transactionLoss) ? transactionLoss : null
         };
     }
 
@@ -1539,8 +1497,12 @@ const SpeedTest = (function() {
     }
 
     function gradeStreaming(s) {
-        const { downloadMbps: dl, latencyUnloadedMs: lat, jitterMs: jit, packetLossPercent: loss } = s;
-        if (![dl, lat, jit, loss].every(Number.isFinite)) return 'N/A';
+        if (!Number.isFinite(s.packetLossPercent)) return 'Incomplete';
+        // Ensure we have valid numbers (NaN comparisons always return false)
+        const dl = s.downloadMbps || 0;
+        const lat = isNaN(s.latencyUnloadedMs) ? 999 : s.latencyUnloadedMs;
+        const jit = isNaN(s.jitterMs) ? 999 : s.jitterMs;
+        const loss = s.packetLossPercent;
 
         if (dl >= 50 && lat <= 25 && jit <= 5 && loss <= 0.5) return 'Great';
         if (dl >= 20 && lat <= 50 && jit <= 15 && loss <= 1.5) return 'Good';
@@ -1549,83 +1511,88 @@ const SpeedTest = (function() {
     }
 
     function gradeGaming(s) {
+        if (!Number.isFinite(s.packetLossPercent)) return 'Incomplete';
         // Gaming requires low latency and jitter
-        const { downloadMbps: dl, latencyUnloadedMs: lat, jitterMs: jit, packetLossPercent: loss } = s;
-        if (![dl, lat, jit, loss].every(Number.isFinite)) return 'N/A';
+        const dl = s.downloadMbps || 0;
+        const lat = isNaN(s.latencyUnloadedMs) ? 999 : s.latencyUnloadedMs;
+        const jit = isNaN(s.jitterMs) ? 999 : s.jitterMs;
+        const loss = s.packetLossPercent;
 
-        if (dl >= 25 && lat <= 20 && jit <= 3 && loss <= 0.1) return 'Great';
+        if (dl >= 25 && lat <= 20 && jit <= 5 && loss <= 0.1) return 'Great';
         if (dl >= 15 && lat <= 40 && jit <= 10 && loss <= 0.5) return 'Good';
-        if (dl >= 5 && lat <= 80 && jit <= 20 && loss <= 2) return 'Okay';
+        if (dl >= 5 && lat <= 80 && jit <= 20 && loss <= 1) return 'Okay';
         return 'Poor';
     }
 
     function gradeVideoChatting(s) {
+        if (!Number.isFinite(s.packetLossPercent)) return 'Incomplete';
         // Video chat needs good upload and low latency
-        const dl = s.downloadMbps;
-        const ul = s.uploadMbps;
-        const lat = s.latencyUnloadedMs;
-        const jit = s.jitterMs;
+        const dl = s.downloadMbps || 0;
+        const ul = s.uploadMbps || 0;
+        const lat = isNaN(s.latencyUnloadedMs) ? 999 : s.latencyUnloadedMs;
+        const jit = isNaN(s.jitterMs) ? 999 : s.jitterMs;
         const loss = s.packetLossPercent;
-        if (![dl, ul, lat, jit, loss].every(Number.isFinite)) return 'N/A';
-        const minSpeed = Math.min(dl, ul);
 
-        if (minSpeed >= 10 && lat <= 30 && jit <= 5 && loss <= 0.5) return 'Great';
-        if (minSpeed >= 5 && lat <= 50 && jit <= 15 && loss <= 1) return 'Good';
-        if (minSpeed >= 2 && lat <= 100 && jit <= 30 && loss <= 3) return 'Okay';
+        if (dl >= 10 && ul >= 5 && lat <= 50 && jit <= 10 && loss <= 1) return 'Great';
+        if (dl >= 5 && ul >= 2 && lat <= 100 && jit <= 20 && loss <= 2) return 'Good';
+        if (dl >= 2 && ul >= 1 && lat <= 150 && jit <= 40 && loss <= 5) return 'Okay';
         return 'Poor';
     }
 
-    /**
-     * Helper: Calculate percentile
-     */
-    function percentile(arr, p) {
-        if (arr.length === 0) return 0;
-        const sorted = [...arr].sort((a, b) => a - b);
-        const idx = Math.ceil((p / 100) * sorted.length) - 1;
-        return sorted[Math.max(0, idx)];
+    function cleanMeasurements(values) {
+        return values.filter(value => Number.isFinite(value) && value > 0);
     }
 
-    function percentileOrNull(arr, p) {
-        return arr.length === 0 ? null : percentile(arr, p);
+    function dropWarmup(values, count) {
+        const clean = cleanMeasurements(values);
+        if (count <= 0) return clean;
+        if (count >= clean.length) return [];
+        return clean.slice(count);
     }
 
-    /**
-     * Helper: Filter outliers using IQR method
-     * Removes values that are more than 1.5*IQR below Q1 or above Q3
-     * This helps remove browser timing artifacts from latency measurements
-     */
-    function filterOutliers(arr) {
-        if (arr.length < 4) return arr; // Need enough samples for IQR
+    /** R-7 linear interpolation: rank = p/100 * (n-1). */
+    function percentile(values, p) {
+        const sorted = cleanMeasurements(values).sort((a, b) => a - b);
+        if (sorted.length === 0) return 0;
+        if (p <= 0) return sorted[0];
+        if (p >= 100) return sorted[sorted.length - 1];
+        const rank = (p / 100) * (sorted.length - 1);
+        const lower = Math.floor(rank);
+        const upper = Math.ceil(rank);
+        if (lower === upper) return sorted[lower];
+        const weight = rank - lower;
+        return sorted[lower] + (sorted[upper] - sorted[lower]) * weight;
+    }
 
-        const sorted = [...arr].sort((a, b) => a - b);
-        const q1 = sorted[Math.floor(sorted.length * 0.25)];
-        const q3 = sorted[Math.floor(sorted.length * 0.75)];
+    /** Conservative 1.5-IQR filter, retaining input if removal is destructive. */
+    function filterOutliers(values) {
+        const clean = cleanMeasurements(values);
+        if (clean.length < 4) return clean;
+        const q1 = percentile(clean, 25);
+        const q3 = percentile(clean, 75);
         const iqr = q3 - q1;
-
         const lower = q1 - 1.5 * iqr;
         const upper = q3 + 1.5 * iqr;
+        const filtered = clean.filter(value => value >= lower && value <= upper);
+        return filtered.length * 2 < clean.length ? clean : filtered;
+    }
 
-        const filtered = arr.filter(v => v >= lower && v <= upper);
+    function prepareLatency(values, warmupCount) {
+        return filterOutliers(dropWarmup(values, warmupCount));
+    }
 
-        // If we filtered too much, return original to avoid empty/skewed results
-        if (filtered.length < arr.length * 0.5) {
-            console.log('Outlier filter removed too many samples, using original', {
-                original: arr.length,
-                filtered: filtered.length,
-                q1, q3, iqr, lower, upper
-            });
-            return arr;
-        }
+    function jitter(values) {
+        const clean = cleanMeasurements(values);
+        return clean.length === 0 ? 0 : percentile(clean, 90) - percentile(clean, 50);
+    }
 
-        if (filtered.length < arr.length) {
-            console.log('Filtered outliers from latency samples:', {
-                original: arr.length,
-                filtered: filtered.length,
-                removed: arr.filter(v => v < lower || v > upper)
-            });
-        }
-
-        return filtered;
+    function coefficientOfVariation(values) {
+        const clean = cleanMeasurements(values);
+        if (clean.length < 2) return 0;
+        const mean = clean.reduce((sum, value) => sum + value, 0) / clean.length;
+        if (mean <= 0) return 0;
+        const squared = clean.reduce((sum, value) => sum + (value - mean) ** 2, 0);
+        return Math.sqrt(squared / clean.length) / mean * 100;
     }
 
     /**
@@ -1717,14 +1684,26 @@ const SpeedTest = (function() {
      * Estimate bandwidth from samples
      */
     function estimateBandwidth(samples) {
-        // Single pass to separate download/upload samples
-        const dlSamples = [];
-        const ulSamples = [];
+        // Prefer sustained-window samples. Baselines exist only to size the
+        // windows and can be dominated by setup timing on fast links.
+        const dlWindows = [];
+        const ulWindows = [];
+        const dlFallback = [];
+        const ulFallback = [];
         for (let i = 0; i < samples.length; i++) {
-            const s = samples[i];
-            if (s.direction === 'download') dlSamples.push(s.mbps);
-            else if (s.direction === 'upload') ulSamples.push(s.mbps);
+            const sample = samples[i];
+            if (!Number.isFinite(sample.mbps) || sample.mbps <= 0) continue;
+            const isWindow = sample.sampleKind === 'window' || sample.profile === 'window';
+            if (sample.direction === 'download') {
+                dlFallback.push(sample.mbps);
+                if (isWindow) dlWindows.push(sample.mbps);
+            } else if (sample.direction === 'upload') {
+                ulFallback.push(sample.mbps);
+                if (isWindow) ulWindows.push(sample.mbps);
+            }
         }
+        const dlSamples = dlWindows.length > 0 ? dlWindows : dlFallback;
+        const ulSamples = ulWindows.length > 0 ? ulWindows : ulFallback;
 
         function stats(arr) {
             if (arr.length === 0) return { peak: 0, sustained: 0, variability: 0, trend: 'stable' };
@@ -1798,15 +1777,17 @@ const SpeedTest = (function() {
             return null;
         }
 
-        const downloadMbps = summary.downloadMbps;
-        const latencyMs = summary.latencyUnloadedMs;
-        const jitterMs = summary.jitterMs;
-        const packetLossPercent = summary.packetLossPercent;
-        const downloadVariability = bandwidth.downloadVariability;
-        if (![downloadMbps, latencyMs, jitterMs, packetLossPercent, downloadVariability].every(Number.isFinite)) {
-            console.warn('calculateNetworkQualityScore: incomplete measurements');
+        if (!Number.isFinite(summary.packetLossPercent)) {
+            console.warn('calculateNetworkQualityScore: packet loss unavailable');
             return null;
         }
+
+        // Ensure we have valid numbers (default to safe values if NaN/undefined)
+        const downloadMbps = summary.downloadMbps || 0;
+        const latencyMs = isNaN(summary.latencyUnloadedMs) ? 50 : summary.latencyUnloadedMs;
+        const jitterMs = isNaN(summary.jitterMs) ? 10 : summary.jitterMs;
+        const packetLossPercent = summary.packetLossPercent;
+        const downloadVariability = isNaN(bandwidth.downloadVariability) ? 0.1 : bandwidth.downloadVariability;
 
         // Bandwidth score (0-100)
         const bwScore = Math.min(100,
@@ -1862,92 +1843,110 @@ const SpeedTest = (function() {
         };
     }
 
-    /**
-     * Assess test confidence
-     */
-    function assessTestConfidence(samples, latency, packetLoss) {
+    function countWindows(samples, direction) {
+        return samples.filter(sample => sample.direction === direction &&
+            (sample.sampleKind === 'window' || sample.profile === 'window')).length;
+    }
+
+    function countLatency(samples, phase, overlapOnly = false) {
+        return samples.filter(sample => sample.phase === phase &&
+            (!overlapOnly || sample.loadOverlapped === true)).length;
+    }
+
+    function hasImpreciseTiming(samples, latency) {
+        for (const sample of samples) {
+            if (sample.sampleKind === 'window' && sample.timingSource !== 'aggregate-wall-clock') return true;
+        }
+        for (const sample of latency) {
+            if (sample.timingSource && sample.timingSource !== 'resource-timing') return true;
+            if (sample.loadOverlapped && sample.loadTrackingAccurate === false) return true;
+        }
+        return false;
+    }
+
+    /** Five visible gates, matching the Go client and its deductions. */
+    function assessTestConfidence(samples, latency, packetLoss, options = {}) {
+        const downloadExpected = options.downloadExpected !== false;
+        const uploadExpected = options.uploadExpected !== false;
         const warnings = [];
 
-        // Single pass to collect samples by direction
-        const dlMbps = [];
-        const ulMbps = [];
-        for (let i = 0; i < samples.length; i++) {
-            const s = samples[i];
-            if (s.direction === 'download') dlMbps.push(s.mbps);
-            else if (s.direction === 'upload') ulMbps.push(s.mbps);
-        }
+        const downloadValues = throughputValues(samples, 'download');
+        const uploadValues = throughputValues(samples, 'upload');
+        const unloadedValues = prepareLatency(latencyValues(latency, 'unloaded'), 2);
+        const downloadWindows = countWindows(samples, 'download');
+        const uploadWindows = countWindows(samples, 'upload');
+        const unloadedCount = countLatency(latency, 'unloaded');
+        const downloadLoaded = countLatency(latency, 'download', true);
+        const uploadLoaded = countLatency(latency, 'upload', true);
 
-        // Single pass for latency
-        const latRtt = [];
-        for (let i = 0; i < latency.length; i++) {
-            if (latency[i].phase === 'unloaded') latRtt.push(latency[i].rttMs);
-        }
+        let sampleAdequate = unloadedCount >= 10;
+        if (downloadExpected) sampleAdequate = sampleAdequate && downloadWindows >= 3 && downloadLoaded >= 3;
+        if (uploadExpected) sampleAdequate = sampleAdequate && uploadWindows >= 3 && uploadLoaded >= 3;
 
-        const dlCount = dlMbps.length;
-        const ulCount = ulMbps.length;
-        const latCount = latRtt.length;
-        const sampleAdequate = dlCount >= 20 && ulCount >= 15 && latCount >= 10;
-        if (!sampleAdequate) warnings.push('Insufficient samples for high confidence');
+        const downloadCV = coefficientOfVariation(downloadValues);
+        const uploadCV = coefficientOfVariation(uploadValues);
+        const latencyCV = coefficientOfVariation(unloadedValues);
+        let variabilityAcceptable = latencyCV < 50;
+        if (downloadExpected) variabilityAcceptable = variabilityAcceptable && downloadCV < 30;
+        if (uploadExpected) variabilityAcceptable = variabilityAcceptable && uploadCV < 30;
 
-        // Coefficient of variation with single pass
-        function cv(arr) {
-            const n = arr.length;
-            if (n < 2) return 0;
-            let sum = 0;
-            for (let i = 0; i < n; i++) sum += arr[i];
-            const mean = sum / n;
-            let sumSqDiff = 0;
-            for (let i = 0; i < n; i++) {
-                const diff = arr[i] - mean;
-                sumSqDiff += diff * diff;
-            }
-            const std = Math.sqrt(sumSqDiff / n);
-            return mean > 0 ? (std / mean) * 100 : 0;
-        }
+        let overlapComplete = true;
+        if (downloadExpected) overlapComplete = overlapComplete && downloadLoaded >= 3;
+        if (uploadExpected) overlapComplete = overlapComplete && uploadLoaded >= 3;
+        const packetComplete = packetLoss !== null && packetLoss !== undefined && !packetLoss.unavailable &&
+            Number.isFinite(packetLoss.forwardLossPercent) &&
+            Number.isFinite(packetLoss.reverseAcknowledgementLossPercent) &&
+            Number(packetLoss.acknowledgementsSent) > 0;
+        const timingAccurate = !hasImpreciseTiming(samples, latency);
 
-        const dlCV = cv(dlMbps);
-        const ulCV = cv(ulMbps);
-        const latCV = cv(latRtt);
-        const cvAcceptable = dlCV < 30 && ulCV < 30 && latCV < 50;
-        if (!cvAcceptable) warnings.push('High variability in measurements');
-
-        // Connection stability
-        const connectionStable = packetLoss !== null && !packetLoss.unavailable;
-        if (!connectionStable) warnings.push('Packet loss test incomplete');
-
-        // Timing accuracy
-        const timingAccurate = resourceTimingUsed && timingFallbackCount < 5;
-        if (!timingAccurate && timingFallbackCount > 0) {
-            warnings.push('Some timing measurements used fallback methods');
-        }
-
-        // Overall score (4 factors: sample count, variability, connection stability, timing)
         let score = 100;
-        if (!sampleAdequate) score -= 25;
-        if (!cvAcceptable) score -= 35;
-        if (!connectionStable) score -= 20;
-        if (!timingAccurate) score -= 10;
-
-        let overall;
-        if (score >= 80) overall = 'high';
-        else if (score >= 50) overall = 'medium';
-        else overall = 'low';
+        if (!sampleAdequate) {
+            score -= 20;
+            warnings.push('Insufficient fixed-window or latency samples for high confidence');
+        }
+        if (!variabilityAcceptable) {
+            score -= 25;
+            warnings.push('High variability in measurements');
+        }
+        if (!overlapComplete) {
+            score -= 25;
+            warnings.push('Loaded-latency overlap was incomplete');
+        }
+        if (!packetComplete) {
+            score -= 20;
+            warnings.push('Directional packet-loss test incomplete');
+        }
+        if (!timingAccurate) {
+            score -= 10;
+            warnings.push('Some measurements used fallback timing');
+        }
+        score = Math.max(0, score);
 
         return {
-            overall,
-            overallScore: Math.max(0, score),
+            overall: score >= 80 ? 'high' : score >= 50 ? 'medium' : 'low',
+            overallScore: score,
             metrics: {
-                sampleCount: { download: dlCount, upload: ulCount, latency: latCount, adequate: sampleAdequate },
-                coefficientOfVariation: { download: dlCV, upload: ulCV, latency: latCV, acceptable: cvAcceptable },
-                timingAccuracy: {
-                    resourceTimingUsed: resourceTimingUsed,
-                    fallbackCount: timingFallbackCount,
-                    accurate: timingAccurate
+                sampleCount: {
+                    downloadWindows,
+                    uploadWindows,
+                    unloadedLatency: unloadedCount,
+                    downloadLoadedLatency: downloadLoaded,
+                    uploadLoadedLatency: uploadLoaded,
+                    adequate: sampleAdequate
                 },
-                connectionStability: {
-                    packetTestCompleted: connectionStable,
-                    stable: connectionStable
-                }
+                coefficientOfVariation: {
+                    download: downloadCV,
+                    upload: uploadCV,
+                    latency: latencyCV,
+                    acceptable: variabilityAcceptable
+                },
+                loadedOverlap: {
+                    downloadAccepted: downloadLoaded,
+                    uploadAccepted: uploadLoaded,
+                    complete: overlapComplete
+                },
+                timingAccuracy: { accurate: timingAccurate },
+                packetTest: { completed: packetComplete }
             },
             warnings
         };
@@ -2073,13 +2072,17 @@ const SpeedTest = (function() {
         abortController = new AbortController();
         timingFallbackCount = 0;
         resourceTimingUsed = false;
+        delete DOWNLOAD_PROFILES.window;
+        delete UPLOAD_PROFILES.window;
 
         // Increase Resource Timing buffer to handle all our requests
         // Default is 150-250 entries which may not be enough
         if (typeof performance.setResourceTimingBufferSize === 'function') {
             performance.setResourceTimingBufferSize(500);
         }
-        performance.clearResourceTimings();
+        if (typeof performance.clearResourceTimings === 'function') {
+            performance.clearResourceTimings();
+        }
 
         // Reset results
         results = {
@@ -2109,6 +2112,24 @@ const SpeedTest = (function() {
             results.meta = meta;
             results.locations = locations;
 
+            if (Number.isSafeInteger(meta.maxTransferBytes) && meta.maxTransferBytes > 0) {
+                serverMaxTransferBytes = meta.maxTransferBytes;
+            } else {
+                serverMaxTransferBytes = LEGACY_SERVER_TRANSFER_LIMIT_BYTES;
+            }
+            measurementProtocolVersion = Number(meta.measurementProtocolVersion) || 0;
+            uploadReceiptVersion = Number(meta.uploadReceiptVersion) || 0;
+            packetLossFrameVersion = Number(meta.packetLossFrameVersion) || 0;
+            if (serverMaxTransferBytes < ALL_DOWNLOAD_PROFILES['1MB'].bytes) {
+                throw new Error(`Server transfer limit ${serverMaxTransferBytes} is below the 1MB baseline profile`);
+            }
+            if (measurementProtocolVersion < REQUIRED_MEASUREMENT_PROTOCOL_VERSION) {
+                throw new Error(`Server measurement protocol ${measurementProtocolVersion} is too old; need version ${REQUIRED_MEASUREMENT_PROTOCOL_VERSION}`);
+            }
+            if (uploadReceiptVersion < REQUIRED_UPLOAD_RECEIPT_VERSION) {
+                throw new Error(`Server does not support verified upload receipts (need version ${REQUIRED_UPLOAD_RECEIPT_VERSION})`);
+            }
+
             if (callbacks.onMetaReceived) {
                 callbacks.onMetaReceived(meta, locations);
             }
@@ -2129,10 +2150,9 @@ const SpeedTest = (function() {
             if (callbacks.onProgress) callbacks.onProgress('upload', 0);
             await runUploadTests();
 
-            // Run loaded latency tests
-            if (callbacks.onProgress) callbacks.onProgress('loaded-latency', 0);
-            await runLatencyDuringDownload();
-            await runLatencyDuringUpload();
+            // Loaded latency probes run inside the middle sustained download
+            // and upload windows. There is deliberately no post-load probe phase.
+            if (callbacks.onProgress) callbacks.onProgress('loaded-latency', 100);
 
             // Run packet loss test
             if (callbacks.onProgress) callbacks.onProgress('packet-loss', 0);
@@ -2232,13 +2252,16 @@ const SpeedTest = (function() {
             throughputSamples: results.throughputSamples,
             latencySamples: results.latencySamples,
             packetLoss: results.packetLoss,
+            bandwidthEstimate: results.bandwidthEstimate,
+            networkQualityScore: results.networkQualityScore,
+            testConfidence: results.testConfidence,
             startTime: results.startTime,
             endTime: results.endTime
         }, null, 2);
     }
 
     // Public API
-    return {
+    const api = {
         setCallbacks,
         start,
         stop,
@@ -2250,14 +2273,47 @@ const SpeedTest = (function() {
         exportResults,
         calculateSummary,
         calculateQuality,
-        validateUploadReceipt,
-        getMeasurementCapabilities,
         fetchMeta,
         fetchLocations,
         DOWNLOAD_PROFILES,
         UPLOAD_PROFILES,
         CONFIG
     };
+
+    // Keep low-level measurement hooks out of the browser API while making the
+    // wire contract directly testable under Node.
+    if (typeof module !== 'undefined' && module.exports) {
+        api.__test = {
+            fetchMeta,
+            fetchLocations,
+            runDownload,
+            runUpload,
+            selectWindowPlan,
+            createLoadActivity,
+            createStreamingUploadBody,
+            runLoadedLatencyProbes,
+            runThroughputWindow,
+            encodePacketFrame,
+            decodePacketFrame,
+            validatePacketReport,
+            percentile,
+            prepareLatency,
+            calculateJitter: jitter,
+            coefficientOfVariation,
+            assessTestConfidence,
+            calculateSummary,
+            setResults(value) { results = value; },
+            resetRequestStreamingSupport() { requestStreamingSupport = undefined; },
+            setServerCapabilities(maxBytes, receiptVersion, protocolVersion = 2, frameVersion = 1) {
+                serverMaxTransferBytes = maxBytes;
+                uploadReceiptVersion = receiptVersion;
+                measurementProtocolVersion = protocolVersion;
+                packetLossFrameVersion = frameVersion;
+            }
+        };
+    }
+
+    return api;
 })();
 
 // Export for module systems

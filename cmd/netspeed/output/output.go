@@ -151,24 +151,41 @@ func (o *Output) Results(r *client.Results) {
 	fmt.Println(strings.Repeat("─", 48))
 
 	// Download
-	dlStr := formatOptional(r.Summary.DownloadMbps, "%.1f Mbps")
+	dlStr := fmt.Sprintf("%.1f Mbps", r.Summary.DownloadMbps)
 	fmt.Printf("  Download:     %s\n", o.color(ColorCyan, dlStr))
 
 	// Upload
-	ulStr := formatOptional(r.Summary.UploadMbps, "%.1f Mbps")
+	ulStr := fmt.Sprintf("%.1f Mbps", r.Summary.UploadMbps)
 	fmt.Printf("  Upload:       %s\n", o.color(ColorCyan, ulStr))
 
 	// Latency
-	latStr := formatLatency(r.Summary.LatencyUnloadedMs, r.Summary.JitterMs)
+	latStr := fmt.Sprintf("%.1f ms (jitter: %.1f ms)", r.Summary.LatencyUnloadedMs, r.Summary.JitterMs)
 	fmt.Printf("  Latency:      %s\n", o.color(ColorBlue, latStr))
 
-	// Packet Loss
+	// Packet loss. The compatibility summary is round-trip transaction loss;
+	// Phase 2 also exposes forward probes and reverse acknowledgements.
 	if r.PacketLoss != nil && r.PacketLoss.Unavailable {
 		fmt.Printf("  Packet Loss:  %s\n", o.color(ColorYellow, "N/A ("+r.PacketLoss.Reason+")"))
 	} else if r.PacketLoss != nil {
-		plStr := fmt.Sprintf("%.2f%% (%d/%d)", r.PacketLoss.LossPercent, r.PacketLoss.Received, r.PacketLoss.Sent)
+		plStr := fmt.Sprintf("%.2f%% transaction (%d/%d)",
+			r.PacketLoss.TransactionLossPercent, r.PacketLoss.Received, r.PacketLoss.Sent)
 		fmt.Printf("  Packet Loss:  %s\n", plStr)
+		fmt.Printf("    Forward:    %s\n", formatDirectionalLoss(
+			r.PacketLoss.ForwardLossPercent,
+			r.PacketLoss.ForwardReceived,
+			r.PacketLoss.ForwardSent,
+		))
+		fmt.Printf("    Reverse ACK:%s\n", formatDirectionalLoss(
+			r.PacketLoss.ReverseAcknowledgementLossPercent,
+			r.PacketLoss.AcknowledgementsReceived,
+			r.PacketLoss.AcknowledgementsSent,
+		))
+	} else {
+		fmt.Printf("  Packet Loss:  %s\n", o.color(ColorYellow, "N/A (skipped)"))
 	}
+
+	confidence := fmt.Sprintf("%s (%d/100)", strings.ToUpper(r.TestConfidence.Overall), r.TestConfidence.OverallScore)
+	fmt.Printf("  Confidence:   %s\n", o.confidenceColor(r.TestConfidence.Overall, confidence))
 
 	fmt.Println(strings.Repeat("─", 48))
 
@@ -192,13 +209,33 @@ func (o *Output) gradeColor(grade string) string {
 		return o.color(ColorGreen, grade)
 	case "Good":
 		return o.color(ColorGreen, grade)
-	case "Okay":
+	case "Okay", "Incomplete":
 		return o.color(ColorYellow, grade)
 	case "Poor":
 		return o.color(ColorRed, grade)
 	default:
 		return grade
 	}
+}
+
+func (o *Output) confidenceColor(level, text string) string {
+	switch strings.ToLower(level) {
+	case "high":
+		return o.color(ColorGreen, text)
+	case "medium":
+		return o.color(ColorYellow, text)
+	case "low":
+		return o.color(ColorRed, text)
+	default:
+		return text
+	}
+}
+
+func formatDirectionalLoss(loss *float64, received, sent int) string {
+	if loss == nil || sent <= 0 {
+		return " N/A"
+	}
+	return fmt.Sprintf(" %.2f%% (%d/%d)", *loss, received, sent)
 }
 
 func (o *Output) verboseDetails(r *client.Results) {
@@ -217,8 +254,8 @@ func (o *Output) verboseDetails(r *client.Results) {
 	if len(unloaded) > 0 {
 		min, max, _ := stats(unloaded)
 		med := median(unloaded)
-		fmt.Printf("  Unloaded:   %s (min: %.1f, max: %.1f, median: %.1f)\n",
-			formatOptional(r.Summary.LatencyUnloadedMs, "%.1f ms"), min, max, med)
+		fmt.Printf("  Unloaded:   %.1f ms (min: %.1f, max: %.1f, median: %.1f)\n",
+			r.Summary.LatencyUnloadedMs, min, max, med)
 	}
 
 	fmt.Println()
@@ -260,12 +297,45 @@ func (o *Output) verboseDetails(r *client.Results) {
 		fmt.Println()
 		fmt.Println(o.color(ColorBold, "PACKET LOSS TEST"))
 		fmt.Println(strings.Repeat("─", 48))
-		fmt.Printf("  Sent:       %d packets\n", r.PacketLoss.Sent)
-		fmt.Printf("  Received:   %d packets\n", r.PacketLoss.Received)
-		fmt.Printf("  Loss:       %.2f%%\n", r.PacketLoss.LossPercent)
+		fmt.Printf("  Frame:      %d bytes, exact binary v1\n", r.PacketLoss.FrameSizeBytes)
+		fmt.Printf("  Transaction:%s\n", formatDirectionalLoss(
+			&r.PacketLoss.TransactionLossPercent,
+			r.PacketLoss.Received,
+			r.PacketLoss.Sent,
+		))
+		fmt.Printf("  Forward:    %s\n", formatDirectionalLoss(
+			r.PacketLoss.ForwardLossPercent,
+			r.PacketLoss.ForwardReceived,
+			r.PacketLoss.ForwardSent,
+		))
+		fmt.Printf("  Reverse ACK:%s\n", formatDirectionalLoss(
+			r.PacketLoss.ReverseAcknowledgementLossPercent,
+			r.PacketLoss.AcknowledgementsReceived,
+			r.PacketLoss.AcknowledgementsSent,
+		))
+		fmt.Printf("  Server:     duplicates %d, invalid %d, ACK send failures %d\n",
+			r.PacketLoss.DuplicateFrames, r.PacketLoss.InvalidFrames, r.PacketLoss.AckSendFailures)
 		fmt.Printf("  RTT:        min %.1f ms, median %.1f ms, p90 %.1f ms\n",
 			r.PacketLoss.RTTStatsMs.Min, r.PacketLoss.RTTStatsMs.Median, r.PacketLoss.RTTStatsMs.P90)
 		fmt.Printf("  Jitter:     %.1f ms\n", r.PacketLoss.JitterMs)
+	}
+
+	fmt.Println()
+	fmt.Println(o.color(ColorBold, "MEASUREMENT CONFIDENCE"))
+	fmt.Println(strings.Repeat("─", 48))
+	fmt.Printf("  Overall:    %s (%d/100)\n", strings.ToUpper(r.TestConfidence.Overall), r.TestConfidence.OverallScore)
+	fmt.Printf("  Samples:    windows d=%d u=%d; latency unloaded=%d loaded d=%d u=%d\n",
+		r.TestConfidence.Metrics.SampleCount.DownloadWindows,
+		r.TestConfidence.Metrics.SampleCount.UploadWindows,
+		r.TestConfidence.Metrics.SampleCount.UnloadedLatency,
+		r.TestConfidence.Metrics.SampleCount.DownloadLoadedLatency,
+		r.TestConfidence.Metrics.SampleCount.UploadLoadedLatency)
+	fmt.Printf("  Variability: download %.1f%%, upload %.1f%%, latency %.1f%%\n",
+		r.TestConfidence.Metrics.Variability.Download,
+		r.TestConfidence.Metrics.Variability.Upload,
+		r.TestConfidence.Metrics.Variability.Latency)
+	for _, warning := range r.TestConfidence.Warnings {
+		fmt.Printf("  Warning:    %s\n", warning)
 	}
 }
 
@@ -308,58 +378,43 @@ func median(values []float64) float64 {
 	return sorted[n/2]
 }
 
+func optionalFloat(value *float64, format string) string {
+	if value == nil {
+		return "n/a"
+	}
+	return fmt.Sprintf(format, *value)
+}
+
 // Quiet prints minimal output.
 func (o *Output) Quiet(r *client.Results) {
 	// Format: download_mbps upload_mbps latency_ms loss_percent
-	fmt.Printf("%s  %s  %s  %s\n",
-		formatOptional(r.Summary.DownloadMbps, "%.1f"),
-		formatOptional(r.Summary.UploadMbps, "%.1f"),
-		formatOptional(r.Summary.LatencyUnloadedMs, "%.1f"),
-		formatOptional(r.Summary.PacketLossPercent, "%.2f"))
+	fmt.Printf("%.1f  %.1f  %.1f  %s\n",
+		r.Summary.DownloadMbps,
+		r.Summary.UploadMbps,
+		r.Summary.LatencyUnloadedMs,
+		optionalFloat(r.Summary.PacketLossPercent, "%.2f"))
 }
 
 // CSV prints CSV output.
 func (o *Output) CSV(r *client.Results) {
-	// Header
 	fmt.Println("timestamp,server,download_mbps,upload_mbps,latency_ms,jitter_ms,packet_loss_pct")
 
-	// Data
 	hostname := ""
 	if r.Meta != nil {
 		hostname = r.Meta.Hostname
 	}
-	fmt.Printf("%s,%s,%s,%s,%s,%s,%s\n",
+	loss := ""
+	if r.Summary.PacketLossPercent != nil {
+		loss = fmt.Sprintf("%.2f", *r.Summary.PacketLossPercent)
+	}
+	fmt.Printf("%s,%s,%.1f,%.1f,%.1f,%.1f,%s\n",
 		r.Timestamp.UTC().Format(time.RFC3339),
 		hostname,
-		formatCSVOptional(r.Summary.DownloadMbps, "%.1f"),
-		formatCSVOptional(r.Summary.UploadMbps, "%.1f"),
-		formatCSVOptional(r.Summary.LatencyUnloadedMs, "%.1f"),
-		formatCSVOptional(r.Summary.JitterMs, "%.1f"),
-		formatCSVOptional(r.Summary.PacketLossPercent, "%.2f"))
-}
-
-func formatOptional(value *float64, format string) string {
-	if value == nil {
-		return "N/A"
-	}
-	return fmt.Sprintf(format, *value)
-}
-
-func formatCSVOptional(value *float64, format string) string {
-	if value == nil {
-		return ""
-	}
-	return fmt.Sprintf(format, *value)
-}
-
-func formatLatency(latency, jitter *float64) string {
-	if latency == nil {
-		return "N/A"
-	}
-	if jitter == nil {
-		return fmt.Sprintf("%.1f ms (jitter: N/A)", *latency)
-	}
-	return fmt.Sprintf("%.1f ms (jitter: %.1f ms)", *latency, *jitter)
+		r.Summary.DownloadMbps,
+		r.Summary.UploadMbps,
+		r.Summary.LatencyUnloadedMs,
+		r.Summary.JitterMs,
+		loss)
 }
 
 // Spinner provides ASCII spinner animation.
