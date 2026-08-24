@@ -915,8 +915,8 @@ before closing it and returns:
 
 These counters let clients calculate separately transaction loss, forward probe
 loss, and reverse acknowledgement loss. The complete frame layout and formulas
-are in `MEASUREMENT_PROTOCOL_V2.md`. WebRTC session ownership and close races are
-Phase 3 work, not silently broadened into this phase.
+are in `MEASUREMENT_PROTOCOL_V2.md`; manager ownership, disconnect grace, and
+race-safe teardown are defined in `WEBRTC_LIFECYCLE.md`.
 
 ## 2. measurement pipeline
 

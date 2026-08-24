@@ -381,7 +381,7 @@ func (s *Server) handlePacketTestOffer(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Handle the offer and get an answer
-	answerSDP, testID, err := s.webrtcManager.HandleOffer(req.SDP, req.TestProfile)
+	answerSDP, testID, err := s.webrtcManager.HandleOffer(r.Context(), req.SDP, req.TestProfile)
 	if err != nil {
 		http.Error(w, fmt.Sprintf("failed to process offer: %v", err), http.StatusInternalServerError)
 		return

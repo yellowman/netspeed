@@ -1,15 +1,12 @@
 # netspeed measurement protocol v2
 
-This document is the canonical measurement contract for the Phase 2 Go daemon,
+This document is the canonical measurement contract for the Go daemon,
 Go CLI, and browser client. It supersedes the giant-profile, post-transfer loaded
 latency, and short JSON packet examples retained in older design notes.
 
-The deployment, WebRTC lifecycle, service-hardening, and secondary-client work in
-Phases 3–6 is not part of this protocol revision.
-
 ## 1. capability negotiation
 
-A Phase 2 client starts with `GET /meta` and requires these fields:
+A client starts with `GET /meta` and requires these fields:
 
 ```json
 {
@@ -202,9 +199,9 @@ The client opens an unordered WebRTC data channel with `maxRetransmits: 0` and
 sends exact 1,200-byte SCTP user messages. The daemon acknowledges each unique,
 valid probe once. Duplicate probes are counted but not acknowledged again.
 
-The packet test uses TURN relay candidates in the current implementation. Phase
-3 still owns WebRTC session lifecycle correctness; Phase 4 owns public-service
-limits and TURN hardening.
+The packet test uses TURN relay candidates in the current implementation.
+Session ownership, disconnect recovery, and teardown are defined by
+[`WEBRTC_LIFECYCLE.md`](WEBRTC_LIFECYCLE.md). 
 
 ### 6.2 frame layout
 
@@ -279,15 +276,3 @@ The clients calculate the same 0–100 confidence score from five visible gates:
 Scores of 80–100 are `high`, 50–79 are `medium`, and lower scores are `low`.
 Unavailable packet loss remains `null`/`N/A`; it is never converted to zero and
 causes application grades that depend on loss to be `Incomplete`.
-
-## 8. implementation and compatibility boundaries
-
-- The Go CLI and browser are the supported v2 clients in this archive.
-- The C client has not been migrated or qualified for protocol v2; that remains
-  Phase 6 work.
-- Phase 3 will correct remaining WebRTC session lifecycle and race hazards.
-- Phase 4 will add public-service concurrency, rate, quota, and TURN controls.
-- Phase 5 will finish timeout, reverse-proxy/CORS, HTTP wrapper, shutdown, and
-  configuration contracts.
-- Phase 6 will run the real dependency-integrated release matrix and qualify or
-  remove the C client.

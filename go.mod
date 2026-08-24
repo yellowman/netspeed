@@ -3,7 +3,6 @@ module github.com/yellowman/netspeed
 go 1.21.3
 
 require (
-	github.com/google/uuid v1.6.0
 	github.com/pion/webrtc/v3 v3.3.6
 )
 

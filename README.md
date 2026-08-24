@@ -18,10 +18,12 @@ quick start
 
 requires Go 1.21.3 or newer.
 
-This archive contains the completed Phase 1 measurement-integrity and Phase 2
-measurement-methodology work. See [`MEASUREMENT_PROTOCOL_V2.md`](MEASUREMENT_PROTOCOL_V2.md)
-for the current measurement contract and [`IMPROVEMENT_PHASES.md`](IMPROVEMENT_PHASES.md)
-for the remaining WebRTC, service-hardening, deployment, and release-qualification phases.
+This archive contains the completed Phase 1 measurement-integrity, Phase 2
+measurement-methodology, and Phase 3 WebRTC-lifecycle work. See
+[`MEASUREMENT_PROTOCOL_V2.md`](MEASUREMENT_PROTOCOL_V2.md) for the measurement
+contract, [`WEBRTC_LIFECYCLE.md`](WEBRTC_LIFECYCLE.md) for session ownership and
+teardown, and [`IMPROVEMENT_PHASES.md`](IMPROVEMENT_PHASES.md) for the remaining
+service-hardening, deployment, and release-qualification phases.
 
 ```bash
 # build the daemon
@@ -153,6 +155,7 @@ what it measures
 - **loaded latency** - probes accepted only when continuous download or upload traffic spans the entire probe
 - **jitter** - p90 latency minus median latency after warmup removal and conservative IQR filtering
 - **packet loss** - exact 1,200-byte WebRTC frames with transaction, forward, and reverse-acknowledgement loss reported separately
+- **packet-test lifecycle** - registered-before-callback ownership, disconnect recovery grace, and race-safe teardown
 - **confidence** - explicit gates for sample count, variability, overlap, timing, and packet-test completion
 
 the ui grades your connection for:
