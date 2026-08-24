@@ -2,6 +2,7 @@
 package output
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"sort"
@@ -134,7 +135,7 @@ func (o *Output) ClearProgress() {
 // Error prints an error message.
 func (o *Output) Error(msg string) {
 	if o.cfg.JSON {
-		fmt.Fprintf(os.Stderr, `{"error": "%s"}`+"\n", msg)
+		_ = json.NewEncoder(os.Stderr).Encode(map[string]string{"error": msg})
 		return
 	}
 	fmt.Fprintf(os.Stderr, "%s %s\n", o.color(ColorRed, "Error:"), msg)
@@ -167,6 +168,8 @@ func (o *Output) Results(r *client.Results) {
 	} else if r.PacketLoss != nil {
 		plStr := fmt.Sprintf("%.2f%% (%d/%d)", r.PacketLoss.LossPercent, r.PacketLoss.Received, r.PacketLoss.Sent)
 		fmt.Printf("  Packet Loss:  %s\n", plStr)
+	} else {
+		fmt.Printf("  Packet Loss:  %s\n", o.color(ColorYellow, "N/A (skipped)"))
 	}
 
 	fmt.Println(strings.Repeat("─", 48))
@@ -191,7 +194,7 @@ func (o *Output) gradeColor(grade string) string {
 		return o.color(ColorGreen, grade)
 	case "Good":
 		return o.color(ColorGreen, grade)
-	case "Okay":
+	case "Okay", "Incomplete":
 		return o.color(ColorYellow, grade)
 	case "Poor":
 		return o.color(ColorRed, grade)
@@ -307,34 +310,43 @@ func median(values []float64) float64 {
 	return sorted[n/2]
 }
 
+func optionalFloat(value *float64, format string) string {
+	if value == nil {
+		return "n/a"
+	}
+	return fmt.Sprintf(format, *value)
+}
+
 // Quiet prints minimal output.
 func (o *Output) Quiet(r *client.Results) {
 	// Format: download_mbps upload_mbps latency_ms loss_percent
-	fmt.Printf("%.1f  %.1f  %.1f  %.2f\n",
+	fmt.Printf("%.1f  %.1f  %.1f  %s\n",
 		r.Summary.DownloadMbps,
 		r.Summary.UploadMbps,
 		r.Summary.LatencyUnloadedMs,
-		r.Summary.PacketLossPercent)
+		optionalFloat(r.Summary.PacketLossPercent, "%.2f"))
 }
 
 // CSV prints CSV output.
 func (o *Output) CSV(r *client.Results) {
-	// Header
 	fmt.Println("timestamp,server,download_mbps,upload_mbps,latency_ms,jitter_ms,packet_loss_pct")
 
-	// Data
 	hostname := ""
 	if r.Meta != nil {
 		hostname = r.Meta.Hostname
 	}
-	fmt.Printf("%s,%s,%.1f,%.1f,%.1f,%.1f,%.2f\n",
+	loss := ""
+	if r.Summary.PacketLossPercent != nil {
+		loss = fmt.Sprintf("%.2f", *r.Summary.PacketLossPercent)
+	}
+	fmt.Printf("%s,%s,%.1f,%.1f,%.1f,%.1f,%s\n",
 		r.Timestamp.UTC().Format(time.RFC3339),
 		hostname,
 		r.Summary.DownloadMbps,
 		r.Summary.UploadMbps,
 		r.Summary.LatencyUnloadedMs,
 		r.Summary.JitterMs,
-		r.Summary.PacketLossPercent)
+		loss)
 }
 
 // Spinner provides ASCII spinner animation.

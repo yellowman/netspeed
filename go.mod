@@ -1,6 +1,6 @@
 module github.com/yellowman/netspeed
 
-go 1.24.7
+go 1.21.3
 
 require (
 	github.com/google/uuid v1.6.0

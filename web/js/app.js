@@ -733,7 +733,9 @@
         }
 
         if (elements.packetLossValue) {
-            elements.packetLossValue.textContent = summary.packetLossPercent.toFixed(2);
+            elements.packetLossValue.textContent = Number.isFinite(summary.packetLossPercent)
+                ? summary.packetLossPercent.toFixed(2)
+                : 'N/A';
         }
 
         // Update measure time
@@ -1202,7 +1204,8 @@
             'Great': 'great',
             'Good': 'good',
             'Okay': 'okay',
-            'Poor': 'poor'
+            'Poor': 'poor',
+            'Incomplete': 'incomplete'
         };
 
         const ph = '<span class="placeholder"></span>';
@@ -1211,7 +1214,7 @@
         if (elements.streamingScore) {
             const grade = quality.videoStreaming;
             // Remove old grade classes and add new one
-            elements.streamingScore.classList.remove('great', 'good', 'okay', 'poor');
+            elements.streamingScore.classList.remove('great', 'good', 'okay', 'poor', 'incomplete');
             if (gradeClass[grade]) elements.streamingScore.classList.add(gradeClass[grade]);
             const text = elements.streamingScore.querySelector('.grade-text');
             if (text) text.innerHTML = grade || ph;
@@ -1220,7 +1223,7 @@
         // Gaming
         if (elements.gamingScore) {
             const grade = quality.gaming;
-            elements.gamingScore.classList.remove('great', 'good', 'okay', 'poor');
+            elements.gamingScore.classList.remove('great', 'good', 'okay', 'poor', 'incomplete');
             if (gradeClass[grade]) elements.gamingScore.classList.add(gradeClass[grade]);
             const text = elements.gamingScore.querySelector('.grade-text');
             if (text) text.innerHTML = grade || ph;
@@ -1229,7 +1232,7 @@
         // Video Chatting
         if (elements.videoChatScore) {
             const grade = quality.videoChatting;
-            elements.videoChatScore.classList.remove('great', 'good', 'okay', 'poor');
+            elements.videoChatScore.classList.remove('great', 'good', 'okay', 'poor', 'incomplete');
             if (gradeClass[grade]) elements.videoChatScore.classList.add(gradeClass[grade]);
             const text = elements.videoChatScore.querySelector('.grade-text');
             if (text) text.innerHTML = grade || ph;
@@ -1405,6 +1408,12 @@
         // All values to encode (delta-encoded as one array)
         const serverLoc = state.locations?.find(l => l.iata === state.meta?.colo);
         const pl = state.packetLoss;
+
+        // Shared-result URLs require a complete metric set. Do not encode an
+        // unavailable packet-loss measurement as a misleading zero.
+        if (!Number.isFinite(state.summary?.packetLossPercent)) {
+            return null;
+        }
 
         const values = [
             Math.round(state.summary.downloadMbps * 10),

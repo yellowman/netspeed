@@ -5,8 +5,8 @@ import (
 	"crypto/sha1"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
-	"io"
 	"log"
 	"net"
 	"net/http"
@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/yellowman/netspeed/internal/meta"
+	"github.com/yellowman/netspeed/internal/protocol"
 )
 
 // calculateSpeedMbps calculates speed in megabits per second from bytes and duration.
@@ -47,6 +48,9 @@ func (s *Server) handleMeta(w http.ResponseWriter, r *http.Request) {
 	}
 
 	clientMeta := s.metaProvider.MetaFor(r)
+	clientMeta.MaxTransferBytes = s.cfg.MaxBytes
+	clientMeta.MeasurementProtocolVersion = protocol.MeasurementProtocolVersion
+	clientMeta.UploadReceiptVersion = protocol.UploadReceiptVersion
 
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-store")
@@ -96,6 +100,8 @@ func (s *Server) handleDown(w http.ResponseWriter, r *http.Request) {
 	// Set headers
 	w.Header().Set("Content-Type", "application/octet-stream")
 	w.Header().Set("Content-Length", strconv.FormatInt(nBytes, 10))
+	w.Header().Set("Cache-Control", "no-store, no-transform")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
 	s.setMetaHeaders(w, clientMeta, start)
 
 	// Set Server-Timing header before body starts (measures server-side latency)
@@ -128,7 +134,7 @@ func (s *Server) handleDown(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			// Client disconnected - log partial transfer
 			duration := time.Since(start)
-			bytesSent := nBytes - remaining
+			bytesSent := nBytes - remaining + int64(n)
 			speedMbps := calculateSpeedMbps(bytesSent, duration)
 			log.Printf("Download interrupted: client=%s measId=%s bytes=%d/%d duration=%s speed=%s",
 				clientIP, measId, bytesSent, nBytes, duration, formatSpeed(speedMbps))
@@ -152,27 +158,46 @@ func (s *Server) handleUp(w http.ResponseWriter, r *http.Request) {
 	}
 
 	start := time.Now()
+	measID := r.URL.Query().Get("measId")
+	clientIP := meta.ClientIPFromRequest(r, s.cfg.TrustProxyHeaders)
 
-	// Read and discard body safely with limit
-	n, err := io.Copy(io.Discard, io.LimitReader(r.Body, s.cfg.MaxBytes))
+	n, err := protocol.ReadUpload(r.Body, r.ContentLength, s.cfg.MaxBytes)
 	if err != nil {
-		log.Printf("Upload read error: %v", err)
+		switch {
+		case errors.Is(err, protocol.ErrUploadTooLarge):
+			log.Printf("Upload rejected: client=%s measId=%s bytes=%d maxBytes=%d",
+				clientIP, measID, n, s.cfg.MaxBytes)
+			http.Error(w, protocol.ErrUploadTooLarge.Error(), http.StatusRequestEntityTooLarge)
+		case errors.Is(err, protocol.ErrUploadLengthMismatch):
+			log.Printf("Upload length mismatch: client=%s measId=%s bytes=%d contentLength=%d",
+				clientIP, measID, n, r.ContentLength)
+			http.Error(w, protocol.ErrUploadLengthMismatch.Error(), http.StatusBadRequest)
+		default:
+			log.Printf("Upload read error: client=%s measId=%s bytes=%d error=%v", clientIP, measID, n, err)
+			http.Error(w, "failed to read complete upload", http.StatusBadRequest)
+		}
+		return
 	}
 
-	// Calculate timing and speed
 	duration := time.Since(start)
 	speedMbps := calculateSpeedMbps(n, duration)
-
-	// Log upload details with speed
-	measId := r.URL.Query().Get("measId")
-	clientIP := meta.ClientIPFromRequest(r, s.cfg.TrustProxyHeaders)
 	log.Printf("Upload: client=%s measId=%s bytes=%d duration=%s speed=%s",
-		clientIP, measId, n, duration, formatSpeed(speedMbps))
+		clientIP, measID, n, duration, formatSpeed(speedMbps))
+
+	receipt := protocol.UploadReceipt{
+		OK:               true,
+		AcceptedBytes:    n,
+		ServerDurationNS: duration.Nanoseconds(),
+	}
 
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
 	s.setServerTiming(w, start)
 	w.WriteHeader(http.StatusOK)
-	w.Write([]byte(`{"ok":true}`))
+	if err := json.NewEncoder(w).Encode(receipt); err != nil {
+		log.Printf("Upload receipt write error: client=%s measId=%s error=%v", clientIP, measID, err)
+	}
 }
 
 // handleLocations handles GET /locations - returns list of test locations.

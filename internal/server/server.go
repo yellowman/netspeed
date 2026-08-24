@@ -19,13 +19,13 @@ import (
 
 // Server is the main netspeedd HTTP server.
 type Server struct {
-	cfg            *config.Config
-	httpServer     *http.Server
-	metaProvider   meta.Provider
-	geoipProvider  *meta.GeoIPProvider // track for cleanup
-	locations      locations.Store
-	payloadBuf     []byte
-	webrtcManager  *webrtc.Manager
+	cfg           *config.Config
+	httpServer    *http.Server
+	metaProvider  meta.Provider
+	geoipProvider *meta.GeoIPProvider // track for cleanup
+	locations     locations.Store
+	payloadBuf    []byte
+	webrtcManager *webrtc.Manager
 }
 
 // New creates a new Server with the given configuration.
@@ -327,8 +327,8 @@ func (rw *responseWriter) WriteHeader(code int) {
 // setServerTiming adds the Server-Timing header if enabled.
 func (s *Server) setServerTiming(w http.ResponseWriter, start time.Time) {
 	if s.cfg.EnableServerTiming {
-		durMs := time.Since(start).Milliseconds()
-		w.Header().Set("Server-Timing", fmt.Sprintf("app;dur=%d", durMs))
+		durMS := float64(time.Since(start).Microseconds()) / 1000.0
+		w.Header().Set("Server-Timing", fmt.Sprintf("app;dur=%.3f", durMS))
 	}
 }
 

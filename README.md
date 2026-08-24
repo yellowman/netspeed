@@ -16,6 +16,12 @@ inspired by speed.cloudflare.com but you run it yourself.
 quick start
 -----------
 
+requires Go 1.21.3 or newer.
+
+This archive contains the Phase 1 measurement-integrity work. See
+[`IMPROVEMENT_PHASES.md`](IMPROVEMENT_PHASES.md) for the remaining methodology,
+WebRTC, service-hardening, deployment, and release-qualification phases.
+
 ```bash
 # build the daemon
 go build -o netspeedd ./cmd/netspeedd
@@ -28,7 +34,7 @@ go build -o netspeed ./cmd/netspeed
 
 # open http://localhost:8080 in your browser
 # or use the cli client
-./netspeed https://localhost:8080
+./netspeed http://localhost:8080
 ```
 
 ---
@@ -93,14 +99,17 @@ for packet loss testing via webrtc, you'll also want:
 using the cli client
 --------------------
 
-the cli client works with your own netspeedd server or cloudflare's:
+the cli client defaults to a local netspeedd server:
 
 ```bash
-# test against your server
+# test against the local daemon
+./netspeed
+
+# test against another netspeedd server
 ./netspeed https://speed.example.com
 
-# test against cloudflare (default)
-./netspeed
+# legacy servers without verified upload receipts are download-only
+./netspeed --download-only --no-packet-loss https://speed.cloudflare.com
 
 # quick test (fewer samples)
 ./netspeed --quick
@@ -113,7 +122,7 @@ the cli client works with your own netspeedd server or cloudflare's:
 
 # quiet mode (just the numbers)
 ./netspeed --quiet
-# outputs: download_mbps  upload_mbps  latency_ms  loss_percent
+# outputs: download_mbps  upload_mbps  latency_ms  loss_percent (or n/a)
 ```
 
 **cli flags:**
@@ -137,8 +146,8 @@ the cli client works with your own netspeedd server or cloudflare's:
 what it measures
 ----------------
 
-- **download speed** - how fast you can pull data (tests 100kb to 100mb chunks)
-- **upload speed** - how fast you can push data (tests 100kb to 50mb chunks)
+- **download speed** - how fast you can pull data (adaptive profiles bounded by the server limit)
+- **upload speed** - how fast you can push data, verified by an exact server receipt
 - **latency** - round-trip time to the server
 - **loaded latency** - latency while downloading/uploading (bufferbloat detection)
 - **jitter** - variation in latency
