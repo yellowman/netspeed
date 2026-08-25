@@ -4,11 +4,14 @@ package server
 import (
 	"context"
 	"crypto/rand"
+	"crypto/tls"
+	"errors"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"strings"
-	"time"
+	"sync"
 
 	pionwebrtc "github.com/pion/webrtc/v3"
 	"github.com/yellowman/netspeed/internal/clientaddr"
@@ -22,20 +25,29 @@ import (
 
 // Server is the main netspeedd HTTP server.
 type Server struct {
-	cfg                   *config.Config
-	httpServer            *http.Server
-	metaProvider          meta.Provider
-	geoipProvider         *meta.GeoIPProvider // track for cleanup
-	locations             locations.Store
-	payloadBuf            []byte
-	webrtcManager         *webrtc.Manager
-	clientAddress         *clientaddr.Resolver
+	cfg        *config.Config
+	httpServer *http.Server
+	tlsConfig  *tls.Config
+
+	metaProvider  meta.Provider
+	geoipCloser   io.Closer
+	locations     locations.Store
+	payloadBuf    []byte
+	webrtcManager *webrtc.Manager
+	clientAddress *clientaddr.Resolver
+
 	transferLimiter       *limits.TransferLimiter
 	bandwidthQuota        *limits.ByteQuota
 	offerRateLimiter      *limits.KeyedRateLimiter
 	turnCredentialLimiter *limits.KeyedRateLimiter
 	metrics               *serviceMetrics
 	relayStats            telemetry.RelayStatsProvider
+
+	dependencyCloseOnce sync.Once
+	dependencyCloseErr  error
+	// dependencyCloser exists so shutdown ordering can be tested without a real
+	// MaxMind database or Pion peer. New installs the production closure.
+	dependencyCloser func() error
 }
 
 // New creates a new Server with the given configuration.
@@ -46,86 +58,38 @@ func New(cfg *config.Config) (*Server, error) {
 	if err := cfg.Validate(); err != nil {
 		return nil, fmt.Errorf("invalid configuration: %w", err)
 	}
+
 	clientAddress, err := clientaddr.NewResolver(cfg.TrustedProxyCIDRs)
 	if err != nil {
 		return nil, err
 	}
 
-	// Build meta provider based on configuration
-	var metaProvider meta.Provider
-	var geoipProvider *meta.GeoIPProvider
+	metaProvider, geoipCloser, err := buildMetaProvider(cfg, clientAddress)
+	if err != nil {
+		return nil, err
+	}
 
-	// Try to use GeoIP database if configured
-	if cfg.GeoIPDatabasePath != "" {
-		gp, err := meta.NewGeoIPProvider(
-			cfg.GeoIPDatabasePath,
-			cfg.Hostname,
-			cfg.Colo,
-			clientAddress,
-		)
-		if err != nil {
-			log.Printf("Warning: failed to load GeoIP database: %v (falling back to static provider)", err)
-		} else {
-			metaProvider = gp
-			geoipProvider = gp
-			log.Printf("GeoIP ASN database loaded from %s", cfg.GeoIPDatabasePath)
+	locationStore, err := buildLocationStore(cfg)
+	if err != nil {
+		if geoipCloser != nil {
+			_ = geoipCloser.Close()
 		}
+		return nil, err
 	}
 
-	// Fall back to static provider if GeoIP not available
-	if metaProvider == nil {
-		metaProvider = &meta.StaticProvider{
-			Hostname:      cfg.Hostname,
-			Colo:          cfg.Colo,
-			ClientAddress: clientAddress,
-			// Default values
-			Country:    "US",
-			City:       "Unknown",
-			Region:     "Unknown",
-			PostalCode: "",
-			Latitude:   0,
-			Longitude:  0,
-			Timezone:   "UTC",
-			ASN:        0,
-			ASOrg:      "Unknown",
-		}
-	}
-
-	// Build location store
-	var locationStore locations.Store
-	locationsFile := cfg.LocationsFile
-	if locationsFile == "" {
-		// Try default locations.json in current directory
-		locationsFile = "locations.json"
-	}
-	if store, err := locations.NewFileStore(locationsFile); err == nil {
-		locationStore = store
-		log.Printf("Loaded locations from %s", locationsFile)
-	} else if cfg.LocationsFile != "" {
-		// User explicitly specified a file that failed to load
-		return nil, fmt.Errorf("failed to load locations: %w", err)
-	} else {
-		// Fall back to built-in defaults
-		locationStore = locations.NewMemoryStore(locations.DefaultLocations())
-		log.Printf("Using built-in default locations")
-	}
-
-	// Allocate payload buffer (1 MiB of random data)
-	bufSize := 1 << 20 // 1 MiB
-	payloadBuf := make([]byte, bufSize)
+	// Reuse one bounded random payload instead of allocating per transfer.
+	payloadBuf := make([]byte, 1<<20)
 	if _, err := rand.Read(payloadBuf); err != nil {
-		// Fallback to zeros if random fails
 		log.Printf("Warning: failed to fill payload buffer with random data: %v", err)
 	}
 
-	// Build WebRTC manager
 	webrtcCfg := webrtc.DefaultConfig()
 	webrtcCfg.MaxSessions = cfg.MaxWebRTCSessions
 	webrtcCfg.MaxSessionsPerClient = cfg.MaxWebRTCSessionsPerClient
 	if len(cfg.TurnServers) > 0 {
-		// Public STUN servers do not need credentials and can be installed on
-		// the server-side peer immediately. TURN credentials remain short-lived
-		// and are issued to clients by /api/turn/credentials.
+		// Public STUN servers do not need credentials and can be installed on the
+		// server-side peer immediately. TURN credentials remain short-lived and
+		// are issued to clients by /api/turn/credentials.
 		var iceServers []pionwebrtc.ICEServer
 		for _, iceServer := range cfg.TurnServers {
 			lower := strings.ToLower(strings.TrimSpace(iceServer))
@@ -135,15 +99,15 @@ func New(cfg *config.Config) (*Server, error) {
 		}
 		webrtcCfg.ICEServers = iceServers
 	}
-	webrtcMgr := webrtc.NewManager(webrtcCfg)
+	webrtcManager := webrtc.NewManager(webrtcCfg)
 
 	s := &Server{
 		cfg:                   cfg,
 		metaProvider:          metaProvider,
-		geoipProvider:         geoipProvider,
+		geoipCloser:           geoipCloser,
 		locations:             locationStore,
 		payloadBuf:            payloadBuf,
-		webrtcManager:         webrtcMgr,
+		webrtcManager:         webrtcManager,
 		clientAddress:         clientAddress,
 		transferLimiter:       limits.NewTransferLimiter(cfg.MaxConcurrentTransfers, cfg.MaxConcurrentTransfersPerClient),
 		bandwidthQuota:        limits.NewByteQuota(cfg.ClientBandwidthQuotaBytes, cfg.ClientBandwidthQuotaWindow),
@@ -151,237 +115,210 @@ func New(cfg *config.Config) (*Server, error) {
 		turnCredentialLimiter: limits.NewKeyedRateLimiter(float64(cfg.TurnCredentialRatePerMinute)/60.0, cfg.TurnCredentialBurst),
 		metrics:               &serviceMetrics{},
 	}
+	s.dependencyCloser = func() error {
+		if s.webrtcManager != nil {
+			s.webrtcManager.Shutdown()
+		}
+		if s.geoipCloser != nil {
+			return s.geoipCloser.Close()
+		}
+		return nil
+	}
 
-	// Set up HTTP mux and routes
+	if cfg.TLSEnabled() {
+		certificate, err := tls.LoadX509KeyPair(cfg.TLSCertFile, cfg.TLSKeyFile)
+		if err != nil {
+			_ = s.closeDependencies()
+			return nil, fmt.Errorf("load TLS certificate/key pair: %w", err)
+		}
+		s.tlsConfig = &tls.Config{
+			MinVersion:   tls.VersionTLS12,
+			Certificates: []tls.Certificate{certificate},
+		}
+	}
+
 	mux := http.NewServeMux()
 	s.registerRoutes(mux)
 
-	// Authentication applies to the service surface but not static assets or
-	// the health check. CORS remains outside it so preflight requests work.
+	// Static assets and /health remain public. CORS stays outside authentication
+	// so a valid preflight never requires a bearer token.
 	var handler http.Handler = s.authenticationMiddleware(mux)
-
-	// Wrap with CORS middleware if enabled
 	if cfg.EnableCORS {
 		handler = s.corsMiddleware(handler)
 	}
-
-	// Wrap with logging middleware
+	// Recovery must receive the tracking writer installed by outer logging so it
+	// can distinguish an uncommitted response from a partially written stream.
+	handler = s.recoveryMiddleware(handler)
 	handler = s.loggingMiddleware(handler)
 
-	// Wrap with recovery middleware
-	handler = s.recoveryMiddleware(handler)
-
 	s.httpServer = &http.Server{
-		Addr:         cfg.ListenAddr,
-		Handler:      handler,
-		ReadTimeout:  cfg.ReadTimeout,
-		WriteTimeout: cfg.WriteTimeout,
-		IdleTimeout:  cfg.IdleTimeout,
+		Addr:              cfg.ListenAddr,
+		Handler:           handler,
+		ReadHeaderTimeout: cfg.ReadHeaderTimeout,
+		ReadTimeout:       0,
+		WriteTimeout:      0,
+		IdleTimeout:       cfg.IdleTimeout,
+		TLSConfig:         s.tlsConfig,
 	}
-
 	return s, nil
 }
 
-// registerRoutes sets up all HTTP routes.
-func (s *Server) registerRoutes(mux *http.ServeMux) {
-	// Core measurement endpoints
-	mux.HandleFunc("/meta", s.handleMeta)
-	mux.HandleFunc("/__down", s.handleDown)
-	mux.HandleFunc("/__up", s.handleUp)
-	mux.HandleFunc("/locations", s.handleLocations)
-
-	// Optional diagnostic endpoint
-	mux.HandleFunc("/cdn-cgi/trace", s.handleTrace)
-
-	// TURN credentials endpoint
-	mux.HandleFunc("/api/turn/credentials", s.handleTurnCredentials)
-
-	// WebRTC packet-test signaling
-	mux.HandleFunc("/api/packet-test/offer", s.handlePacketTestOffer)
-	mux.HandleFunc("/api/packet-test/report", s.handlePacketTestReport)
-
-	// Health and optional Prometheus metrics.
-	mux.HandleFunc("/health", s.handleHealth)
-	if s.cfg.EnableMetrics {
-		mux.HandleFunc("/metrics", s.handleMetrics)
+func buildMetaProvider(cfg *config.Config, resolver *clientaddr.Resolver) (meta.Provider, io.Closer, error) {
+	if cfg.GeoIPASNDatabasePath != "" || cfg.GeoIPCityDatabasePath != "" {
+		provider, err := meta.NewCityGeoIPProvider(
+			cfg.GeoIPASNDatabasePath,
+			cfg.GeoIPCityDatabasePath,
+			cfg.Hostname,
+			cfg.Colo,
+			resolver,
+		)
+		if err != nil {
+			return nil, nil, fmt.Errorf("load GeoIP databases: %w", err)
+		}
+		log.Printf("GeoIP databases loaded: asn=%q city=%q", cfg.GeoIPASNDatabasePath, cfg.GeoIPCityDatabasePath)
+		return provider, provider, nil
 	}
 
-	// Static file serving for the web UI
+	// Unknown location data remains unknown. In particular, absence of a City
+	// database must not label every client as being in the United States.
+	return &meta.StaticProvider{
+		Hostname:      cfg.Hostname,
+		Colo:          cfg.Colo,
+		Country:       "",
+		City:          "",
+		Region:        "",
+		PostalCode:    "",
+		Latitude:      0,
+		Longitude:     0,
+		Timezone:      "",
+		ASN:           0,
+		ASOrg:         "",
+		ClientAddress: resolver,
+	}, nil, nil
+}
+
+func buildLocationStore(cfg *config.Config) (locations.Store, error) {
+	locationsFile := cfg.LocationsFile
+	if locationsFile == "" {
+		locationsFile = "locations.json"
+	}
+	if store, err := locations.NewFileStore(locationsFile); err == nil {
+		log.Printf("Loaded locations from %s", locationsFile)
+		return store, nil
+	} else if cfg.LocationsFile != "" {
+		return nil, fmt.Errorf("failed to load locations: %w", err)
+	}
+	log.Printf("Using built-in default locations")
+	return locations.NewMemoryStore(locations.DefaultLocations()), nil
+}
+
+// registerRoutes sets up all HTTP routes with endpoint-aware deadlines.
+func (s *Server) registerRoutes(mux *http.ServeMux) {
+	control := func(handler http.HandlerFunc) http.Handler {
+		return s.withEndpointDeadline(s.cfg.ControlTimeout, true, true, handler)
+	}
+	download := func(handler http.HandlerFunc) http.Handler {
+		return s.withEndpointDeadline(s.cfg.TransferTimeout, false, true, handler)
+	}
+	upload := func(handler http.HandlerFunc) http.Handler {
+		return s.withEndpointDeadline(s.cfg.TransferTimeout, true, true, handler)
+	}
+
+	mux.Handle("/meta", control(s.handleMeta))
+	mux.Handle("/__down", download(s.handleDown))
+	mux.Handle("/__up", upload(s.handleUp))
+	mux.Handle("/locations", control(s.handleLocations))
+	mux.Handle("/cdn-cgi/trace", control(s.handleTrace))
+	mux.Handle("/api/turn/credentials", control(s.handleTurnCredentials))
+	mux.Handle("/api/packet-test/offer", control(s.handlePacketTestOffer))
+	mux.Handle("/api/packet-test/report", control(s.handlePacketTestReport))
+	mux.Handle("/health", control(s.handleHealth))
+	if s.cfg.EnableMetrics {
+		mux.Handle("/metrics", control(s.handleMetrics))
+	}
+
 	if s.cfg.WebDir != "" {
-		fs := http.FileServer(http.Dir(s.cfg.WebDir))
-		mux.Handle("/", s.staticFileHandler(fs))
+		files := http.FileServer(http.Dir(s.cfg.WebDir))
+		mux.Handle("/", s.withEndpointDeadline(s.cfg.ControlTimeout, true, true, s.staticFileHandler(files)))
 	}
 }
 
-// staticFileHandler wraps the file server to handle SPA routing
-func (s *Server) staticFileHandler(fs http.Handler) http.Handler {
+// staticFileHandler prevents the static fallback from shadowing service routes.
+func (s *Server) staticFileHandler(files http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Skip API and measurement endpoints
 		path := r.URL.Path
 		if path == "/meta" || path == "/__down" || path == "/__up" ||
 			path == "/locations" || path == "/health" || path == "/metrics" ||
-			strings.HasPrefix(path, "/api/") ||
-			strings.HasPrefix(path, "/cdn-cgi/") {
+			strings.HasPrefix(path, "/api/") || strings.HasPrefix(path, "/cdn-cgi/") {
 			http.NotFound(w, r)
 			return
 		}
-
-		// Try to serve the file directly
-		fs.ServeHTTP(w, r)
+		files.ServeHTTP(w, r)
 	})
 }
 
 // Run starts the HTTP server.
 func (s *Server) Run() error {
 	log.Printf("Starting netspeedd on %s", s.cfg.ListenAddr)
-
 	if s.cfg.WebDir != "" {
 		log.Printf("Serving static files from %s", s.cfg.WebDir)
 	}
 
-	// Create optimized listener with larger TCP buffers for speed testing
-	lnCfg := DefaultListenerConfig()
+	listenerConfig := DefaultListenerConfig()
 	log.Printf("TCP buffers: send=%dKB recv=%dKB nodelay=%v",
-		lnCfg.SendBufSize/1024, lnCfg.RecvBufSize/1024, lnCfg.NoDelay)
-
-	ln, err := NewOptimizedListener(s.cfg.ListenAddr, lnCfg)
+		listenerConfig.SendBufSize/1024, listenerConfig.RecvBufSize/1024, listenerConfig.NoDelay)
+	listener, err := NewOptimizedListener(s.cfg.ListenAddr, listenerConfig)
 	if err != nil {
 		return fmt.Errorf("failed to create listener: %w", err)
 	}
 
 	if s.cfg.TLSEnabled() {
-		log.Printf("TLS enabled with cert=%s key=%s", s.cfg.TLSCertFile, s.cfg.TLSKeyFile)
-		return s.httpServer.ServeTLS(ln, s.cfg.TLSCertFile, s.cfg.TLSKeyFile)
+		log.Printf("TLS enabled with minimum version TLS 1.2")
+		err = s.httpServer.ServeTLS(listener, "", "")
+	} else {
+		err = s.httpServer.Serve(listener)
 	}
-
-	return s.httpServer.Serve(ln)
+	if errors.Is(err, http.ErrServerClosed) {
+		return nil
+	}
+	return err
 }
 
-// Shutdown gracefully shuts down the server.
+// Shutdown first stops admission and drains HTTP handlers. Shared WebRTC and
+// GeoIP dependencies are closed only after that drain succeeds. If ctx expires,
+// dependencies remain open so an in-flight handler can never observe a closed
+// resource; the caller may retry with a longer context or use Close to force it.
 func (s *Server) Shutdown(ctx context.Context) error {
-	// Shutdown WebRTC manager first
-	if s.webrtcManager != nil {
-		s.webrtcManager.Shutdown()
+	if s.httpServer != nil {
+		if err := s.httpServer.Shutdown(ctx); err != nil {
+			return err
+		}
 	}
-	// Close GeoIP database
-	if s.geoipProvider != nil {
-		s.geoipProvider.Close()
-	}
-	return s.httpServer.Shutdown(ctx)
+	return s.closeDependencies()
 }
 
-// corsMiddleware handles CORS headers and preflight requests.
-func (s *Server) corsMiddleware(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		origin := r.Header.Get("Origin")
-		if origin == "" {
-			next.ServeHTTP(w, r)
-			return
+// Close force-closes HTTP connections and then closes dependencies. It is
+// intended for listener/startup failure paths, not normal graceful shutdown.
+func (s *Server) Close() error {
+	var closeErrors []error
+	if s.httpServer != nil {
+		if err := s.httpServer.Close(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			closeErrors = append(closeErrors, err)
 		}
+	}
+	if err := s.closeDependencies(); err != nil {
+		closeErrors = append(closeErrors, err)
+	}
+	return errors.Join(closeErrors...)
+}
 
-		// Check if origin is allowed
-		allowed := false
-		for _, o := range s.cfg.AllowedOrigins {
-			if o == "*" || o == origin {
-				allowed = true
-				break
-			}
+func (s *Server) closeDependencies() error {
+	s.dependencyCloseOnce.Do(func() {
+		if s.dependencyCloser != nil {
+			s.dependencyCloseErr = s.dependencyCloser()
 		}
-
-		if !allowed {
-			next.ServeHTTP(w, r)
-			return
-		}
-
-		// Set CORS headers
-		if len(s.cfg.AllowedOrigins) == 1 && s.cfg.AllowedOrigins[0] == "*" {
-			w.Header().Set("Access-Control-Allow-Origin", "*")
-		} else {
-			w.Header().Set("Access-Control-Allow-Origin", origin)
-			w.Header().Set("Vary", "Origin")
-		}
-
-		// Handle preflight requests
-		if r.Method == http.MethodOptions {
-			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-			w.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type, X-Requested-With")
-			w.Header().Set("Access-Control-Max-Age", "86400")
-			w.WriteHeader(http.StatusNoContent)
-			return
-		}
-
-		next.ServeHTTP(w, r)
 	})
-}
-
-// loggingMiddleware logs HTTP requests and updates request gauges.
-func (s *Server) loggingMiddleware(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		start := time.Now()
-		s.metrics.httpRequests.Add(1)
-		s.metrics.httpActive.Add(1)
-		defer s.metrics.httpActive.Add(-1)
-
-		rw := &responseWriter{ResponseWriter: w, statusCode: http.StatusOK}
-		next.ServeHTTP(rw, r)
-
-		log.Printf("%s %s %d %s %s",
-			r.Method,
-			r.URL.Path,
-			rw.statusCode,
-			time.Since(start),
-			s.clientIP(r),
-		)
-	})
-}
-
-// recoveryMiddleware recovers from panics and logs them.
-func (s *Server) recoveryMiddleware(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		defer func() {
-			if err := recover(); err != nil {
-				s.metrics.internalFailures.Add(1)
-				log.Printf("Panic recovered: %v", err)
-				http.Error(w, "Internal Server Error", http.StatusInternalServerError)
-			}
-		}()
-		next.ServeHTTP(w, r)
-	})
-}
-
-// responseWriter wraps http.ResponseWriter to capture status code.
-type responseWriter struct {
-	http.ResponseWriter
-	statusCode int
-}
-
-func (rw *responseWriter) WriteHeader(code int) {
-	rw.statusCode = code
-	rw.ResponseWriter.WriteHeader(code)
-}
-
-// setServerTiming adds the Server-Timing header if enabled.
-func (s *Server) setServerTiming(w http.ResponseWriter, start time.Time) {
-	if s.cfg.EnableServerTiming {
-		durMS := float64(time.Since(start).Microseconds()) / 1000.0
-		w.Header().Set("Server-Timing", fmt.Sprintf("app;dur=%.3f", durMS))
-	}
-}
-
-// setMetaHeaders adds cf-meta-* headers to the response.
-func (s *Server) setMetaHeaders(w http.ResponseWriter, clientMeta meta.ClientMeta, requestTime time.Time) {
-	w.Header().Set("cf-meta-asn", fmt.Sprintf("%d", clientMeta.ASN))
-	w.Header().Set("cf-meta-city", clientMeta.City)
-	w.Header().Set("cf-meta-colo", clientMeta.Colo)
-	w.Header().Set("cf-meta-country", clientMeta.Country)
-	w.Header().Set("cf-meta-ip", clientMeta.ClientIP)
-	w.Header().Set("cf-meta-latitude", fmt.Sprintf("%f", clientMeta.Latitude))
-	w.Header().Set("cf-meta-longitude", fmt.Sprintf("%f", clientMeta.Longitude))
-	w.Header().Set("cf-meta-postalcode", clientMeta.PostalCode)
-	w.Header().Set("cf-meta-request-time", fmt.Sprintf("%d", requestTime.UnixMilli()))
-	if clientMeta.Timezone != "" {
-		w.Header().Set("cf-meta-timezone", clientMeta.Timezone)
-	}
+	return s.dependencyCloseErr
 }
 
 // handleHealth is a simple health check endpoint.
@@ -390,10 +327,9 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	w.WriteHeader(http.StatusOK)
-	w.Write([]byte("ok"))
+	_, _ = w.Write([]byte("ok"))
 }
 
 // getTLSVersion returns the TLS version string from a request.
@@ -401,17 +337,16 @@ func getTLSVersion(r *http.Request) string {
 	if r.TLS == nil {
 		return "none"
 	}
-
 	switch r.TLS.Version {
-	case 0x0300:
+	case tls.VersionSSL30:
 		return "SSLv3"
-	case 0x0301:
+	case tls.VersionTLS10:
 		return "TLSv1.0"
-	case 0x0302:
+	case tls.VersionTLS11:
 		return "TLSv1.1"
-	case 0x0303:
+	case tls.VersionTLS12:
 		return "TLSv1.2"
-	case 0x0304:
+	case tls.VersionTLS13:
 		return "TLSv1.3"
 	default:
 		return "unknown"

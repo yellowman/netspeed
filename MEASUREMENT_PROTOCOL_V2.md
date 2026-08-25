@@ -311,7 +311,8 @@ also not samples and return `401` as defined by `SERVICE_HARDENING.md`.
 - Phase 3 completed WebRTC session ownership, cancellation, disconnect recovery, and race-safe teardown.
 - Phase 4 completed public-service concurrency, rate, quota, authentication,
   trusted-proxy, metrics, and TURN controls.
-- Phase 5 will finish timeout, reverse-proxy/CORS, HTTP wrapper, shutdown, and
-  configuration contracts.
+- Phase 5 completed endpoint deadlines, configurable browser API routing,
+  CORS/Resource Timing, HTTP wrapper/recovery behavior, shutdown ordering, TLS,
+  configuration, and GeoIP contracts as documented in `HTTP_DEPLOYMENT.md`.
 - Phase 6 will run the real dependency-integrated release matrix and qualify or
   remove the C client.

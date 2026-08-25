@@ -4,6 +4,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"log"
@@ -28,17 +29,24 @@ var (
 func main() {
 	var (
 		listenAddr         = flag.String("listen", "", "Listen address (default :8080)")
-		tlsCert            = flag.String("tls-cert", "", "TLS certificate file path")
-		tlsKey             = flag.String("tls-key", "", "TLS key file path")
+		tlsCert            = flag.String("tls-cert", "", "TLS certificate file path; requires --tls-key")
+		tlsKey             = flag.String("tls-key", "", "TLS key file path; requires --tls-cert")
 		maxBytes           = flag.Int64("max-bytes", 0, "Maximum bytes for one download/upload")
+		readHeaderTimeout  = flag.Duration("read-header-timeout", 0, "Maximum time to read request headers")
+		controlTimeout     = flag.Duration("control-timeout", 0, "Lifetime for metadata, signaling, metrics, and static-file requests")
+		transferTimeout    = flag.Duration("transfer-timeout", 0, "Lifetime for one download/upload measurement request")
+		idleTimeout        = flag.Duration("idle-timeout", 0, "HTTP keep-alive idle timeout")
 		locationsFile      = flag.String("locations", "", "Path to locations JSON file")
-		geoipDB            = flag.String("geoip-db", "", "Path to MaxMind GeoLite2-ASN.mmdb file")
+		geoipASNDB         = flag.String("geoip-asn-db", "", "Path to MaxMind GeoLite2/GeoIP2 ASN database")
+		geoipCityDB        = flag.String("geoip-city-db", "", "Path to MaxMind GeoLite2/GeoIP2 City database")
+		geoipLegacyDB      = flag.String("geoip-db", "", "Deprecated alias for --geoip-asn-db")
 		hostname           = flag.String("hostname", "", "Hostname returned by /meta")
 		colo               = flag.String("colo", "", "Server colo/datacenter IATA code")
 		trustProxy         = flag.Bool("trust-proxy", false, "Honor forwarding headers only from --trusted-proxies (deprecated enable flag)")
 		trustedProxies     = flag.String("trusted-proxies", "", "Trusted proxy CIDRs (comma-separated)")
 		enableCORS         = flag.Bool("cors", true, "Enable CORS headers")
-		corsOrigins        = flag.String("cors-origins", "*", "Allowed CORS origins (comma-separated)")
+		corsOrigins        = flag.String("cors-origins", "*", "Allowed browser origins (comma-separated)")
+		corsCredentials    = flag.Bool("cors-credentials", false, "Allow credentialed CORS; explicit origins are required")
 		serverTiming       = flag.Bool("server-timing", true, "Enable Server-Timing headers")
 		maxTransfers       = flag.Int("max-transfers", 0, "Global active measurement-transfer limit")
 		maxClientTransfers = flag.Int("max-client-transfers", 0, "Active transfer limit per client")
@@ -69,7 +77,7 @@ func main() {
 	flag.Usage = func() {
 		fmt.Fprintf(os.Stderr, "netspeedd - Speedtest backend server\n\nUsage: netspeedd [options]\n\nOptions:\n")
 		flag.PrintDefaults()
-		fmt.Fprintf(os.Stderr, "\nAll options also have NETSPEEDD_* environment equivalents documented in README.md.\n")
+		fmt.Fprintf(os.Stderr, "\nNETSPEEDD_* environment equivalents are documented in README.md.\n")
 	}
 	flag.Parse()
 
@@ -80,18 +88,40 @@ func main() {
 
 	flagsSet := make(map[string]bool)
 	flag.Visit(func(value *flag.Flag) { flagsSet[value.Name] = true })
-	cfg := config.FromEnv()
+	cfg, err := config.FromEnv()
+	if err != nil {
+		log.Fatalf("Invalid environment configuration: %v", err)
+	}
 
-	setFlagString(&cfg.ListenAddr, *listenAddr)
-	setFlagString(&cfg.TLSCertFile, *tlsCert)
-	setFlagString(&cfg.TLSKeyFile, *tlsKey)
-	if *maxBytes > 0 {
+	setStringFlag(flagsSet, "listen", &cfg.ListenAddr, *listenAddr)
+	setStringFlag(flagsSet, "tls-cert", &cfg.TLSCertFile, *tlsCert)
+	setStringFlag(flagsSet, "tls-key", &cfg.TLSKeyFile, *tlsKey)
+	if flagsSet["max-bytes"] {
 		cfg.MaxBytes = *maxBytes
 	}
-	setFlagString(&cfg.LocationsFile, *locationsFile)
-	setFlagString(&cfg.GeoIPDatabasePath, *geoipDB)
-	setFlagString(&cfg.Hostname, *hostname)
-	setFlagString(&cfg.Colo, *colo)
+	if flagsSet["read-header-timeout"] {
+		cfg.ReadHeaderTimeout = *readHeaderTimeout
+	}
+	if flagsSet["control-timeout"] {
+		cfg.ControlTimeout = *controlTimeout
+	}
+	if flagsSet["transfer-timeout"] {
+		cfg.TransferTimeout = *transferTimeout
+	}
+	if flagsSet["idle-timeout"] {
+		cfg.IdleTimeout = *idleTimeout
+	}
+	setStringFlag(flagsSet, "locations", &cfg.LocationsFile, *locationsFile)
+	if flagsSet["geoip-asn-db"] && flagsSet["geoip-db"] {
+		log.Fatal("--geoip-asn-db and deprecated --geoip-db cannot be used together")
+	}
+	setStringFlag(flagsSet, "geoip-asn-db", &cfg.GeoIPASNDatabasePath, *geoipASNDB)
+	if flagsSet["geoip-db"] {
+		cfg.GeoIPASNDatabasePath = strings.TrimSpace(*geoipLegacyDB)
+	}
+	setStringFlag(flagsSet, "geoip-city-db", &cfg.GeoIPCityDatabasePath, *geoipCityDB)
+	setStringFlag(flagsSet, "hostname", &cfg.Hostname, *hostname)
+	setStringFlag(flagsSet, "colo", &cfg.Colo, *colo)
 	if flagsSet["trust-proxy"] {
 		cfg.TrustProxyHeaders = *trustProxy
 		if !*trustProxy {
@@ -108,64 +138,67 @@ func main() {
 	if flagsSet["cors-origins"] {
 		cfg.AllowedOrigins = splitCSV(*corsOrigins)
 	}
+	if flagsSet["cors-credentials"] {
+		cfg.CORSAllowCredentials = *corsCredentials
+	}
 	if flagsSet["server-timing"] {
 		cfg.EnableServerTiming = *serverTiming
 	}
-	if *maxTransfers > 0 {
+	if flagsSet["max-transfers"] {
 		cfg.MaxConcurrentTransfers = *maxTransfers
 	}
-	if *maxClientTransfers > 0 {
+	if flagsSet["max-client-transfers"] {
 		cfg.MaxConcurrentTransfersPerClient = *maxClientTransfers
 	}
 	if flagsSet["client-quota-bytes"] {
 		cfg.ClientBandwidthQuotaBytes = *quotaBytes
 	}
-	if *quotaWindow > 0 {
+	if flagsSet["client-quota-window"] {
 		cfg.ClientBandwidthQuotaWindow = *quotaWindow
 	}
-	if *maxSessions > 0 {
+	if flagsSet["max-webrtc-sessions"] {
 		cfg.MaxWebRTCSessions = *maxSessions
 	}
-	if *maxClientSessions > 0 {
+	if flagsSet["max-client-webrtc-sessions"] {
 		cfg.MaxWebRTCSessionsPerClient = *maxClientSessions
 	}
 	if flagsSet["webrtc-offers-per-minute"] {
 		cfg.WebRTCOfferRatePerMinute = *offerRate
 	}
-	if *offerBurst > 0 {
+	if flagsSet["webrtc-offer-burst"] {
 		cfg.WebRTCOfferBurst = *offerBurst
 	}
 	if flagsSet["turn-credentials-per-minute"] {
 		cfg.TurnCredentialRatePerMinute = *credentialRate
 	}
-	if *credentialBurst > 0 {
+	if flagsSet["turn-credential-burst"] {
 		cfg.TurnCredentialBurst = *credentialBurst
 	}
-	if *maxOfferBody > 0 {
+	if flagsSet["max-offer-body"] {
 		cfg.MaxOfferBodyBytes = *maxOfferBody
 	}
-	if *maxReportBody > 0 {
+	if flagsSet["max-report-body"] {
 		cfg.MaxReportBodyBytes = *maxReportBody
 	}
-	setFlagString(&cfg.AccessToken, *accessToken)
-	setFlagString(&cfg.MetricsToken, *metricsToken)
+	setStringFlag(flagsSet, "access-token", &cfg.AccessToken, *accessToken)
+	setStringFlag(flagsSet, "metrics-token", &cfg.MetricsToken, *metricsToken)
 	if flagsSet["metrics"] {
 		cfg.EnableMetrics = *enableMetrics
 	}
-	setFlagString(&cfg.TurnSecret, *turnSecret)
+	setStringFlag(flagsSet, "turn-secret", &cfg.TurnSecret, *turnSecret)
 	if flagsSet["turn-servers"] {
 		cfg.TurnServers = splitCSV(*turnServers)
 	}
-	setFlagString(&cfg.TurnRealm, *turnRealm)
+	setStringFlag(flagsSet, "turn-realm", &cfg.TurnRealm, *turnRealm)
 	if flagsSet["embedded-turn"] {
 		cfg.EmbeddedTurn = *embeddedTurn
 	}
-	setFlagString(&cfg.EmbeddedTurnAddr, *embeddedTurnAddr)
-	setFlagString(&cfg.EmbeddedTurnPublicIP, *embeddedTurnIP)
-	if *embeddedTurnMbps > 0 {
+	setStringFlag(flagsSet, "embedded-turn-addr", &cfg.EmbeddedTurnAddr, *embeddedTurnAddr)
+	setStringFlag(flagsSet, "embedded-turn-ip", &cfg.EmbeddedTurnPublicIP, *embeddedTurnIP)
+	if flagsSet["embedded-turn-max-mbps"] {
 		cfg.EmbeddedTurnMaxMbps = *embeddedTurnMbps
 	}
-	setFlagString(&cfg.WebDir, *webDir)
+	setStringFlag(flagsSet, "web-dir", &cfg.WebDir, *webDir)
 
 	if err := cfg.Validate(); err != nil {
 		log.Fatalf("Invalid configuration: %v", err)
@@ -173,7 +206,6 @@ func main() {
 
 	var turnServer *turnserver.Server
 	if cfg.EmbeddedTurn {
-		var err error
 		turnServer, err = turnserver.New(turnserver.Config{
 			ListenAddr:       cfg.EmbeddedTurnAddr,
 			Realm:            cfg.TurnRealm,
@@ -220,6 +252,7 @@ func main() {
 
 	signalChannel := make(chan os.Signal, 1)
 	signal.Notify(signalChannel, syscall.SIGINT, syscall.SIGTERM)
+	defer signal.Stop(signalChannel)
 	errorChannel := make(chan error, 1)
 	go func() { errorChannel <- daemon.Run() }()
 
@@ -227,18 +260,25 @@ func main() {
 	case received := <-signalChannel:
 		log.Printf("Received signal %v, shutting down...", received)
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		if err := daemon.Shutdown(ctx); err != nil {
-			log.Printf("HTTP shutdown error: %v", err)
-		}
+		shutdownErr := daemon.Shutdown(ctx)
 		cancel()
-		if turnServer != nil {
+		if shutdownErr != nil {
+			// Do not close shared dependencies out from under handlers that failed
+			// to drain before the deadline. Process exit will terminate them.
+			log.Printf("HTTP shutdown did not drain cleanly: %v", shutdownErr)
+		}
+		httpDrained := shutdownErr == nil || (!errors.Is(shutdownErr, context.DeadlineExceeded) && !errors.Is(shutdownErr, context.Canceled))
+		if httpDrained && turnServer != nil {
 			if err := turnServer.Close(); err != nil {
 				log.Printf("TURN shutdown error: %v", err)
 			}
 		}
-	case err := <-errorChannel:
-		if err != nil {
-			log.Printf("Server stopped with error: %v", err)
+	case runErr := <-errorChannel:
+		if runErr != nil {
+			log.Printf("Server stopped with error: %v", runErr)
+		}
+		if err := daemon.Close(); err != nil {
+			log.Printf("Server resource cleanup error: %v", err)
 		}
 		if turnServer != nil {
 			_ = turnServer.Close()
@@ -246,9 +286,9 @@ func main() {
 	}
 }
 
-func setFlagString(target *string, value string) {
-	if value != "" {
-		*target = value
+func setStringFlag(flags map[string]bool, name string, target *string, value string) {
+	if flags[name] {
+		*target = strings.TrimSpace(value)
 	}
 }
 

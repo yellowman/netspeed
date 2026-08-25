@@ -74,6 +74,58 @@ const SpeedTest = (function() {
         return typeof value === 'string' ? value.trim() : '';
     }
 
+    function browserPageURL() {
+        if (typeof window !== 'undefined' && window.location) {
+            if (typeof window.location.href === 'string' && window.location.href) return window.location.href;
+            if (typeof window.location.origin === 'string' && window.location.origin) return `${window.location.origin}/`;
+        }
+        return 'http://localhost/';
+    }
+
+    function configuredAPIBaseURL() {
+        if (typeof globalThis === 'undefined') return '';
+        const configured = globalThis.NETSPEED_CONFIG?.apiBaseUrl;
+        if (configured === undefined || configured === null || String(configured).trim() === '') return '';
+
+        const parsed = new URL(String(configured).trim(), browserPageURL());
+        if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+            throw new Error(`NETSPEED_CONFIG.apiBaseUrl must use http or https: ${parsed.protocol}`);
+        }
+        if (parsed.username || parsed.password || parsed.search || parsed.hash) {
+            throw new Error('NETSPEED_CONFIG.apiBaseUrl cannot contain credentials, query parameters, or a fragment');
+        }
+        if (!parsed.pathname.endsWith('/')) parsed.pathname += '/';
+        return parsed.href;
+    }
+
+    function apiURL(path) {
+        const relativePath = String(path).replace(/^\/+/, '');
+        const base = configuredAPIBaseURL();
+        if (!base) return `/${relativePath}`;
+        return new URL(relativePath, base).href;
+    }
+
+    function requestCredentialsMode() {
+        if (typeof globalThis === 'undefined') return 'same-origin';
+        const configured = globalThis.NETSPEED_CONFIG?.credentials;
+        if (configured === 'omit' || configured === 'same-origin' || configured === 'include') return configured;
+        if (globalThis.NETSPEED_CONFIG?.includeCredentials === true) return 'include';
+        return 'same-origin';
+    }
+
+    function requestOptions(options = {}) {
+        return { ...options, credentials: requestCredentialsMode() };
+    }
+
+    function xhrCanHonorCredentials(url) {
+        const mode = requestCredentialsMode();
+        if (mode !== 'omit') return true;
+        // XHR cannot suppress cookies on a same-origin request. In that one
+        // case use Fetch so credentials:'omit' remains truthful, even though a
+        // non-streaming browser must then mark upload-load timing imprecise.
+        return new URL(url, browserPageURL()).origin !== new URL(browserPageURL()).origin;
+    }
+
     function authenticatedHeaders(base = {}) {
         const headers = { ...base };
         const token = accessToken();
@@ -249,7 +301,7 @@ const SpeedTest = (function() {
      * Fetch metadata from server
      */
     async function fetchMeta() {
-        const response = await fetch('/meta', { cache: 'no-store', headers: authenticatedHeaders() });
+        const response = await fetch(apiURL('/meta'), requestOptions({ cache: 'no-store', headers: authenticatedHeaders() }));
         if (!response.ok) throw new Error(`Failed to fetch metadata: HTTP ${response.status}`);
         const contentType = (response.headers.get('Content-Type') || '').toLowerCase();
         if (!contentType.startsWith('application/json')) {
@@ -262,7 +314,7 @@ const SpeedTest = (function() {
      * Fetch locations from server
      */
     async function fetchLocations() {
-        const response = await fetch('/locations', { cache: 'no-store', headers: authenticatedHeaders() });
+        const response = await fetch(apiURL('/locations'), requestOptions({ cache: 'no-store', headers: authenticatedHeaders() }));
         if (!response.ok) throw new Error(`Failed to fetch locations: HTTP ${response.status}`);
         const contentType = (response.headers.get('Content-Type') || '').toLowerCase();
         if (!contentType.startsWith('application/json')) {
@@ -277,7 +329,7 @@ const SpeedTest = (function() {
      */
     async function getResourceTiming(url) {
         // Resource Timing API stores absolute URLs, so convert relative to absolute
-        const absoluteUrl = new URL(url, window.location.origin).href;
+        const absoluteUrl = new URL(url, browserPageURL()).href;
 
         // Try multiple times with increasing delays
         for (let attempt = 0; attempt < 5; attempt++) {
@@ -398,6 +450,7 @@ const SpeedTest = (function() {
             };
 
             xhr.open('POST', url, true);
+            xhr.withCredentials = requestCredentialsMode() === 'include';
             xhr.responseType = 'arraybuffer';
             xhr.setRequestHeader('Content-Type', 'application/octet-stream');
             const tokenValue = accessToken();
@@ -441,9 +494,10 @@ const SpeedTest = (function() {
         const measId = `${Date.now()}-${Math.random().toString(36).slice(2, 11)}`;
         let url = `/__down?bytes=${bytes}&measId=${measId}&profile=${encodeURIComponent(profile)}&run=${runIndex}`;
         if (phase) url += `&during=${encodeURIComponent(phase)}`;
+        url = apiURL(url);
 
         const manualStart = performance.now();
-        const response = await fetch(url, { cache: 'no-store', signal: abortController?.signal, headers: authenticatedHeaders() });
+        const response = await fetch(url, requestOptions({ cache: 'no-store', signal: abortController?.signal, headers: authenticatedHeaders() }));
         if (!response.ok) {
             const detail = (await response.text()).trim();
             throw new Error(`Download failed: HTTP ${response.status}${detail ? `: ${detail}` : ''}`);
@@ -529,13 +583,14 @@ const SpeedTest = (function() {
         const measId = `${Date.now()}-${Math.random().toString(36).slice(2, 11)}`;
         let url = `/__up?measId=${measId}&profile=${encodeURIComponent(profile)}&run=${runIndex}`;
         if (phase) url += `&during=${encodeURIComponent(phase)}`;
+        url = apiURL(url);
 
         let response;
         let descriptor = null;
         if (typeof bodySource === 'function') descriptor = bodySource(activity);
         const body = descriptor?.body || bodySource || new Uint8Array(bytes);
 
-        if (!descriptor && activity && typeof XMLHttpRequest !== 'undefined' && body instanceof Uint8Array) {
+        if (!descriptor && activity && typeof XMLHttpRequest !== 'undefined' && body instanceof Uint8Array && xhrCanHonorCredentials(url)) {
             response = await uploadWithXHR(url, body, activity);
         } else {
             let token = null;
@@ -549,7 +604,7 @@ const SpeedTest = (function() {
                     signal: abortController?.signal
                 };
                 if (descriptor?.duplex) options.duplex = descriptor.duplex;
-                response = await fetch(url, options);
+                response = await fetch(url, requestOptions(options));
             } finally {
                 if (descriptor?.finish) descriptor.finish();
                 if (activity && !descriptor) activity.end(token);
@@ -598,15 +653,15 @@ const SpeedTest = (function() {
      */
     async function runLatencyProbe(phase, seq) {
         const measId = `${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
-        const url = `/__down?bytes=0&measId=${measId}&during=${phase}&seq=${seq}`;
+        const url = apiURL(`/__down?bytes=0&measId=${measId}&during=${phase}&seq=${seq}`);
 
         const startedAt = Date.now();
         const manualStart = performance.now();
-        const response = await fetch(url, {
+        const response = await fetch(url, requestOptions({
             cache: 'no-store',
             signal: abortController?.signal,
             headers: authenticatedHeaders()
-        });
+        }));
 
         if (!response.ok) {
             const detail = (await response.text()).trim();
@@ -702,9 +757,9 @@ const SpeedTest = (function() {
     async function quickBandwidthEstimate() {
         try {
             const bytes = 100 * 1000; // 100KB
-            const url = `/__down?bytes=${bytes}&measId=bw-check-${Date.now()}`;
+            const url = apiURL(`/__down?bytes=${bytes}&measId=bw-check-${Date.now()}`);
             const start = performance.now();
-            const response = await fetch(url, { cache: 'no-store', signal: abortController?.signal, headers: authenticatedHeaders() });
+            const response = await fetch(url, requestOptions({ cache: 'no-store', signal: abortController?.signal, headers: authenticatedHeaders() }));
             if (!response.ok) return 0;
             const received = await consumeResponseBody(response, bytes);
             if (received !== bytes) return 0;
@@ -1251,12 +1306,11 @@ const SpeedTest = (function() {
                 return result;
             }
 
-            const credResponse = await fetch('/api/turn/credentials', {
-                credentials: 'include',
+            const credResponse = await fetch(apiURL('/api/turn/credentials'), requestOptions({
                 cache: 'no-store',
                 headers: authenticatedHeaders(),
                 signal: abortController?.signal
-            });
+            }));
             if (!credResponse.ok) throw new Error(`TURN credentials failed: HTTP ${credResponse.status}`);
             const credType = (credResponse.headers.get('Content-Type') || '').toLowerCase();
             if (!credType.startsWith('application/json')) throw new Error('TURN credentials returned non-JSON data');
@@ -1323,10 +1377,9 @@ const SpeedTest = (function() {
                 pc.onicegatheringstatechange = complete;
             });
 
-            const offerResponse = await fetch('/api/packet-test/offer', {
+            const offerResponse = await fetch(apiURL('/api/packet-test/offer'), requestOptions({
                 method: 'POST',
                 headers: authenticatedHeaders({ 'Content-Type': 'application/json' }),
-                credentials: 'include',
                 cache: 'no-store',
                 signal: abortController?.signal,
                 body: JSON.stringify({
@@ -1334,7 +1387,7 @@ const SpeedTest = (function() {
                     type: pc.localDescription.type,
                     testProfile: 'loss-exact-v1'
                 })
-            });
+            }));
             if (!offerResponse.ok) throw new Error(`Packet test offer failed: HTTP ${offerResponse.status}`);
             const offerType = (offerResponse.headers.get('Content-Type') || '').toLowerCase();
             if (!offerType.startsWith('application/json')) throw new Error('Packet test offer returned non-JSON data');
@@ -1379,10 +1432,9 @@ const SpeedTest = (function() {
             results.dataChannelStats = await collectDataChannelStats(pc);
             results.lossPattern = analyzeLossPattern(actualSent, acknowledgements);
 
-            const reportResponse = await fetch('/api/packet-test/report', {
+            const reportResponse = await fetch(apiURL('/api/packet-test/report'), requestOptions({
                 method: 'POST',
                 headers: authenticatedHeaders({ 'Content-Type': 'application/json' }),
-                credentials: 'include',
                 cache: 'no-store',
                 signal: abortController?.signal,
                 body: JSON.stringify({
@@ -1395,7 +1447,7 @@ const SpeedTest = (function() {
                     rttP90Ms: rttStats.p90,
                     jitterMs
                 })
-            });
+            }));
             if (!reportResponse.ok) throw new Error(`Packet report failed: HTTP ${reportResponse.status}`);
             const reportType = (reportResponse.headers.get('Content-Type') || '').toLowerCase();
             if (!reportType.startsWith('application/json')) throw new Error('Packet report returned non-JSON data');
@@ -2315,6 +2367,9 @@ const SpeedTest = (function() {
         api.__test = {
             fetchMeta,
             fetchLocations,
+            apiURL,
+            requestCredentialsMode,
+            xhrCanHonorCredentials,
             runDownload,
             runUpload,
             selectWindowPlan,

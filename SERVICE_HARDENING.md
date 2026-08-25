@@ -300,9 +300,10 @@ Metrics are process-local and reset on restart.
 | `-embedded-turn-max-mbps` | `NETSPEEDD_EMBEDDED_TURN_MAX_MBPS` | 100 Mbps combined UDP |
 
 Existing daemon settings such as listen address, TLS paths, CORS origins, maximum
-transfer bytes, locations, GeoIP database, hostname, and colo remain available.
-Run `netspeedd -h` for the flag list. The example YAML file is not currently
-loaded by the daemon; resolving or removing that legacy surface remains Phase 5.
+transfer bytes, locations, GeoIP databases, hostname, and colo remain available.
+Run `netspeedd -h` for the flag list. Phase 5 removed the unsupported YAML
+example; flags and strictly parsed `NETSPEEDD_*` environment variables are the
+canonical configuration surface. See [`HTTP_DEPLOYMENT.md`](HTTP_DEPLOYMENT.md).
 
 ## 10. remaining boundaries
 
@@ -311,13 +312,11 @@ it does not turn a shared-token speed test into a multi-tenant identity system.
 It also does not persist quotas across restarts or coordinate them across daemon
 replicas.
 
-The following remain Phase 5 or Phase 6 work:
+Phase 5 completed endpoint-aware deadlines, cross-origin API routing and timing
+exposure, response-writer/recovery semantics, HTTP-first shutdown, TLS
+validation, the configuration-format decision, and independent ASN/City GeoIP
+wiring. Those details are canonical in [`HTTP_DEPLOYMENT.md`](HTTP_DEPLOYMENT.md).
 
-- endpoint-aware HTTP deadlines for deliberately slow or long transfers;
-- complete cross-origin API-base and timing-exposure behavior;
-- preservation of optional `http.ResponseWriter` interfaces and committed-write
-  recovery semantics;
-- HTTP-first shutdown ordering for shared dependencies;
-- YAML/TLS/GeoIP deployment-contract cleanup;
-- genuine Pion WebRTC/TURN interoperability, supported-OS CI, vulnerability
-  scanning, and reproducible release artifacts.
+The remaining Phase 6 work is genuine Pion WebRTC/TURN interoperability,
+supported-OS CI, vulnerability scanning, end-to-end release qualification, and
+reproducible release artifacts.

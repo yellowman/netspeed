@@ -893,73 +893,17 @@ func gradeForVideoChat(s Summary) Grade {
 
 ---
 
-## 9. configuration file — legacy design note
+## 9. configuration contract
 
-The current Phase 4 CLI does not load YAML and has no `--config` flag. It uses
-command-line flags plus `NETSPEED_TOKEN`. Implementing or removing this older
-configuration proposal remains Phase 5 work.
+The Go CLI intentionally has no YAML loader and no `--config` flag. Server URL,
+mode, output, timeout, and phase-selection behavior are controlled by the
+command-line flags in section 1. The bearer token may also be supplied through
+`NETSPEED_TOKEN`; an explicit `--token` takes precedence.
 
-### 9.1 proposed config file format
-
-`~/.netspeed.yaml`:
-
-```yaml
-# Default server
-server: https://speed.example.com
-
-# Output preferences
-color: true
-verbose: false
-
-# Test settings
-timeout: 60s
-skip_packet_loss: false
-
-# Quick mode settings
-quick:
-  download_runs: 3
-  upload_runs: 3
-  latency_probes: 5
-```
-
-### 9.2 config loading
-
-```go
-type Config struct {
-    Server         string        `yaml:"server"`
-    Color          bool          `yaml:"color"`
-    Verbose        bool          `yaml:"verbose"`
-    Timeout        time.Duration `yaml:"timeout"`
-    SkipPacketLoss bool          `yaml:"skip_packet_loss"`
-    Quick          QuickConfig   `yaml:"quick"`
-}
-
-type QuickConfig struct {
-    DownloadRuns   int `yaml:"download_runs"`
-    UploadRuns     int `yaml:"upload_runs"`
-    LatencyProbes  int `yaml:"latency_probes"`
-}
-
-func LoadConfig(path string) (*Config, error) {
-    // Default config
-    cfg := &Config{
-        Color:   true,
-        Timeout: 60 * time.Second,
-        Quick: QuickConfig{
-            DownloadRuns:  3,
-            UploadRuns:    3,
-            LatencyProbes: 5,
-        },
-    }
-
-    // Override from file if exists
-    if data, err := os.ReadFile(path); err == nil {
-        yaml.Unmarshal(data, cfg)
-    }
-
-    return cfg, nil
-}
-```
+This decision avoids a second partially implemented configuration grammar. The
+daemon independently uses flags plus strictly parsed `NETSPEEDD_*` environment
+variables as documented in `HTTP_DEPLOYMENT.md` and
+`configs/netspeedd.env.example`.
 
 ---
 

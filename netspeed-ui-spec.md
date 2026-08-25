@@ -23,8 +23,29 @@ etc.) are intentionally out of scope.
 > [`MEASUREMENT_PROTOCOL_V2.md`](MEASUREMENT_PROTOCOL_V2.md) is the canonical
 > measurement contract. [`SERVICE_HARDENING.md`](SERVICE_HARDENING.md) defines
 > Phase 4 bearer authentication, admission responses, and trusted deployment
-> boundaries. Older cross-origin and cookie/session examples in this design
-> document are not the current implementation contract.
+> boundaries. [`HTTP_DEPLOYMENT.md`](HTTP_DEPLOYMENT.md) defines the completed
+> Phase 5 API-base, credentials, CORS, and Resource Timing contract. Older
+> incompatible cross-origin and cookie/session examples in this design document
+> are non-normative.
+
+## Phase 5 browser deployment contract
+
+When `globalThis.NETSPEED_CONFIG.apiBaseUrl` is blank, every request uses the
+page origin and root API paths. A configured base may be absolute or relative,
+may contain a path prefix, must use HTTP or HTTPS, and cannot contain URL
+credentials, a query, or a fragment.
+
+`globalThis.NETSPEED_CONFIG.credentials` accepts `omit`, `same-origin`, or
+`include` and defaults to `same-origin`. The browser applies that policy across
+Fetch and upload fallback. Because XHR cannot suppress same-origin cookies, the
+non-streaming same-origin `omit` case uses Fetch and marks upload-load timing
+imprecise. `include` requires an explicit daemon origin with credentialed CORS;
+wildcard credentialed CORS is invalid.
+
+All metadata, location, throughput, latency, TURN, offer, and report requests go
+through the same URL and credential helpers. Cross-origin timing requires the
+daemon's matching `Timing-Allow-Origin` response. Disallowed browser origins
+receive `403`. See `HTTP_DEPLOYMENT.md`.
 
 ## 1. backend api surface (from the frontend's point of view)
 

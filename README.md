@@ -13,8 +13,8 @@ It has three parts:
 The module requires Go 1.21.3 or newer.
 
 This archive includes the completed Phase 1 measurement-integrity, Phase 2
-measurement-methodology, Phase 3 WebRTC-lifecycle, and Phase 4 service-hardening
-work. The canonical contracts are:
+measurement-methodology, Phase 3 WebRTC-lifecycle, Phase 4 service-hardening,
+and Phase 5 HTTP/deployment work. The canonical contracts are:
 
 - [`MEASUREMENT_PROTOCOL_V2.md`](MEASUREMENT_PROTOCOL_V2.md) — verified transfers,
   fixed-duration windows, loaded-latency overlap, and packet frames;
@@ -22,6 +22,8 @@ work. The canonical contracts are:
   disconnect recovery, and teardown;
 - [`SERVICE_HARDENING.md`](SERVICE_HARDENING.md) — admission limits,
   authentication, trusted proxies, TURN defaults, quotas, and metrics;
+- [`HTTP_DEPLOYMENT.md`](HTTP_DEPLOYMENT.md) — endpoint deadlines, browser API
+  routing, CORS/Resource Timing, TLS, configuration, GeoIP, and shutdown;
 - [`IMPROVEMENT_PHASES.md`](IMPROVEMENT_PHASES.md) — completed and remaining work.
 
 quick start
@@ -65,7 +67,14 @@ running the daemon
 ```
 
 Flags override environment values. Run `./netspeedd -h` for the complete flag
-list.
+list. The daemon uses a 10-second header timeout, 30-second control-request
+timeout, five-minute per-transfer timeout, and two-minute keep-alive idle
+timeout by default. It does not apply a whole-request `ReadTimeout` or
+`WriteTimeout` to slow measurement bodies.
+
+Configuration is flags plus `NETSPEEDD_*` environment variables. There is no
+YAML loader. A complete example is
+[`configs/netspeedd.env.example`](configs/netspeedd.env.example).
 
 ### protected deployment
 
@@ -92,7 +101,10 @@ The browser engine reads a configuration object defined before `speedtest.js`:
 
 ```html
 <script>
-  window.NETSPEED_CONFIG = {
+  globalThis.NETSPEED_CONFIG = {
+    // Omit apiBaseUrl for same-origin deployment.
+    apiBaseUrl: "https://speed-api.example.com/",
+    credentials: "omit",
     accessToken: "replace-with-a-deployment-token"
   };
 </script>
@@ -101,7 +113,9 @@ The browser engine reads a configuration object defined before `speedtest.js`:
 
 A browser-visible token is not secret from that browser. Use this only for a
 controlled installation or inject a short-lived token through an authenticated
-upstream application.
+upstream application. For a separate UI origin, configure the matching daemon
+CORS origin; use `credentials: "include"` only with explicit credentialed CORS.
+See [`HTTP_DEPLOYMENT.md`](HTTP_DEPLOYMENT.md).
 
 ### trusted reverse proxy
 
@@ -276,16 +290,22 @@ netspeed/
 │   └── webrtc/          # packet-test session manager
 ├── tests/web/           # dependency-free browser-engine tests
 ├── web/                 # browser UI
-└── configs/             # legacy examples; YAML loading is Phase 5 work
+└── configs/             # locations and shell-compatible daemon env examples
 ```
 
 running the UI separately
 -------------------------
 
-The browser currently uses relative API paths. Serve `web/` through `netspeedd`
-or place every daemon route behind the same-origin reverse proxy as the static
-files. A configurable cross-origin API base and complete timing-exposure
-contract remain Phase 5 work.
+Same-origin deployment needs no browser configuration. For a separately hosted
+UI, set `globalThis.NETSPEED_CONFIG.apiBaseUrl` before loading `speedtest.js` and
+configure `NETSPEEDD_ALLOWED_ORIGINS` on the daemon. The API base may include a
+path prefix. The daemon returns matching CORS and `Timing-Allow-Origin` headers,
+and rejects browser requests from unapproved origins.
+
+The complete proxy, credential, timeout, TLS, configuration, GeoIP, and shutdown
+contract is in [`HTTP_DEPLOYMENT.md`](HTTP_DEPLOYMENT.md). The daemon accepts
+flags and `NETSPEEDD_*` environment variables; it intentionally has no YAML
+loader. Start from [`configs/netspeedd.env.example`](configs/netspeedd.env.example).
 
 license
 -------

@@ -2,6 +2,8 @@
 package meta
 
 import (
+	"errors"
+	"fmt"
 	"log"
 	"net"
 	"net/http"
@@ -52,14 +54,14 @@ func (p *GeoIPProvider) MetaFor(r *http.Request) ClientMeta {
 		ClientIP:     clientIP,
 		HTTPProtocol: HTTPProtocolFromRequest(r),
 		Colo:         p.colo,
-		// Defaults
-		Country:    "US",
-		City:       "Unknown",
-		Region:     "Unknown",
+		// Unknown location values remain empty until a database lookup succeeds.
+		Country:    "",
+		City:       "",
+		Region:     "",
 		PostalCode: "",
 		Latitude:   0,
 		Longitude:  0,
-		Timezone:   "UTC",
+		Timezone:   "",
 	}
 
 	// Look up ASN from IP
@@ -90,41 +92,51 @@ type CityGeoIPProvider struct {
 	clientAddress *clientaddr.Resolver
 }
 
-// NewCityGeoIPProvider creates a provider that uses both ASN and City databases.
-// Pass empty string for cityDBPath to skip city lookups.
+// NewCityGeoIPProvider creates a provider using either or both MaxMind ASN and
+// City databases. At least one path must be non-empty.
 func NewCityGeoIPProvider(asnDBPath, cityDBPath, hostname, colo string, clientAddress *clientaddr.Resolver) (*CityGeoIPProvider, error) {
-	asnDB, err := geoip2.Open(asnDBPath)
-	if err != nil {
-		return nil, err
+	if asnDBPath == "" && cityDBPath == "" {
+		return nil, fmt.Errorf("at least one GeoIP database path is required")
 	}
 
-	var cityDB *geoip2.Reader
-	if cityDBPath != "" {
-		cityDB, err = geoip2.Open(cityDBPath)
-		if err != nil {
-			asnDB.Close()
-			return nil, err
-		}
-	}
-
-	return &CityGeoIPProvider{
-		asnDB:         asnDB,
-		cityDB:        cityDB,
+	provider := &CityGeoIPProvider{
 		hostname:      hostname,
 		colo:          colo,
 		clientAddress: clientAddress,
-	}, nil
+	}
+	var err error
+	if asnDBPath != "" {
+		provider.asnDB, err = geoip2.Open(asnDBPath)
+		if err != nil {
+			return nil, fmt.Errorf("open ASN database: %w", err)
+		}
+	}
+	if cityDBPath != "" {
+		provider.cityDB, err = geoip2.Open(cityDBPath)
+		if err != nil {
+			if provider.asnDB != nil {
+				_ = provider.asnDB.Close()
+			}
+			return nil, fmt.Errorf("open City database: %w", err)
+		}
+	}
+	return provider, nil
 }
 
-// Close closes all GeoIP databases.
+// Close closes all GeoIP databases and returns any close failures.
 func (p *CityGeoIPProvider) Close() error {
+	var closeErrors []error
 	if p.asnDB != nil {
-		p.asnDB.Close()
+		if err := p.asnDB.Close(); err != nil {
+			closeErrors = append(closeErrors, err)
+		}
 	}
 	if p.cityDB != nil {
-		p.cityDB.Close()
+		if err := p.cityDB.Close(); err != nil {
+			closeErrors = append(closeErrors, err)
+		}
 	}
-	return nil
+	return errors.Join(closeErrors...)
 }
 
 // MetaFor returns metadata for the given request, including ASN and city lookup.
@@ -136,14 +148,14 @@ func (p *CityGeoIPProvider) MetaFor(r *http.Request) ClientMeta {
 		ClientIP:     clientIP,
 		HTTPProtocol: HTTPProtocolFromRequest(r),
 		Colo:         p.colo,
-		// Defaults
-		Country:    "US",
-		City:       "Unknown",
-		Region:     "Unknown",
+		// Unknown location values remain empty until a database lookup succeeds.
+		Country:    "",
+		City:       "",
+		Region:     "",
 		PostalCode: "",
 		Latitude:   0,
 		Longitude:  0,
-		Timezone:   "UTC",
+		Timezone:   "",
 	}
 
 	ip := net.ParseIP(clientIP)

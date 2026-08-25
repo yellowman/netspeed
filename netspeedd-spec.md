@@ -20,11 +20,10 @@ it covers:
 > **Implemented authority:** [`MEASUREMENT_PROTOCOL_V2.md`](MEASUREMENT_PROTOCOL_V2.md)
 > is the canonical measurement contract,
 > [`WEBRTC_LIFECYCLE.md`](WEBRTC_LIFECYCLE.md) is the canonical session contract,
-> and [`SERVICE_HARDENING.md`](SERVICE_HARDENING.md) is the canonical Phase 4
-> deployment-safety contract. Those documents supersede incompatible legacy
-> examples in this combined design note. Phase 5 still owns HTTP timeout,
-> cross-origin, response-writer, shutdown-order, YAML, TLS, and GeoIP contract
-> corrections.
+> [`SERVICE_HARDENING.md`](SERVICE_HARDENING.md) is the canonical Phase 4
+> deployment-safety contract, and [`HTTP_DEPLOYMENT.md`](HTTP_DEPLOYMENT.md) is
+> the canonical Phase 5 HTTP/deployment contract. Those documents supersede
+> incompatible legacy examples in this combined design note.
 
 Phase 4 normative addendum
 --------------------------
@@ -44,6 +43,26 @@ chains are ignored. Embedded TURN is disabled and loopback-only by default; a
 non-loopback listener requires an explicit advertised IP and a positive UDP rate
 ceiling. See `SERVICE_HARDENING.md` for the complete status and configuration
 contract.
+
+Phase 5 normative addendum
+--------------------------
+
+The implemented daemon uses a header-only server timeout plus endpoint-specific
+control and transfer deadlines; it does not use whole-request `ReadTimeout` or
+`WriteTimeout`. The browser supports a validated `apiBaseUrl`, path prefixes,
+and one Fetch/XHR credentials mode. Allowed origins receive matching CORS and
+`Timing-Allow-Origin` headers; disallowed browser origins receive `403`.
+
+The HTTP writer records only the first status and actual bytes, delegates modern
+streaming/response-controller capabilities, and aborts a committed stream after
+a panic instead of appending a replacement error body. Graceful shutdown drains
+HTTP handlers before WebRTC, GeoIP, or embedded TURN are closed.
+
+Flags and strictly parsed `NETSPEEDD_*` environment variables are the canonical
+configuration surface; there is no YAML loader. Partial or invalid direct-TLS
+configuration fails before listening. ASN and City MaxMind databases are wired
+independently and configured database failures are fatal. See
+`HTTP_DEPLOYMENT.md` for the complete contract.
 
 1. api surface
 ==============
@@ -300,19 +319,27 @@ responsibilities:
 
 ```go
 type Config struct {
-    ListenAddr     string
-    TLSCertFile    string
-    TLSKeyFile     string
-    MaxBytes       int64
-    ReadTimeout    time.Duration
-    WriteTimeout   time.Duration
-    IdleTimeout    time.Duration
-    EnableCORS     bool
-    AllowedOrigins []string
+    ListenAddr string
 
-    LocationsFile       string
-    GeoIPDatabasePath   string
-    TrustedProxyCIDRs   []string
+    TLSCertFile string
+    TLSKeyFile  string
+    MaxBytes    int64
+
+    ReadHeaderTimeout time.Duration
+    ControlTimeout    time.Duration
+    TransferTimeout   time.Duration
+    IdleTimeout       time.Duration
+
+    EnableCORS           bool
+    AllowedOrigins       []string
+    CORSAllowCredentials bool
+
+    LocationsFile          string
+    GeoIPASNDatabasePath   string
+    GeoIPCityDatabasePath  string
+    TrustedProxyCIDRs      []string
+    Hostname               string
+    Colo                   string
 
     MaxConcurrentTransfers          int
     MaxConcurrentTransfersPerClient int
@@ -339,11 +366,14 @@ type Config struct {
     EmbeddedTurnAddr    string
     EmbeddedTurnPublicIP string
     EmbeddedTurnMaxMbps int64
+    WebDir              string
 }
 ```
 
-The complete defaults, validation rules, flags, and environment variables are
-normative in `SERVICE_HARDENING.md`.
+The Phase 4 service controls are normative in `SERVICE_HARDENING.md`. Timeout,
+CORS, TLS, configuration, GeoIP, and shutdown behavior are normative in
+`HTTP_DEPLOYMENT.md`. Flags explicitly supplied on the command line override
+strictly parsed `NETSPEEDD_*` environment values.
 
 2.3 core interfaces
 -------------------
@@ -379,15 +409,17 @@ type MetaProvider interface {
 
 **implementations**
 
-1. `StaticMetaProvider`  
+1. `StaticMetaProvider`
    - returns fixed values (handy for testing).
 
-2. `GeoIPMetaProvider`  
-   - uses `GeoIPDatabasePath` and client ip to look up:
-     - country, region, city, postal code
-     - latitude, longitude
-     - asn and as org
-   - maps country / region / city to closest colo or uses a separate colo map.
+2. `CityGeoIPProvider`
+   - opens `GeoIPASNDatabasePath` and `GeoIPCityDatabasePath` independently;
+   - the ASN database supplies ASN and organization;
+   - the City database supplies country, subdivision, city, postal code,
+     coordinates, and timezone;
+   - either database may be configured alone;
+   - a configured database that cannot open fails startup;
+   - absent City data remains unknown rather than defaulting to a country.
 
 3. Trusted proxy client-address resolution
    - forwarding headers are ignored unless the direct peer belongs to an explicitly configured proxy CIDR;
@@ -439,12 +471,12 @@ type Server struct {
 
 ### initialization
 
-- parse config (flags/env/toml/yaml — up to you)
+- load defaults, overlay strictly parsed environment values, then explicit flags; no YAML/TOML loader is implemented
 - build `metaProvider` based on geo configuration
 - build `locations` from `LocationsFile`
 - allocate `payloadBuf` (e.g. 1 MiB or 4 MiB), optionally fill with random bytes
 - configure `http.ServeMux` and route handlers
-- create `http.Server` with timeouts from config
+- create `http.Server` with `ReadHeaderTimeout` and `IdleTimeout`; apply control/transfer deadlines in endpoint wrappers
 - optionally wrap `mux` in logging / recover / cors middleware
 
 ---
@@ -594,11 +626,12 @@ if `EnableCORS` is `true`:
   Access-Control-Allow-Origin: <origin or *>
   ```
 
-if you want to strictly validate allowed origins, you can:
-
-- check `Origin` header
-- allow only if it’s in `AllowedOrigins`
-- otherwise omit `Access-Control-Allow-Origin` (which blocks browser use)
+The implemented CORS middleware validates origins at startup and at request
+time. Allowed origins receive `Access-Control-Allow-Origin` and matching
+`Timing-Allow-Origin`; credentialed CORS requires explicit origins. Both
+preflight and actual requests with a disallowed `Origin` receive `403` so an
+unapproved page cannot consume measurement bandwidth blindly. Requests without
+an `Origin` header are unaffected.
 
 ---
 
@@ -608,15 +641,11 @@ if you want to strictly validate allowed origins, you can:
 3.1 concurrency & timeouts
 --------------------------
 
-- use `http.Server` with:
-
-  ```go
-  ReadTimeout:  15 * time.Second,
-  WriteTimeout: 60 * time.Second,  // uploads/downloads can be long
-  IdleTimeout:  120 * time.Second,
-  ```
-
-- consider a reverse proxy (nginx/haProxy) in front for slow client protection and tls termination, but not required.
+- set `http.Server.ReadHeaderTimeout` to 10 seconds and `IdleTimeout` to two minutes by default;
+- leave whole-request `ReadTimeout` and `WriteTimeout` disabled;
+- apply a 30-second deadline to control/static routes and a five-minute deadline to each upload/download request;
+- set only the read/write sides an endpoint needs, attach the same request-context deadline, and clear connection deadlines before keep-alive reuse;
+- when a reverse proxy terminates TLS, disable buffering/compression/transformation on measurement routes and make proxy body/time limits at least as large as the daemon limits.
 
 3.2 memory usage
 ----------------
@@ -710,7 +739,7 @@ netspeed/
     locations/
       store.go       // LocationStore + file-based impl
   configs/
-    config.example.yaml
+    netspeedd.env.example
     locations.example.json
   go.mod
   go.sum
