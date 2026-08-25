@@ -19,48 +19,50 @@ etc.) are intentionally out of scope.
 ---
 
 
-> **Phase 2 authority:** the implemented Go CLI requires measurement protocol
-> version 2. [`MEASUREMENT_PROTOCOL_V2.md`](MEASUREMENT_PROTOCOL_V2.md) is the
-> canonical wire and methodology contract. It supersedes pre-v2 giant-profile,
-> post-transfer loaded-latency, short JSON packet, and retained-payload examples.
-> The C-client material in section 14 remains a legacy design note until Phase 6.
+> **Implemented authority:** the Go CLI requires measurement protocol version 2.
+> [`MEASUREMENT_PROTOCOL_V2.md`](MEASUREMENT_PROTOCOL_V2.md) is the canonical
+> measurement contract, and [`SERVICE_HARDENING.md`](SERVICE_HARDENING.md)
+> defines Phase 4 bearer authentication and server admission responses. The
+> configuration-file and C-client sections below remain legacy design notes
+> until Phase 5 and Phase 6 respectively.
 
 ## 1. command line interface
 
 ### 1.1 basic usage
 
 ```
-netspeed-cli [flags] [server-url]
+netspeed [flags] [server-url]
 ```
 
 **positional arguments:**
 
-- `server-url` - base URL of the speed test server (default: auto-detect or use config)
+- `server-url` - base URL of the speed test server (default: `http://localhost:8080`)
 
 **examples:**
 
 ```bash
 # Run full test against default server
-netspeed-cli
+netspeed
 
 # Run test against specific server
-netspeed-cli https://speed.example.com
+netspeed https://speed.example.com
 
 # Quick test (fewer fixed windows and latency samples)
-netspeed-cli --quick
+netspeed --quick
 
 # JSON output for scripting
-netspeed-cli --json
+netspeed --json
 
 # Verbose output with timing details
-netspeed-cli -v
+netspeed -v
 ```
 
 ### 1.2 command line flags
 
 | Flag | Short | Default | Description |
 |------|-------|---------|-------------|
-| `--server` | `-s` | auto | Server URL |
+| `--server` | `-s` | `http://localhost:8080` | Server URL |
+| `--token` | | `NETSPEED_TOKEN` | Shared bearer token for protected servers |
 | `--quick` | `-q` | false | Quick test mode (fewer samples) |
 | `--download-only` | `-d` | false | Skip upload tests |
 | `--upload-only` | `-u` | false | Skip download tests |
@@ -71,7 +73,6 @@ netspeed-cli -v
 | `--quiet` | | false | Minimal output (final results only) |
 | `--timeout` | `-t` | 60s | Total test timeout |
 | `--no-color` | | false | Disable colored output |
-| `--config` | `-c` | ~/.netspeed.yaml | Config file path |
 | `--version` | `-V` | | Show version and exit |
 | `--help` | `-h` | | Show help and exit |
 
@@ -118,6 +119,7 @@ netspeed-cli -v
   "longitude": -121.3153,
   "timezone": "America/Los_Angeles",
   "maxTransferBytes": 1073741824,
+  "maxConcurrentTransfersPerClient": 24,
   "measurementProtocolVersion": 2,
   "uploadReceiptVersion": 1,
   "packetLossFrameVersion": 1
@@ -126,11 +128,20 @@ netspeed-cli -v
 
 **CLI usage**
 
+- send `Authorization: Bearer <token>` on every service request when `--token`
+  or `NETSPEED_TOKEN` is set;
+- cap all request batches at `maxConcurrentTransfersPerClient` and cap sustained
+  load flows at one less than that value so a loaded-latency probe has a slot;
+- fail capability negotiation when the advertised per-client ceiling is below 2;
 - display server and client info in header:
   ```
   Server: speed.example.com (PDX)
   Client: 203.0.113.42 (Example ISP, Inc. AS13254)
   ```
+
+Phase 4 overload and authentication responses are not measurements. The CLI
+rejects `401`, `429`, and `503` responses and does not time their bodies as
+throughput or latency samples.
 
 ---
 
@@ -500,7 +511,7 @@ Download: [=========>          ]  45%  523.4 Mbps
 **header:**
 
 ```
-netspeed-cli v1.0.0
+netspeed v1.0.0
 Server: speed.example.com (PDX - Portland, US)
 Client: 203.0.113.42 (Example ISP AS13254)
 Protocol: HTTP/2.0
@@ -750,7 +761,7 @@ Error: Failed to connect to server
   Server: speed.example.com
   Reason: connection refused
 
-Retry with: netspeed-cli -s https://speed.example.com
+Retry with: netspeed -s https://speed.example.com
 ```
 
 ---
@@ -817,7 +828,8 @@ baseline estimate:
 | 2–9.999 Gbps | 8 |
 | 10 Gbps or more | 16 |
 
-Each flow reuses the bounded generator and issues complete requests until the
+The selected count is capped at `maxConcurrentTransfersPerClient - 1`; the
+remaining slot is reserved for a loaded-latency probe. Each flow reuses the bounded generator and issues complete requests until the
 window owner stops it. No profile-sized payload is cached.
 
 ## 8. network quality scoring
@@ -881,9 +893,13 @@ func gradeForVideoChat(s Summary) Grade {
 
 ---
 
-## 9. configuration file
+## 9. configuration file — legacy design note
 
-### 9.1 config file format
+The current Phase 4 CLI does not load YAML and has no `--config` flag. It uses
+command-line flags plus `NETSPEED_TOKEN`. Implementing or removing this older
+configuration proposal remains Phase 5 work.
+
+### 9.1 proposed config file format
 
 `~/.netspeed.yaml`:
 
@@ -1195,7 +1211,7 @@ type QuickModeConfig struct {
 ### 13.2 quick mode output
 
 ```
-netspeed-cli v1.0.0 (quick mode)
+netspeed v1.0.0 (quick mode)
 Server: speed.example.com (PDX)
 ────────────────────────────────────────────────
   Download:   ~850 Mbps

@@ -7,29 +7,31 @@ import (
 	"net/http"
 
 	"github.com/oschwald/geoip2-golang"
+
+	"github.com/yellowman/netspeed/internal/clientaddr"
 )
 
 // GeoIPProvider looks up ASN/organization info from MaxMind GeoLite2-ASN database.
 type GeoIPProvider struct {
-	db         *geoip2.Reader
-	hostname   string
-	colo       string
-	trustProxy bool
+	db            *geoip2.Reader
+	hostname      string
+	colo          string
+	clientAddress *clientaddr.Resolver
 }
 
 // NewGeoIPProvider creates a new GeoIP provider using the given database file.
 // The dbPath should point to a MaxMind GeoLite2-ASN.mmdb file.
-func NewGeoIPProvider(dbPath, hostname, colo string, trustProxy bool) (*GeoIPProvider, error) {
+func NewGeoIPProvider(dbPath, hostname, colo string, clientAddress *clientaddr.Resolver) (*GeoIPProvider, error) {
 	db, err := geoip2.Open(dbPath)
 	if err != nil {
 		return nil, err
 	}
 
 	return &GeoIPProvider{
-		db:         db,
-		hostname:   hostname,
-		colo:       colo,
-		trustProxy: trustProxy,
+		db:            db,
+		hostname:      hostname,
+		colo:          colo,
+		clientAddress: clientAddress,
 	}, nil
 }
 
@@ -43,7 +45,7 @@ func (p *GeoIPProvider) Close() error {
 
 // MetaFor returns metadata for the given request, including ASN lookup.
 func (p *GeoIPProvider) MetaFor(r *http.Request) ClientMeta {
-	clientIP := ClientIPFromRequest(r, p.trustProxy)
+	clientIP := ClientIPFromRequest(r, p.clientAddress)
 
 	meta := ClientMeta{
 		Hostname:     p.hostname,
@@ -81,16 +83,16 @@ func (p *GeoIPProvider) MetaFor(r *http.Request) ClientMeta {
 
 // CityGeoIPProvider looks up both ASN and city/location data from MaxMind databases.
 type CityGeoIPProvider struct {
-	asnDB      *geoip2.Reader
-	cityDB     *geoip2.Reader
-	hostname   string
-	colo       string
-	trustProxy bool
+	asnDB         *geoip2.Reader
+	cityDB        *geoip2.Reader
+	hostname      string
+	colo          string
+	clientAddress *clientaddr.Resolver
 }
 
 // NewCityGeoIPProvider creates a provider that uses both ASN and City databases.
 // Pass empty string for cityDBPath to skip city lookups.
-func NewCityGeoIPProvider(asnDBPath, cityDBPath, hostname, colo string, trustProxy bool) (*CityGeoIPProvider, error) {
+func NewCityGeoIPProvider(asnDBPath, cityDBPath, hostname, colo string, clientAddress *clientaddr.Resolver) (*CityGeoIPProvider, error) {
 	asnDB, err := geoip2.Open(asnDBPath)
 	if err != nil {
 		return nil, err
@@ -106,11 +108,11 @@ func NewCityGeoIPProvider(asnDBPath, cityDBPath, hostname, colo string, trustPro
 	}
 
 	return &CityGeoIPProvider{
-		asnDB:      asnDB,
-		cityDB:     cityDB,
-		hostname:   hostname,
-		colo:       colo,
-		trustProxy: trustProxy,
+		asnDB:         asnDB,
+		cityDB:        cityDB,
+		hostname:      hostname,
+		colo:          colo,
+		clientAddress: clientAddress,
 	}, nil
 }
 
@@ -127,7 +129,7 @@ func (p *CityGeoIPProvider) Close() error {
 
 // MetaFor returns metadata for the given request, including ASN and city lookup.
 func (p *CityGeoIPProvider) MetaFor(r *http.Request) ClientMeta {
-	clientIP := ClientIPFromRequest(r, p.trustProxy)
+	clientIP := ClientIPFromRequest(r, p.clientAddress)
 
 	meta := ClientMeta{
 		Hostname:     p.hostname,

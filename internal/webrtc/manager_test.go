@@ -932,3 +932,68 @@ func TestRandomSessionIDHasUUIDv4Shape(t *testing.T) {
 		t.Fatalf("variant nibble = %q, want 8, 9, a, or b", id[19])
 	}
 }
+
+func TestOfferReservationsEnforceGlobalAndPerClientCapacityBeforePeerCreation(t *testing.T) {
+	manager := newManager(
+		Config{
+			IdleTimeout:          time.Minute,
+			MaxSessionTime:       time.Hour,
+			CleanupTicker:        time.Hour,
+			DisconnectGrace:      time.Second,
+			ICEGatherTimeout:     time.Second,
+			MaxSessions:          2,
+			MaxSessionsPerClient: 1,
+		},
+		managerDependencies{
+			factory:   &fakePeerConnectionFactory{},
+			now:       time.Now,
+			afterFunc: (&manualScheduler{}).afterFunc,
+			newID:     fixedID("11111111-2222-4333-8444-555555555555"),
+		},
+	)
+	t.Cleanup(manager.Shutdown)
+
+	if err := manager.beginOffer("client-a"); err != nil {
+		t.Fatalf("reserve client-a: %v", err)
+	}
+	defer manager.finishOffer("client-a")
+	if err := manager.beginOffer("client-a"); !errors.Is(err, ErrClientSessionCapacity) {
+		t.Fatalf("second client-a reservation error=%v; want per-client capacity", err)
+	}
+	if err := manager.beginOffer("client-b"); err != nil {
+		t.Fatalf("reserve client-b: %v", err)
+	}
+	defer manager.finishOffer("client-b")
+	if err := manager.beginOffer("client-c"); !errors.Is(err, ErrSessionCapacity) {
+		t.Fatalf("third reservation error=%v; want global capacity", err)
+	}
+}
+
+func TestCompletePacketLossSessionRequiresCreatingClient(t *testing.T) {
+	manager := newTestManager(t, nil, nil)
+	peer := newFakePeerConnection(true)
+	session := newSession(manager.ctx, "owned-session", "normal", peer, time.Now)
+	session.clientKey = "198.51.100.10"
+	session.recordProbe(7, time.Now())
+	if err := manager.registerSession(session); err != nil {
+		t.Fatalf("register session: %v", err)
+	}
+
+	if snapshot, ok := manager.CompletePacketLossSession("owned-session", "198.51.100.11"); ok {
+		t.Fatalf("other client completed session: %+v", snapshot)
+	}
+	if got := manager.SessionCount(); got != 1 {
+		t.Fatalf("session count after ownership rejection=%d; want 1", got)
+	}
+
+	snapshot, ok := manager.CompletePacketLossSession("owned-session", "198.51.100.10")
+	if !ok || snapshot.ForwardReceived != 1 {
+		t.Fatalf("owner completion snapshot=%+v ok=%v", snapshot, ok)
+	}
+	if got := manager.SessionCount(); got != 0 {
+		t.Fatalf("session count after completion=%d; want 0", got)
+	}
+	if got := peer.closeCount.Load(); got != 1 {
+		t.Fatalf("peer close count=%d; want 1", got)
+	}
+}

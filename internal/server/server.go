@@ -11,25 +11,46 @@ import (
 	"time"
 
 	pionwebrtc "github.com/pion/webrtc/v3"
+	"github.com/yellowman/netspeed/internal/clientaddr"
 	"github.com/yellowman/netspeed/internal/config"
+	"github.com/yellowman/netspeed/internal/limits"
 	"github.com/yellowman/netspeed/internal/locations"
 	"github.com/yellowman/netspeed/internal/meta"
+	"github.com/yellowman/netspeed/internal/telemetry"
 	"github.com/yellowman/netspeed/internal/webrtc"
 )
 
 // Server is the main netspeedd HTTP server.
 type Server struct {
-	cfg           *config.Config
-	httpServer    *http.Server
-	metaProvider  meta.Provider
-	geoipProvider *meta.GeoIPProvider // track for cleanup
-	locations     locations.Store
-	payloadBuf    []byte
-	webrtcManager *webrtc.Manager
+	cfg                   *config.Config
+	httpServer            *http.Server
+	metaProvider          meta.Provider
+	geoipProvider         *meta.GeoIPProvider // track for cleanup
+	locations             locations.Store
+	payloadBuf            []byte
+	webrtcManager         *webrtc.Manager
+	clientAddress         *clientaddr.Resolver
+	transferLimiter       *limits.TransferLimiter
+	bandwidthQuota        *limits.ByteQuota
+	offerRateLimiter      *limits.KeyedRateLimiter
+	turnCredentialLimiter *limits.KeyedRateLimiter
+	metrics               *serviceMetrics
+	relayStats            telemetry.RelayStatsProvider
 }
 
 // New creates a new Server with the given configuration.
 func New(cfg *config.Config) (*Server, error) {
+	if cfg == nil {
+		return nil, fmt.Errorf("configuration is required")
+	}
+	if err := cfg.Validate(); err != nil {
+		return nil, fmt.Errorf("invalid configuration: %w", err)
+	}
+	clientAddress, err := clientaddr.NewResolver(cfg.TrustedProxyCIDRs)
+	if err != nil {
+		return nil, err
+	}
+
 	// Build meta provider based on configuration
 	var metaProvider meta.Provider
 	var geoipProvider *meta.GeoIPProvider
@@ -40,7 +61,7 @@ func New(cfg *config.Config) (*Server, error) {
 			cfg.GeoIPDatabasePath,
 			cfg.Hostname,
 			cfg.Colo,
-			cfg.TrustProxyHeaders,
+			clientAddress,
 		)
 		if err != nil {
 			log.Printf("Warning: failed to load GeoIP database: %v (falling back to static provider)", err)
@@ -54,9 +75,9 @@ func New(cfg *config.Config) (*Server, error) {
 	// Fall back to static provider if GeoIP not available
 	if metaProvider == nil {
 		metaProvider = &meta.StaticProvider{
-			Hostname:   cfg.Hostname,
-			Colo:       cfg.Colo,
-			TrustProxy: cfg.TrustProxyHeaders,
+			Hostname:      cfg.Hostname,
+			Colo:          cfg.Colo,
+			ClientAddress: clientAddress,
 			// Default values
 			Country:    "US",
 			City:       "Unknown",
@@ -99,15 +120,17 @@ func New(cfg *config.Config) (*Server, error) {
 
 	// Build WebRTC manager
 	webrtcCfg := webrtc.DefaultConfig()
-	if len(cfg.TurnServers) > 0 && cfg.TurnSecret != "" {
-		// ICE servers will be set dynamically per-request with fresh credentials
-		// For now, just set up STUN servers if available
+	webrtcCfg.MaxSessions = cfg.MaxWebRTCSessions
+	webrtcCfg.MaxSessionsPerClient = cfg.MaxWebRTCSessionsPerClient
+	if len(cfg.TurnServers) > 0 {
+		// Public STUN servers do not need credentials and can be installed on
+		// the server-side peer immediately. TURN credentials remain short-lived
+		// and are issued to clients by /api/turn/credentials.
 		var iceServers []pionwebrtc.ICEServer
-		for _, server := range cfg.TurnServers {
-			if strings.HasPrefix(server, "stun:") {
-				iceServers = append(iceServers, pionwebrtc.ICEServer{
-					URLs: []string{server},
-				})
+		for _, iceServer := range cfg.TurnServers {
+			lower := strings.ToLower(strings.TrimSpace(iceServer))
+			if strings.HasPrefix(lower, "stun:") || strings.HasPrefix(lower, "stuns:") {
+				iceServers = append(iceServers, pionwebrtc.ICEServer{URLs: []string{iceServer}})
 			}
 		}
 		webrtcCfg.ICEServers = iceServers
@@ -115,20 +138,29 @@ func New(cfg *config.Config) (*Server, error) {
 	webrtcMgr := webrtc.NewManager(webrtcCfg)
 
 	s := &Server{
-		cfg:           cfg,
-		metaProvider:  metaProvider,
-		geoipProvider: geoipProvider,
-		locations:     locationStore,
-		payloadBuf:    payloadBuf,
-		webrtcManager: webrtcMgr,
+		cfg:                   cfg,
+		metaProvider:          metaProvider,
+		geoipProvider:         geoipProvider,
+		locations:             locationStore,
+		payloadBuf:            payloadBuf,
+		webrtcManager:         webrtcMgr,
+		clientAddress:         clientAddress,
+		transferLimiter:       limits.NewTransferLimiter(cfg.MaxConcurrentTransfers, cfg.MaxConcurrentTransfersPerClient),
+		bandwidthQuota:        limits.NewByteQuota(cfg.ClientBandwidthQuotaBytes, cfg.ClientBandwidthQuotaWindow),
+		offerRateLimiter:      limits.NewKeyedRateLimiter(float64(cfg.WebRTCOfferRatePerMinute)/60.0, cfg.WebRTCOfferBurst),
+		turnCredentialLimiter: limits.NewKeyedRateLimiter(float64(cfg.TurnCredentialRatePerMinute)/60.0, cfg.TurnCredentialBurst),
+		metrics:               &serviceMetrics{},
 	}
 
 	// Set up HTTP mux and routes
 	mux := http.NewServeMux()
 	s.registerRoutes(mux)
 
+	// Authentication applies to the service surface but not static assets or
+	// the health check. CORS remains outside it so preflight requests work.
+	var handler http.Handler = s.authenticationMiddleware(mux)
+
 	// Wrap with CORS middleware if enabled
-	var handler http.Handler = mux
 	if cfg.EnableCORS {
 		handler = s.corsMiddleware(handler)
 	}
@@ -168,8 +200,11 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/packet-test/offer", s.handlePacketTestOffer)
 	mux.HandleFunc("/api/packet-test/report", s.handlePacketTestReport)
 
-	// Health check
+	// Health and optional Prometheus metrics.
 	mux.HandleFunc("/health", s.handleHealth)
+	if s.cfg.EnableMetrics {
+		mux.HandleFunc("/metrics", s.handleMetrics)
+	}
 
 	// Static file serving for the web UI
 	if s.cfg.WebDir != "" {
@@ -184,7 +219,7 @@ func (s *Server) staticFileHandler(fs http.Handler) http.Handler {
 		// Skip API and measurement endpoints
 		path := r.URL.Path
 		if path == "/meta" || path == "/__down" || path == "/__up" ||
-			path == "/locations" || path == "/health" ||
+			path == "/locations" || path == "/health" || path == "/metrics" ||
 			strings.HasPrefix(path, "/api/") ||
 			strings.HasPrefix(path, "/cdn-cgi/") {
 			http.NotFound(w, r)
@@ -269,7 +304,7 @@ func (s *Server) corsMiddleware(next http.Handler) http.Handler {
 		// Handle preflight requests
 		if r.Method == http.MethodOptions {
 			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-			w.Header().Set("Access-Control-Allow-Headers", "Content-Type, X-Requested-With")
+			w.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type, X-Requested-With")
 			w.Header().Set("Access-Control-Max-Age", "86400")
 			w.WriteHeader(http.StatusNoContent)
 			return
@@ -279,23 +314,23 @@ func (s *Server) corsMiddleware(next http.Handler) http.Handler {
 	})
 }
 
-// loggingMiddleware logs HTTP requests.
+// loggingMiddleware logs HTTP requests and updates request gauges.
 func (s *Server) loggingMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
+		s.metrics.httpRequests.Add(1)
+		s.metrics.httpActive.Add(1)
+		defer s.metrics.httpActive.Add(-1)
 
-		// Create a response wrapper to capture status code
 		rw := &responseWriter{ResponseWriter: w, statusCode: http.StatusOK}
-
 		next.ServeHTTP(rw, r)
 
-		duration := time.Since(start)
 		log.Printf("%s %s %d %s %s",
 			r.Method,
 			r.URL.Path,
 			rw.statusCode,
-			duration,
-			meta.ClientIPFromRequest(r, s.cfg.TrustProxyHeaders),
+			time.Since(start),
+			s.clientIP(r),
 		)
 	})
 }
@@ -305,6 +340,7 @@ func (s *Server) recoveryMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		defer func() {
 			if err := recover(); err != nil {
+				s.metrics.internalFailures.Add(1)
 				log.Printf("Panic recovered: %v", err)
 				http.Error(w, "Internal Server Error", http.StatusInternalServerError)
 			}

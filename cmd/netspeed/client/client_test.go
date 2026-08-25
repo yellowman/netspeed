@@ -25,6 +25,15 @@ func testClient(server *httptest.Server) *Client {
 	return c
 }
 
+func TestContainsTURNURL(t *testing.T) {
+	if containsTURNURL([]string{"stun:stun.example.test:3478", "stuns:stun.example.test:5349"}) {
+		t.Fatal("STUN-only list was classified as TURN")
+	}
+	if !containsTURNURL([]string{"stun:stun.example.test:3478", " TuRn:relay.example.test:3478?transport=udp "}) {
+		t.Fatal("TURN URL was not detected")
+	}
+}
+
 func TestSelectWindowPlanBoundsMemoryAndScalesWithConcurrency(t *testing.T) {
 	plan := selectWindowPlan(1_000_000, 1<<30, false)
 	if plan.Concurrency != 16 {
@@ -731,5 +740,56 @@ func TestJSONPreservesFirstWindowAndPreciseLoadTracking(t *testing.T) {
 		if !strings.Contains(text, field) {
 			t.Fatalf("loaded latency JSON = %s; want %s", text, field)
 		}
+	}
+}
+
+func TestSetRequestHeadersAddsOptionalBearerToken(t *testing.T) {
+	client := New(Config{AccessToken: "token-0123456789"})
+	request := httptest.NewRequest(http.MethodGet, "http://example.test/meta", nil)
+	client.setRequestHeaders(request)
+	if got := request.Header.Get("Authorization"); got != "Bearer token-0123456789" {
+		t.Fatalf("Authorization=%q; want bearer token", got)
+	}
+
+	withoutToken := New(Config{})
+	request = httptest.NewRequest(http.MethodGet, "http://example.test/meta", nil)
+	withoutToken.setRequestHeaders(request)
+	if got := request.Header.Get("Authorization"); got != "" {
+		t.Fatalf("unexpected Authorization=%q", got)
+	}
+}
+
+func TestClampLoadConcurrencyReservesProbeSlot(t *testing.T) {
+	client := New(Config{})
+	client.maxConcurrentTransfersPerClient = 4
+	if got := client.clampLoadConcurrency(16); got != 3 {
+		t.Fatalf("clamped concurrency=%d; want 3", got)
+	}
+	if got := client.clampLoadConcurrency(2); got != 2 {
+		t.Fatalf("small concurrency=%d; want 2", got)
+	}
+}
+
+func TestRunRejectsServerTransferCeilingTooLowForLoadedLatency(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/meta" {
+			t.Fatalf("unexpected request after metadata negotiation: %s", r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(Meta{
+			MaxTransferBytes:                2_000_000,
+			MaxConcurrentTransfersPerClient: 1,
+			MeasurementProtocolVersion:      protocol.MeasurementProtocolVersion,
+			UploadReceiptVersion:            protocol.UploadReceiptVersion,
+			PacketLossFrameVersion:          protocol.PacketLossFrameVersion,
+		})
+	}))
+	defer server.Close()
+
+	client := New(Config{ServerURL: server.URL})
+	client.httpClient = server.Client()
+	_, err := client.Run(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "at least 2") {
+		t.Fatalf("Run error=%v; want transfer-ceiling rejection", err)
 	}
 }

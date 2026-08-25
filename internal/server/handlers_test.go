@@ -10,7 +10,9 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/yellowman/netspeed/internal/clientaddr"
 	"github.com/yellowman/netspeed/internal/config"
+	"github.com/yellowman/netspeed/internal/limits"
 	"github.com/yellowman/netspeed/internal/meta"
 	"github.com/yellowman/netspeed/internal/protocol"
 )
@@ -38,12 +40,21 @@ func (r *errorReadCloser) Read(p []byte) (int, error) {
 func (*errorReadCloser) Close() error { return nil }
 
 func measurementTestServer(maxBytes int64) *Server {
+	cfg := config.Default()
+	cfg.MaxBytes = maxBytes
+	resolver, err := clientaddr.NewResolver(nil)
+	if err != nil {
+		panic(err)
+	}
 	return &Server{
-		cfg: &config.Config{
-			MaxBytes:           maxBytes,
-			EnableServerTiming: true,
-		},
-		metaProvider: &meta.StaticProvider{Hostname: "test", Colo: "TST"},
+		cfg:                   cfg,
+		metaProvider:          &meta.StaticProvider{Hostname: "test", Colo: "TST", ClientAddress: resolver},
+		clientAddress:         resolver,
+		transferLimiter:       limits.NewTransferLimiter(cfg.MaxConcurrentTransfers, cfg.MaxConcurrentTransfersPerClient),
+		bandwidthQuota:        limits.NewByteQuota(cfg.ClientBandwidthQuotaBytes, cfg.ClientBandwidthQuotaWindow),
+		offerRateLimiter:      limits.NewKeyedRateLimiter(float64(cfg.WebRTCOfferRatePerMinute)/60.0, cfg.WebRTCOfferBurst),
+		turnCredentialLimiter: limits.NewKeyedRateLimiter(float64(cfg.TurnCredentialRatePerMinute)/60.0, cfg.TurnCredentialBurst),
+		metrics:               &serviceMetrics{},
 	}
 }
 
@@ -66,6 +77,9 @@ func TestHandleMetaAdvertisesMeasurementCapabilities(t *testing.T) {
 	}
 	if got.MaxTransferBytes != 12345 {
 		t.Fatalf("maxTransferBytes = %d; want 12345", got.MaxTransferBytes)
+	}
+	if got.MaxConcurrentTransfersPerClient != s.cfg.MaxConcurrentTransfersPerClient {
+		t.Fatalf("maxConcurrentTransfersPerClient = %d; want %d", got.MaxConcurrentTransfersPerClient, s.cfg.MaxConcurrentTransfersPerClient)
 	}
 	if got.MeasurementProtocolVersion != protocol.MeasurementProtocolVersion {
 		t.Fatalf("measurementProtocolVersion = %d; want %d", got.MeasurementProtocolVersion, protocol.MeasurementProtocolVersion)

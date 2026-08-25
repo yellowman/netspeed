@@ -66,7 +66,7 @@ func (c *Client) fetchTURNCredentials(ctx context.Context) (*turnCredentials, er
 	if err != nil {
 		return nil, err
 	}
-	setRequestHeaders(req)
+	c.setRequestHeaders(req)
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
@@ -106,7 +106,7 @@ func (c *Client) exchangeOffer(ctx context.Context, offerSDP string) (*signaling
 	if err != nil {
 		return nil, err
 	}
-	setRequestHeaders(req)
+	c.setRequestHeaders(req)
 	req.Header.Set("Content-Type", "application/json")
 
 	resp, err := c.httpClient.Do(req)
@@ -142,7 +142,7 @@ func (c *Client) reportPacketTest(
 	if err != nil {
 		return packetTestReportResponse{}, err
 	}
-	setRequestHeaders(req)
+	c.setRequestHeaders(req)
 	req.Header.Set("Content-Type", "application/json")
 
 	resp, err := c.httpClient.Do(req)
@@ -231,6 +231,16 @@ func validatePacketReport(report packetTestReportResponse, probesSent, acknowled
 	return nil
 }
 
+func containsTURNURL(servers []string) bool {
+	for _, server := range servers {
+		lower := strings.ToLower(strings.TrimSpace(server))
+		if strings.HasPrefix(lower, "turn:") || strings.HasPrefix(lower, "turns:") {
+			return true
+		}
+	}
+	return false
+}
+
 // runPacketLossTestWebRTC runs the exact-size WebRTC packet loss test.
 func (c *Client) runPacketLossTestWebRTC(ctx context.Context) (*PacketLossResult, error) {
 	if c.packetLossFrameVersion < protocol.PacketLossFrameVersion {
@@ -244,6 +254,9 @@ func (c *Client) runPacketLossTestWebRTC(ctx context.Context) (*PacketLossResult
 	credentials, err := c.fetchTURNCredentials(ctx)
 	if err != nil {
 		return &PacketLossResult{Unavailable: true, Reason: fmt.Sprintf("TURN unavailable: %v", err)}, nil
+	}
+	if !containsTURNURL(credentials.Servers) {
+		return &PacketLossResult{Unavailable: true, Reason: "TURN relay is not configured"}, nil
 	}
 
 	peerConnection, err := webrtc.NewPeerConnection(webrtc.Configuration{

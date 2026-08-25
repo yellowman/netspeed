@@ -4,9 +4,11 @@ This document is the canonical lifecycle contract for the Phase 3 packet-test
 server. The packet frame and measurement formulas remain defined by
 [`MEASUREMENT_PROTOCOL_V2.md`](MEASUREMENT_PROTOCOL_V2.md).
 
-Phase 3 is intentionally limited to correctness of session ownership,
-concurrency, cancellation, and teardown. Public-service limits, authentication,
-TURN exposure, and abuse controls remain Phase 4 work.
+Phase 3 established correctness of session ownership, concurrency,
+cancellation, and teardown. Phase 4 extends that lifecycle with bounded offer
+admission and client-bound report completion. Authentication, trusted client
+identity, rates, and TURN exposure are defined by
+[`SERVICE_HARDENING.md`](SERVICE_HARDENING.md).
 
 ## 1. ownership invariants
 
@@ -51,8 +53,13 @@ session back into an active state.
 
 ## 3. offer admission and cancellation
 
-`HandleOffer` accepts the HTTP request context. Admission is closed atomically
-with shutdown:
+`HandleOfferForClient` accepts the HTTP request context and the resolved client
+identity. Before allocating a peer connection, the manager reserves one pending
+offer against both the global and per-client session ceilings. Active sessions
+and pending offers are considered together so concurrent signaling cannot race
+past a limit. The reservation is released on every return path.
+
+Admission is closed atomically with shutdown:
 
 - the manager checks `closed` and increments the in-flight-offer wait group while
   holding the same lock;
@@ -137,6 +144,11 @@ in flight.
 After shutdown, ICE configuration updates are ignored and new offers return
 `ErrManagerClosed`.
 
+A completed packet report uses `CompletePacketLossSession(testID, clientKey)`.
+The manager checks the creating client identity while holding its map lock,
+removes the exact session, snapshots counters, and closes resources outside the
+lock. Missing and wrong-owner IDs both return the same false result.
+
 ## 7. deterministic qualification
 
 The Pion surface is wrapped behind small peer-connection and data-channel
@@ -157,7 +169,9 @@ interfaces. Tests use adversarial fakes to verify:
 - shutdown cancels and joins in-progress negotiation;
 - concurrent shutdown is idempotent;
 - ICE-server slices are deep-copied;
-- lifecycle, statistics, configuration, and close operations are race-free.
+- lifecycle, statistics, configuration, and close operations are race-free;
+- pending offers cannot exceed global or per-client capacity;
+- packet reports cannot complete a session created by another client identity.
 
 The external Pion/TURN interoperability test remains part of Phase 6 release
 qualification when the real modules and a relay environment are available.

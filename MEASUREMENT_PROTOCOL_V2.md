@@ -1,16 +1,23 @@
 # netspeed measurement protocol v2
 
-This document is the canonical measurement contract for the Go daemon,
+This document is the canonical measurement contract for the Phase 2 Go daemon,
 Go CLI, and browser client. It supersedes the giant-profile, post-transfer loaded
 latency, and short JSON packet examples retained in older design notes.
 
+Phase 4 adds admission capabilities without changing measurement protocol version
+2. Service authentication, quotas, trusted client identity, and overload status
+codes are defined by [`SERVICE_HARDENING.md`](SERVICE_HARDENING.md). WebRTC
+ownership and teardown remain defined by
+[`WEBRTC_LIFECYCLE.md`](WEBRTC_LIFECYCLE.md).
+
 ## 1. capability negotiation
 
-A client starts with `GET /meta` and requires these fields:
+A Phase 2 client starts with `GET /meta` and requires these fields:
 
 ```json
 {
   "maxTransferBytes": 1073741824,
+  "maxConcurrentTransfersPerClient": 24,
   "measurementProtocolVersion": 2,
   "uploadReceiptVersion": 1,
   "packetLossFrameVersion": 1
@@ -19,6 +26,9 @@ A client starts with `GET /meta` and requires these fields:
 
 - `maxTransferBytes` is the largest individual download or upload request the
   daemon will accept.
+- `maxConcurrentTransfersPerClient` is the active request ceiling attributed to
+  one resolved client. It must be at least `2`; supported clients reserve one
+  slot for a loaded-latency probe and use at most the remainder for load flows.
 - `measurementProtocolVersion` must be at least `2`.
 - `uploadReceiptVersion` must be at least `1` whenever uploads are requested.
 - `packetLossFrameVersion` must be at least `1` for the packet test.
@@ -106,7 +116,9 @@ The result is rounded up to 64 KiB and bounded by:
 - browser non-streaming download fallback: 100 MB;
 - browser non-streaming upload fallback: 8 MiB.
 
-Concurrency increases instead of allowing unbounded requests:
+Concurrency increases instead of allowing unbounded requests. Each nominal
+flow count is additionally capped at `maxConcurrentTransfersPerClient - 1` so a
+loaded-latency probe always has an admission slot:
 
 | estimated rate | Go flow count | browser flow count |
 |---:|---:|---:|
@@ -201,7 +213,9 @@ valid probe once. Duplicate probes are counted but not acknowledged again.
 
 The packet test uses TURN relay candidates in the current implementation.
 Session ownership, disconnect recovery, and teardown are defined by
-[`WEBRTC_LIFECYCLE.md`](WEBRTC_LIFECYCLE.md). 
+[`WEBRTC_LIFECYCLE.md`](WEBRTC_LIFECYCLE.md). Phase 4 public-service limits
+and TURN hardening are defined by
+[`SERVICE_HARDENING.md`](SERVICE_HARDENING.md).
 
 ### 6.2 frame layout
 
@@ -276,3 +290,28 @@ The clients calculate the same 0–100 confidence score from five visible gates:
 Scores of 80–100 are `high`, 50–79 are `medium`, and lower scores are `low`.
 Unavailable packet loss remains `null`/`N/A`; it is never converted to zero and
 causes application grades that depend on loss to be `Incomplete`.
+
+## 8. service-admission responses
+
+Phase 4 servers may reject a transfer before measurement work begins:
+
+- `429 Too Many Requests` for a per-client transfer ceiling or byte quota;
+- `503 Service Unavailable` for the global transfer ceiling;
+- `Retry-After` on admission and quota rejections.
+
+These responses are not samples. Clients discard them and fail the affected
+window rather than measuring the small error body. Authentication failures are
+also not samples and return `401` as defined by `SERVICE_HARDENING.md`.
+
+## 9. implementation and compatibility boundaries
+
+- The Go CLI and browser are the supported v2 clients in this archive.
+- The C client has not been migrated or qualified for protocol v2; that remains
+  Phase 6 work.
+- Phase 3 completed WebRTC session ownership, cancellation, disconnect recovery, and race-safe teardown.
+- Phase 4 completed public-service concurrency, rate, quota, authentication,
+  trusted-proxy, metrics, and TURN controls.
+- Phase 5 will finish timeout, reverse-proxy/CORS, HTTP wrapper, shutdown, and
+  configuration contracts.
+- Phase 6 will run the real dependency-integrated release matrix and qualify or
+  remove the C client.

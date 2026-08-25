@@ -7,23 +7,24 @@ import (
 
 // Meta holds server and client metadata (matches web client format).
 type Meta struct {
-	Hostname                   string  `json:"hostname"`
-	ClientIP                   string  `json:"clientIp"`
-	HTTPProtocol               string  `json:"httpProtocol"`
-	ASN                        int     `json:"asn"`
-	ASOrganization             string  `json:"asOrganization"`
-	Colo                       string  `json:"colo"`
-	Country                    string  `json:"country"`
-	City                       string  `json:"city"`
-	Region                     string  `json:"region"`
-	PostalCode                 string  `json:"postalCode"`
-	Latitude                   float64 `json:"latitude"`
-	Longitude                  float64 `json:"longitude"`
-	Timezone                   string  `json:"timezone,omitempty"`
-	MaxTransferBytes           int64   `json:"maxTransferBytes,omitempty"`
-	MeasurementProtocolVersion int     `json:"measurementProtocolVersion,omitempty"`
-	UploadReceiptVersion       int     `json:"uploadReceiptVersion,omitempty"`
-	PacketLossFrameVersion     int     `json:"packetLossFrameVersion,omitempty"`
+	Hostname                        string  `json:"hostname"`
+	ClientIP                        string  `json:"clientIp"`
+	HTTPProtocol                    string  `json:"httpProtocol"`
+	ASN                             int     `json:"asn"`
+	ASOrganization                  string  `json:"asOrganization"`
+	Colo                            string  `json:"colo"`
+	Country                         string  `json:"country"`
+	City                            string  `json:"city"`
+	Region                          string  `json:"region"`
+	PostalCode                      string  `json:"postalCode"`
+	Latitude                        float64 `json:"latitude"`
+	Longitude                       float64 `json:"longitude"`
+	Timezone                        string  `json:"timezone,omitempty"`
+	MaxTransferBytes                int64   `json:"maxTransferBytes,omitempty"`
+	MaxConcurrentTransfersPerClient int     `json:"maxConcurrentTransfersPerClient,omitempty"`
+	MeasurementProtocolVersion      int     `json:"measurementProtocolVersion,omitempty"`
+	UploadReceiptVersion            int     `json:"uploadReceiptVersion,omitempty"`
+	PacketLossFrameVersion          int     `json:"packetLossFrameVersion,omitempty"`
 }
 
 // LatencySample represents a single latency measurement (internal format).

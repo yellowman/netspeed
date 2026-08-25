@@ -2,31 +2,33 @@
 package meta
 
 import (
-	"net"
 	"net/http"
 	"strconv"
 	"strings"
+
+	"github.com/yellowman/netspeed/internal/clientaddr"
 )
 
 // ClientMeta holds per-client metadata for the /meta endpoint.
 type ClientMeta struct {
-	Hostname                   string  `json:"hostname"`
-	ClientIP                   string  `json:"clientIp"`
-	HTTPProtocol               string  `json:"httpProtocol"`
-	ASN                        int     `json:"asn"`
-	ASOrg                      string  `json:"asOrganization"`
-	Colo                       string  `json:"colo"`
-	Country                    string  `json:"country"`
-	City                       string  `json:"city"`
-	Region                     string  `json:"region"`
-	PostalCode                 string  `json:"postalCode"`
-	Latitude                   float64 `json:"latitude"`
-	Longitude                  float64 `json:"longitude"`
-	Timezone                   string  `json:"timezone,omitempty"`
-	MaxTransferBytes           int64   `json:"maxTransferBytes"`
-	MeasurementProtocolVersion int     `json:"measurementProtocolVersion"`
-	UploadReceiptVersion       int     `json:"uploadReceiptVersion"`
-	PacketLossFrameVersion     int     `json:"packetLossFrameVersion"`
+	Hostname                        string  `json:"hostname"`
+	ClientIP                        string  `json:"clientIp"`
+	HTTPProtocol                    string  `json:"httpProtocol"`
+	ASN                             int     `json:"asn"`
+	ASOrg                           string  `json:"asOrganization"`
+	Colo                            string  `json:"colo"`
+	Country                         string  `json:"country"`
+	City                            string  `json:"city"`
+	Region                          string  `json:"region"`
+	PostalCode                      string  `json:"postalCode"`
+	Latitude                        float64 `json:"latitude"`
+	Longitude                       float64 `json:"longitude"`
+	Timezone                        string  `json:"timezone,omitempty"`
+	MaxTransferBytes                int64   `json:"maxTransferBytes"`
+	MaxConcurrentTransfersPerClient int     `json:"maxConcurrentTransfersPerClient"`
+	MeasurementProtocolVersion      int     `json:"measurementProtocolVersion"`
+	UploadReceiptVersion            int     `json:"uploadReceiptVersion"`
+	PacketLossFrameVersion          int     `json:"packetLossFrameVersion"`
 }
 
 // Provider is the interface for extracting client metadata from requests.
@@ -34,30 +36,14 @@ type Provider interface {
 	MetaFor(r *http.Request) ClientMeta
 }
 
-// ClientIPFromRequest extracts the client IP from a request.
-// If trustProxy is true, it checks X-Forwarded-For and CF-Connecting-IP headers.
-func ClientIPFromRequest(r *http.Request, trustProxy bool) string {
-	if trustProxy {
-		if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
-			// Take the first entry before the first comma
-			if idx := strings.Index(xff, ","); idx != -1 {
-				return strings.TrimSpace(xff[:idx])
-			}
-			return strings.TrimSpace(xff)
-		}
-		if cip := r.Header.Get("CF-Connecting-IP"); cip != "" {
-			return cip
-		}
-		if xri := r.Header.Get("X-Real-IP"); xri != "" {
-			return xri
-		}
+// ClientIPFromRequest resolves the request identity using only forwarding
+// headers supplied by configured trusted proxy CIDRs. A nil resolver always
+// returns the direct TCP peer.
+func ClientIPFromRequest(request *http.Request, resolver *clientaddr.Resolver) string {
+	if resolver == nil {
+		return clientaddr.DirectIP(request)
 	}
-
-	host, _, err := net.SplitHostPort(r.RemoteAddr)
-	if err != nil {
-		return r.RemoteAddr
-	}
-	return host
+	return resolver.ClientIP(request)
 }
 
 // HTTPProtocolFromRequest returns the HTTP protocol version string.
@@ -68,25 +54,25 @@ func HTTPProtocolFromRequest(r *http.Request) string {
 // StaticProvider returns fixed values for all requests.
 // Useful for testing or single-server deployments.
 type StaticProvider struct {
-	Hostname   string
-	Colo       string
-	Country    string
-	City       string
-	Region     string
-	PostalCode string
-	Latitude   float64
-	Longitude  float64
-	Timezone   string
-	ASN        int
-	ASOrg      string
-	TrustProxy bool
+	Hostname      string
+	Colo          string
+	Country       string
+	City          string
+	Region        string
+	PostalCode    string
+	Latitude      float64
+	Longitude     float64
+	Timezone      string
+	ASN           int
+	ASOrg         string
+	ClientAddress *clientaddr.Resolver
 }
 
 // MetaFor returns metadata for the given request.
 func (p *StaticProvider) MetaFor(r *http.Request) ClientMeta {
 	return ClientMeta{
 		Hostname:     p.Hostname,
-		ClientIP:     ClientIPFromRequest(r, p.TrustProxy),
+		ClientIP:     ClientIPFromRequest(r, p.ClientAddress),
 		HTTPProtocol: HTTPProtocolFromRequest(r),
 		ASN:          p.ASN,
 		ASOrg:        p.ASOrg,
@@ -101,47 +87,46 @@ func (p *StaticProvider) MetaFor(r *http.Request) ClientMeta {
 	}
 }
 
-// HeaderProvider reads metadata from upstream proxy/CDN headers.
-// Useful when netspeedd sits behind an existing CDN.
+// HeaderProvider reads metadata from upstream proxy/CDN headers. Deployments
+// should use it only behind the same trusted proxy boundary as ClientAddress.
 type HeaderProvider struct {
-	Hostname   string
-	Colo       string
-	TrustProxy bool
+	Hostname      string
+	Colo          string
+	ClientAddress *clientaddr.Resolver
 }
 
 // MetaFor extracts metadata from request headers.
 func (p *HeaderProvider) MetaFor(r *http.Request) ClientMeta {
-	meta := ClientMeta{
+	metadata := ClientMeta{
 		Hostname:     p.Hostname,
-		ClientIP:     ClientIPFromRequest(r, p.TrustProxy),
+		ClientIP:     ClientIPFromRequest(r, p.ClientAddress),
 		HTTPProtocol: HTTPProtocolFromRequest(r),
 		Colo:         p.Colo,
 	}
 
-	// Read from CF-style headers if present
 	if country := r.Header.Get("CF-IPCountry"); country != "" {
-		meta.Country = country
+		metadata.Country = country
 	}
 	if city := r.Header.Get("CF-City"); city != "" {
-		meta.City = city
+		metadata.City = city
 	}
 	if region := r.Header.Get("CF-Region"); region != "" {
-		meta.Region = region
+		metadata.Region = region
 	}
 	if postalCode := r.Header.Get("CF-Postal-Code"); postalCode != "" {
-		meta.PostalCode = postalCode
+		metadata.PostalCode = postalCode
 	}
 	if lat := r.Header.Get("CF-Latitude"); lat != "" {
-		meta.Latitude = parseFloat(lat)
+		metadata.Latitude = parseFloat(lat)
 	}
 	if lon := r.Header.Get("CF-Longitude"); lon != "" {
-		meta.Longitude = parseFloat(lon)
+		metadata.Longitude = parseFloat(lon)
 	}
 	if timezone := r.Header.Get("CF-Timezone"); timezone != "" {
-		meta.Timezone = timezone
+		metadata.Timezone = timezone
 	}
 
-	return meta
+	return metadata
 }
 
 func parseFloat(s string) float64 {

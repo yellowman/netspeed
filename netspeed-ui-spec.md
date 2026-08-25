@@ -19,11 +19,12 @@ etc.) are intentionally out of scope.
 ---
 
 
-> **Phase 2 authority:** the implemented browser requires measurement protocol
-> version 2. [`MEASUREMENT_PROTOCOL_V2.md`](MEASUREMENT_PROTOCOL_V2.md) is the
-> canonical wire and methodology contract. It supersedes pre-v2 giant-profile,
-> post-transfer loaded-latency, short JSON packet, and large retained-buffer
-> examples in earlier revisions of this design document.
+> **Implemented authority:** the browser requires measurement protocol version 2.
+> [`MEASUREMENT_PROTOCOL_V2.md`](MEASUREMENT_PROTOCOL_V2.md) is the canonical
+> measurement contract. [`SERVICE_HARDENING.md`](SERVICE_HARDENING.md) defines
+> Phase 4 bearer authentication, admission responses, and trusted deployment
+> boundaries. Older cross-origin and cookie/session examples in this design
+> document are not the current implementation contract.
 
 ## 1. backend api surface (from the frontend's point of view)
 
@@ -56,6 +57,7 @@ etc.) are intentionally out of scope.
   "longitude": -121.3153,
   "timezone": "America/Los_Angeles",
   "maxTransferBytes": 1073741824,
+  "maxConcurrentTransfersPerClient": 24,
   "measurementProtocolVersion": 2,
   "uploadReceiptVersion": 1,
   "packetLossFrameVersion": 1
@@ -64,11 +66,23 @@ etc.) are intentionally out of scope.
 
 **frontend usage**
 
+- when `globalThis.NETSPEED_CONFIG.accessToken` contains a nonblank token, send
+  `Authorization: Bearer <token>` on metadata, transfer, ICE, signaling, and
+  packet-report requests;
+- cap request batches at `maxConcurrentTransfersPerClient` and sustained load
+  flows at one less than that value, reserving one admission slot for a
+  loaded-latency probe;
+- reject a server ceiling below 2 rather than attempting an invalid loaded test;
 - populate **server location** card:
   - “Server location: `<city>`”
   - “Your network: `<asOrganization> (AS<asn>)`”
   - “Your IP address: `<clientIp>`”
 - use `latitude` / `longitude` and `colo` to place markers and draw lines on the map.
+
+Phase 4 `401`, `429`, and `503` responses are control responses, never samples.
+The browser rejects them before timing or byte accounting. A browser token must
+be supplied before `speedtest.js` loads; a token shipped in public static files
+is visible to clients and is not a secret-storage mechanism.
 
 ---
 
@@ -317,8 +331,10 @@ The browser executes:
 The median 1 MB baseline selects a request chunk intended to last about 250 ms
 per flow. The chunk is 100,000 bytes through 256 MiB and is always capped by
 `maxTransferBytes` and browser fallback limits. Flow count rises from 1 to 2, 4,
-or 6 as the estimate increases. Each worker repeatedly completes exact verified
-requests until the window owner stops it.
+or 6 as the estimate increases, then is capped at
+`maxConcurrentTransfersPerClient - 1` so a loaded-latency probe keeps one server
+admission slot. Each worker repeatedly completes exact verified requests until
+the window owner stops it.
 
 A window sample is completed verified bytes divided by elapsed wall-clock time.
 Baseline requests tune the plan but are excluded from headline throughput when
@@ -434,6 +450,7 @@ type Meta = {
   longitude: number;
   timezone?: string;
   maxTransferBytes: number;
+  maxConcurrentTransfersPerClient: number;
   measurementProtocolVersion: number;
   uploadReceiptVersion: number;
   packetLossFrameVersion: number;

@@ -48,6 +48,7 @@ const SpeedTest = (function() {
     const MAX_LOCATIONS_BODY_BYTES = 1024 * 1024;
 
     let serverMaxTransferBytes = LEGACY_SERVER_TRANSFER_LIMIT_BYTES;
+    let serverMaxConcurrentTransfersPerClient = 24;
     let measurementProtocolVersion = 0;
     let uploadReceiptVersion = 0;
     let packetLossFrameVersion = 0;
@@ -65,6 +66,20 @@ const SpeedTest = (function() {
         packetLossInterval: 10,
         packetLossExtraWait: 3000
     };
+
+
+    function accessToken() {
+        if (typeof globalThis === 'undefined') return '';
+        const value = globalThis.NETSPEED_CONFIG?.accessToken;
+        return typeof value === 'string' ? value.trim() : '';
+    }
+
+    function authenticatedHeaders(base = {}) {
+        const headers = { ...base };
+        const token = accessToken();
+        if (token) headers.Authorization = `Bearer ${token}`;
+        return headers;
+    }
 
     function supportsStreamingResponseBodies() {
         return typeof Response !== 'undefined' &&
@@ -234,7 +249,7 @@ const SpeedTest = (function() {
      * Fetch metadata from server
      */
     async function fetchMeta() {
-        const response = await fetch('/meta', { cache: 'no-store' });
+        const response = await fetch('/meta', { cache: 'no-store', headers: authenticatedHeaders() });
         if (!response.ok) throw new Error(`Failed to fetch metadata: HTTP ${response.status}`);
         const contentType = (response.headers.get('Content-Type') || '').toLowerCase();
         if (!contentType.startsWith('application/json')) {
@@ -247,7 +262,7 @@ const SpeedTest = (function() {
      * Fetch locations from server
      */
     async function fetchLocations() {
-        const response = await fetch('/locations', { cache: 'no-store' });
+        const response = await fetch('/locations', { cache: 'no-store', headers: authenticatedHeaders() });
         if (!response.ok) throw new Error(`Failed to fetch locations: HTTP ${response.status}`);
         const contentType = (response.headers.get('Content-Type') || '').toLowerCase();
         if (!contentType.startsWith('application/json')) {
@@ -385,6 +400,8 @@ const SpeedTest = (function() {
             xhr.open('POST', url, true);
             xhr.responseType = 'arraybuffer';
             xhr.setRequestHeader('Content-Type', 'application/octet-stream');
+            const tokenValue = accessToken();
+            if (tokenValue) xhr.setRequestHeader('Authorization', `Bearer ${tokenValue}`);
             xhr.upload.onloadstart = () => {
                 if (!token && activity) token = activity.begin(true);
             };
@@ -426,7 +443,7 @@ const SpeedTest = (function() {
         if (phase) url += `&during=${encodeURIComponent(phase)}`;
 
         const manualStart = performance.now();
-        const response = await fetch(url, { cache: 'no-store', signal: abortController?.signal });
+        const response = await fetch(url, { cache: 'no-store', signal: abortController?.signal, headers: authenticatedHeaders() });
         if (!response.ok) {
             const detail = (await response.text()).trim();
             throw new Error(`Download failed: HTTP ${response.status}${detail ? `: ${detail}` : ''}`);
@@ -527,7 +544,7 @@ const SpeedTest = (function() {
                 const options = {
                     method: 'POST',
                     body,
-                    headers: { 'Content-Type': 'application/octet-stream' },
+                    headers: authenticatedHeaders({ 'Content-Type': 'application/octet-stream' }),
                     cache: 'no-store',
                     signal: abortController?.signal
                 };
@@ -587,7 +604,8 @@ const SpeedTest = (function() {
         const manualStart = performance.now();
         const response = await fetch(url, {
             cache: 'no-store',
-            signal: abortController?.signal
+            signal: abortController?.signal,
+            headers: authenticatedHeaders()
         });
 
         if (!response.ok) {
@@ -652,8 +670,9 @@ const SpeedTest = (function() {
         try {
             // Run 6 parallel warmup downloads to prime multiple connections
             // Use ALL_*_PROFILES since dynamic profiles aren't set until estimation phase
+            const warmupConcurrency = Math.max(1, Math.min(6, serverMaxConcurrentTransfersPerClient));
             const downloadPromises = [];
-            for (let i = 0; i < 6; i++) {
+            for (let i = 0; i < warmupConcurrency; i++) {
                 downloadPromises.push(
                     runDownload(ALL_DOWNLOAD_PROFILES['100kB'].bytes, 'warmup', i)
                         .catch(() => {}) // Ignore individual failures
@@ -663,7 +682,7 @@ const SpeedTest = (function() {
 
             // Run 6 parallel warmup uploads
             const uploadPromises = [];
-            for (let i = 0; i < 6; i++) {
+            for (let i = 0; i < warmupConcurrency; i++) {
                 uploadPromises.push(
                     runUpload(ALL_UPLOAD_PROFILES['100kB'].bytes, 'warmup', i)
                         .catch(() => {})
@@ -685,7 +704,7 @@ const SpeedTest = (function() {
             const bytes = 100 * 1000; // 100KB
             const url = `/__down?bytes=${bytes}&measId=bw-check-${Date.now()}`;
             const start = performance.now();
-            const response = await fetch(url, { cache: 'no-store', signal: abortController?.signal });
+            const response = await fetch(url, { cache: 'no-store', signal: abortController?.signal, headers: authenticatedHeaders() });
             if (!response.ok) return 0;
             const received = await consumeResponseBody(response, bytes);
             if (received !== bytes) return 0;
@@ -706,7 +725,7 @@ const SpeedTest = (function() {
         const samples = [];
         const totalProbes = CONFIG.latencyProbes;
         const initialProbes = 3; // Run first 3 sequentially to estimate
-        const batchSize = 5; // Batch size for parallel mode
+        const batchSize = Math.max(1, Math.min(5, serverMaxConcurrentTransfersPerClient)); // respect server admission ceiling
 
         // Thresholds for batching decision
         const lowLatencyMs = 50;      // Below this: always parallel (fast/local)
@@ -837,7 +856,10 @@ const SpeedTest = (function() {
         else if (estimatedMbps >= 2000) concurrency = 8;
         else if (estimatedMbps >= 500) concurrency = 4;
         else if (estimatedMbps >= 100) concurrency = 2;
-        concurrency = Math.min(concurrency, MAX_BROWSER_CONCURRENCY);
+        // Reserve one transfer slot for the loaded-latency probe that runs
+        // concurrently with the sustained load.
+        const maxLoadConcurrency = Math.max(1, serverMaxConcurrentTransfersPerClient - 1);
+        concurrency = Math.min(concurrency, MAX_BROWSER_CONCURRENCY, maxLoadConcurrency);
 
         const target = estimatedMbps * 1e6 / 8 * (TARGET_REQUEST_DURATION_MS / 1000) / concurrency;
         let chunkBytes = Math.ceil(target / 65536) * 65536;
@@ -1232,6 +1254,7 @@ const SpeedTest = (function() {
             const credResponse = await fetch('/api/turn/credentials', {
                 credentials: 'include',
                 cache: 'no-store',
+                headers: authenticatedHeaders(),
                 signal: abortController?.signal
             });
             if (!credResponse.ok) throw new Error(`TURN credentials failed: HTTP ${credResponse.status}`);
@@ -1302,7 +1325,7 @@ const SpeedTest = (function() {
 
             const offerResponse = await fetch('/api/packet-test/offer', {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
+                headers: authenticatedHeaders({ 'Content-Type': 'application/json' }),
                 credentials: 'include',
                 cache: 'no-store',
                 signal: abortController?.signal,
@@ -1358,7 +1381,7 @@ const SpeedTest = (function() {
 
             const reportResponse = await fetch('/api/packet-test/report', {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
+                headers: authenticatedHeaders({ 'Content-Type': 'application/json' }),
                 credentials: 'include',
                 cache: 'no-store',
                 signal: abortController?.signal,
@@ -2117,6 +2140,12 @@ const SpeedTest = (function() {
             } else {
                 serverMaxTransferBytes = LEGACY_SERVER_TRANSFER_LIMIT_BYTES;
             }
+            serverMaxConcurrentTransfersPerClient = Number.isSafeInteger(meta.maxConcurrentTransfersPerClient) && meta.maxConcurrentTransfersPerClient > 0
+                ? meta.maxConcurrentTransfersPerClient
+                : 24;
+            if (serverMaxConcurrentTransfersPerClient < 2) {
+                throw new Error(`Server per-client transfer limit ${serverMaxConcurrentTransfersPerClient} is too low for loaded-latency measurement; need at least 2`);
+            }
             measurementProtocolVersion = Number(meta.measurementProtocolVersion) || 0;
             uploadReceiptVersion = Number(meta.uploadReceiptVersion) || 0;
             packetLossFrameVersion = Number(meta.packetLossFrameVersion) || 0;
@@ -2304,8 +2333,9 @@ const SpeedTest = (function() {
             calculateSummary,
             setResults(value) { results = value; },
             resetRequestStreamingSupport() { requestStreamingSupport = undefined; },
-            setServerCapabilities(maxBytes, receiptVersion, protocolVersion = 2, frameVersion = 1) {
+            setServerCapabilities(maxBytes, receiptVersion, protocolVersion = 2, frameVersion = 1, maxClientTransfers = 24) {
                 serverMaxTransferBytes = maxBytes;
+                serverMaxConcurrentTransfersPerClient = maxClientTransfers;
                 uploadReceiptVersion = receiptVersion;
                 measurementProtocolVersion = protocolVersion;
                 packetLossFrameVersion = frameVersion;

@@ -24,6 +24,7 @@ func main() {
 	// Command line flags
 	var (
 		serverURL    string
+		accessToken  string
 		jsonOutput   bool
 		csvOutput    bool
 		quiet        bool
@@ -39,6 +40,7 @@ func main() {
 
 	flag.StringVar(&serverURL, "server", "", "Server URL (default: http://localhost:8080)")
 	flag.StringVar(&serverURL, "s", "", "Server URL (shorthand)")
+	flag.StringVar(&accessToken, "token", "", "Shared bearer token (or NETSPEED_TOKEN)")
 	flag.BoolVar(&jsonOutput, "json", false, "Output results as JSON")
 	flag.BoolVar(&jsonOutput, "j", false, "Output results as JSON (shorthand)")
 	flag.BoolVar(&csvOutput, "csv", false, "Output results as CSV")
@@ -88,8 +90,11 @@ func main() {
 		serverURL = "http://localhost:8080"
 	}
 
-	// Normalize server URL
+	// Normalize server URL and load optional authentication from the environment.
 	serverURL = strings.TrimSuffix(serverURL, "/")
+	if accessToken == "" {
+		accessToken = os.Getenv("NETSPEED_TOKEN")
+	}
 
 	// Detect if running in interactive terminal
 	interactive := output.IsInteractive() && !jsonOutput && !csvOutput && !quiet
@@ -115,6 +120,7 @@ func main() {
 		DownloadOnly:   downloadOnly,
 		UploadOnly:     uploadOnly,
 		SkipPacketLoss: noPacketLoss,
+		AccessToken:    accessToken,
 		OnProgress: func(phase string, current, total int, value float64) {
 			out.Progress(phase, current, total, value)
 		},

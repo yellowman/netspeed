@@ -26,232 +26,247 @@ var (
 )
 
 func main() {
-	// Define command-line flags
 	var (
-		listenAddr     = flag.String("listen", "", "Listen address (default :8080)")
-		tlsCert        = flag.String("tls-cert", "", "TLS certificate file path")
-		tlsKey         = flag.String("tls-key", "", "TLS key file path")
-		maxBytes       = flag.Int64("max-bytes", 0, "Maximum bytes for download/upload (default 1GiB)")
-		locationsFile  = flag.String("locations", "", "Path to locations JSON file")
-		geoipDB        = flag.String("geoip-db", "", "Path to MaxMind GeoLite2-ASN.mmdb file")
-		hostname       = flag.String("hostname", "", "Hostname to return in /meta")
-		colo           = flag.String("colo", "", "Server colo/datacenter IATA code")
-		trustProxy     = flag.Bool("trust-proxy", false, "Trust X-Forwarded-For headers")
-		enableCORS     = flag.Bool("cors", true, "Enable CORS headers")
-		corsOrigins    = flag.String("cors-origins", "*", "Allowed CORS origins (comma-separated)")
-		serverTiming   = flag.Bool("server-timing", true, "Enable Server-Timing headers")
-		turnSecret     = flag.String("turn-secret", "", "TURN server shared secret")
-		turnServers    = flag.String("turn-servers", "", "TURN servers (comma-separated)")
-		turnRealm      = flag.String("turn-realm", "", "TURN realm")
-		embeddedTurn   = flag.Bool("embedded-turn", true, "Enable embedded TURN server")
-		embeddedTurnAddr = flag.String("embedded-turn-addr", "", "Embedded TURN server address (default 0.0.0.0:3478)")
-		embeddedTurnIP = flag.String("embedded-turn-ip", "", "Public IP for embedded TURN server")
-		webDir         = flag.String("web-dir", "", "Directory containing static web files")
-		showVersion    = flag.Bool("version", false, "Show version information")
+		listenAddr         = flag.String("listen", "", "Listen address (default :8080)")
+		tlsCert            = flag.String("tls-cert", "", "TLS certificate file path")
+		tlsKey             = flag.String("tls-key", "", "TLS key file path")
+		maxBytes           = flag.Int64("max-bytes", 0, "Maximum bytes for one download/upload")
+		locationsFile      = flag.String("locations", "", "Path to locations JSON file")
+		geoipDB            = flag.String("geoip-db", "", "Path to MaxMind GeoLite2-ASN.mmdb file")
+		hostname           = flag.String("hostname", "", "Hostname returned by /meta")
+		colo               = flag.String("colo", "", "Server colo/datacenter IATA code")
+		trustProxy         = flag.Bool("trust-proxy", false, "Honor forwarding headers only from --trusted-proxies (deprecated enable flag)")
+		trustedProxies     = flag.String("trusted-proxies", "", "Trusted proxy CIDRs (comma-separated)")
+		enableCORS         = flag.Bool("cors", true, "Enable CORS headers")
+		corsOrigins        = flag.String("cors-origins", "*", "Allowed CORS origins (comma-separated)")
+		serverTiming       = flag.Bool("server-timing", true, "Enable Server-Timing headers")
+		maxTransfers       = flag.Int("max-transfers", 0, "Global active measurement-transfer limit")
+		maxClientTransfers = flag.Int("max-client-transfers", 0, "Active transfer limit per client")
+		quotaBytes         = flag.Int64("client-quota-bytes", -1, "Per-client byte quota per window; 0 disables")
+		quotaWindow        = flag.Duration("client-quota-window", 0, "Per-client byte quota window")
+		maxSessions        = flag.Int("max-webrtc-sessions", 0, "Global active WebRTC session limit")
+		maxClientSessions  = flag.Int("max-client-webrtc-sessions", 0, "Active WebRTC session limit per client")
+		offerRate          = flag.Int("webrtc-offers-per-minute", -1, "WebRTC offer rate per client; 0 disables")
+		offerBurst         = flag.Int("webrtc-offer-burst", 0, "WebRTC offer token-bucket burst")
+		credentialRate     = flag.Int("turn-credentials-per-minute", -1, "TURN credential rate per client; 0 disables")
+		credentialBurst    = flag.Int("turn-credential-burst", 0, "TURN credential token-bucket burst")
+		maxOfferBody       = flag.Int64("max-offer-body", 0, "Maximum WebRTC offer JSON body bytes")
+		maxReportBody      = flag.Int64("max-report-body", 0, "Maximum packet report JSON body bytes")
+		accessToken        = flag.String("access-token", "", "Shared bearer token (prefer NETSPEEDD_ACCESS_TOKEN)")
+		metricsToken       = flag.String("metrics-token", "", "Bearer token for /metrics (prefer environment)")
+		enableMetrics      = flag.Bool("metrics", false, "Enable authenticated Prometheus /metrics endpoint")
+		turnSecret         = flag.String("turn-secret", "", "TURN shared secret")
+		turnServers        = flag.String("turn-servers", "", "External STUN/TURN URLs (comma-separated)")
+		turnRealm          = flag.String("turn-realm", "", "TURN realm")
+		embeddedTurn       = flag.Bool("embedded-turn", false, "Enable embedded TURN server (opt-in)")
+		embeddedTurnAddr   = flag.String("embedded-turn-addr", "", "Embedded TURN listen address (default 127.0.0.1:3478)")
+		embeddedTurnIP     = flag.String("embedded-turn-ip", "", "Public relay IP required for non-loopback TURN")
+		embeddedTurnMbps   = flag.Int64("embedded-turn-max-mbps", 0, "Embedded TURN combined UDP rate ceiling")
+		webDir             = flag.String("web-dir", "", "Directory containing static web files")
+		showVersion        = flag.Bool("version", false, "Show version information")
 	)
 
 	flag.Usage = func() {
-		fmt.Fprintf(os.Stderr, "netspeedd - Speedtest backend server\n\n")
-		fmt.Fprintf(os.Stderr, "Usage: netspeedd [options]\n\n")
-		fmt.Fprintf(os.Stderr, "Options:\n")
+		fmt.Fprintf(os.Stderr, "netspeedd - Speedtest backend server\n\nUsage: netspeedd [options]\n\nOptions:\n")
 		flag.PrintDefaults()
-		fmt.Fprintf(os.Stderr, "\nEnvironment variables:\n")
-		fmt.Fprintf(os.Stderr, "  NETSPEEDD_LISTEN_ADDR     Listen address\n")
-		fmt.Fprintf(os.Stderr, "  NETSPEEDD_TLS_CERT        TLS certificate file\n")
-		fmt.Fprintf(os.Stderr, "  NETSPEEDD_TLS_KEY         TLS key file\n")
-		fmt.Fprintf(os.Stderr, "  NETSPEEDD_MAX_BYTES       Maximum bytes\n")
-		fmt.Fprintf(os.Stderr, "  NETSPEEDD_LOCATIONS_FILE  Locations JSON file\n")
-		fmt.Fprintf(os.Stderr, "  NETSPEEDD_GEOIP_DB        MaxMind GeoLite2-ASN.mmdb file\n")
-		fmt.Fprintf(os.Stderr, "  NETSPEEDD_HOSTNAME        Hostname for /meta\n")
-		fmt.Fprintf(os.Stderr, "  NETSPEEDD_COLO            Datacenter IATA code\n")
-		fmt.Fprintf(os.Stderr, "  NETSPEEDD_TRUST_PROXY     Trust proxy headers (true/false)\n")
-		fmt.Fprintf(os.Stderr, "  NETSPEEDD_ENABLE_CORS     Enable CORS (true/false)\n")
-		fmt.Fprintf(os.Stderr, "  NETSPEEDD_ALLOWED_ORIGINS Allowed CORS origins\n")
-		fmt.Fprintf(os.Stderr, "  NETSPEEDD_SERVER_TIMING   Enable Server-Timing (true/false)\n")
-		fmt.Fprintf(os.Stderr, "  NETSPEEDD_TURN_SECRET     TURN shared secret\n")
-		fmt.Fprintf(os.Stderr, "  NETSPEEDD_TURN_SERVERS    TURN servers\n")
-		fmt.Fprintf(os.Stderr, "  NETSPEEDD_TURN_REALM      TURN realm\n")
-		fmt.Fprintf(os.Stderr, "  NETSPEEDD_EMBEDDED_TURN   Enable embedded TURN (true/false)\n")
-		fmt.Fprintf(os.Stderr, "  NETSPEEDD_EMBEDDED_TURN_ADDR Embedded TURN address\n")
-		fmt.Fprintf(os.Stderr, "  NETSPEEDD_EMBEDDED_TURN_PUBLIC_IP Public IP for TURN\n")
-		fmt.Fprintf(os.Stderr, "  NETSPEEDD_WEB_DIR         Static web files directory\n")
+		fmt.Fprintf(os.Stderr, "\nAll options also have NETSPEEDD_* environment equivalents documented in README.md.\n")
 	}
-
 	flag.Parse()
 
 	if *showVersion {
 		fmt.Printf("netspeedd version %s (commit: %s, built: %s)\n", version, commit, date)
-		os.Exit(0)
+		return
 	}
 
-	// Track which flags were explicitly set on command line
 	flagsSet := make(map[string]bool)
-	flag.Visit(func(f *flag.Flag) {
-		flagsSet[f.Name] = true
-	})
-
-	// Load config from environment, then override with flags
+	flag.Visit(func(value *flag.Flag) { flagsSet[value.Name] = true })
 	cfg := config.FromEnv()
 
-	// Override with command-line flags
-	if *listenAddr != "" {
-		cfg.ListenAddr = *listenAddr
-	}
-	if *tlsCert != "" {
-		cfg.TLSCertFile = *tlsCert
-	}
-	if *tlsKey != "" {
-		cfg.TLSKeyFile = *tlsKey
-	}
+	setFlagString(&cfg.ListenAddr, *listenAddr)
+	setFlagString(&cfg.TLSCertFile, *tlsCert)
+	setFlagString(&cfg.TLSKeyFile, *tlsKey)
 	if *maxBytes > 0 {
 		cfg.MaxBytes = *maxBytes
 	}
-	if *locationsFile != "" {
-		cfg.LocationsFile = *locationsFile
-	}
-	if *geoipDB != "" {
-		cfg.GeoIPDatabasePath = *geoipDB
-	}
-	if *hostname != "" {
-		cfg.Hostname = *hostname
-	}
-	if *colo != "" {
-		cfg.Colo = *colo
-	}
-	// Only override boolean flags if explicitly set on command line
+	setFlagString(&cfg.LocationsFile, *locationsFile)
+	setFlagString(&cfg.GeoIPDatabasePath, *geoipDB)
+	setFlagString(&cfg.Hostname, *hostname)
+	setFlagString(&cfg.Colo, *colo)
 	if flagsSet["trust-proxy"] {
 		cfg.TrustProxyHeaders = *trustProxy
+		if !*trustProxy {
+			cfg.TrustedProxyCIDRs = nil
+		}
+	}
+	if flagsSet["trusted-proxies"] {
+		cfg.TrustedProxyCIDRs = splitCSV(*trustedProxies)
+		cfg.TrustProxyHeaders = len(cfg.TrustedProxyCIDRs) > 0
 	}
 	if flagsSet["cors"] {
 		cfg.EnableCORS = *enableCORS
 	}
 	if flagsSet["cors-origins"] {
-		cfg.AllowedOrigins = strings.Split(*corsOrigins, ",")
+		cfg.AllowedOrigins = splitCSV(*corsOrigins)
 	}
 	if flagsSet["server-timing"] {
 		cfg.EnableServerTiming = *serverTiming
 	}
-	if *turnSecret != "" {
-		cfg.TurnSecret = *turnSecret
+	if *maxTransfers > 0 {
+		cfg.MaxConcurrentTransfers = *maxTransfers
 	}
-	if *turnServers != "" {
-		cfg.TurnServers = strings.Split(*turnServers, ",")
+	if *maxClientTransfers > 0 {
+		cfg.MaxConcurrentTransfersPerClient = *maxClientTransfers
 	}
-	if *turnRealm != "" {
-		cfg.TurnRealm = *turnRealm
+	if flagsSet["client-quota-bytes"] {
+		cfg.ClientBandwidthQuotaBytes = *quotaBytes
 	}
-	if *webDir != "" {
-		cfg.WebDir = *webDir
+	if *quotaWindow > 0 {
+		cfg.ClientBandwidthQuotaWindow = *quotaWindow
 	}
-	// Only override embedded-turn if explicitly set on command line
+	if *maxSessions > 0 {
+		cfg.MaxWebRTCSessions = *maxSessions
+	}
+	if *maxClientSessions > 0 {
+		cfg.MaxWebRTCSessionsPerClient = *maxClientSessions
+	}
+	if flagsSet["webrtc-offers-per-minute"] {
+		cfg.WebRTCOfferRatePerMinute = *offerRate
+	}
+	if *offerBurst > 0 {
+		cfg.WebRTCOfferBurst = *offerBurst
+	}
+	if flagsSet["turn-credentials-per-minute"] {
+		cfg.TurnCredentialRatePerMinute = *credentialRate
+	}
+	if *credentialBurst > 0 {
+		cfg.TurnCredentialBurst = *credentialBurst
+	}
+	if *maxOfferBody > 0 {
+		cfg.MaxOfferBodyBytes = *maxOfferBody
+	}
+	if *maxReportBody > 0 {
+		cfg.MaxReportBodyBytes = *maxReportBody
+	}
+	setFlagString(&cfg.AccessToken, *accessToken)
+	setFlagString(&cfg.MetricsToken, *metricsToken)
+	if flagsSet["metrics"] {
+		cfg.EnableMetrics = *enableMetrics
+	}
+	setFlagString(&cfg.TurnSecret, *turnSecret)
+	if flagsSet["turn-servers"] {
+		cfg.TurnServers = splitCSV(*turnServers)
+	}
+	setFlagString(&cfg.TurnRealm, *turnRealm)
 	if flagsSet["embedded-turn"] {
 		cfg.EmbeddedTurn = *embeddedTurn
 	}
-	if *embeddedTurnAddr != "" {
-		cfg.EmbeddedTurnAddr = *embeddedTurnAddr
+	setFlagString(&cfg.EmbeddedTurnAddr, *embeddedTurnAddr)
+	setFlagString(&cfg.EmbeddedTurnPublicIP, *embeddedTurnIP)
+	if *embeddedTurnMbps > 0 {
+		cfg.EmbeddedTurnMaxMbps = *embeddedTurnMbps
 	}
-	if *embeddedTurnIP != "" {
-		cfg.EmbeddedTurnPublicIP = *embeddedTurnIP
+	setFlagString(&cfg.WebDir, *webDir)
+
+	if err := cfg.Validate(); err != nil {
+		log.Fatalf("Invalid configuration: %v", err)
 	}
 
-	// Start embedded TURN server if enabled and no external TURN configured
-	var turnSrv *turnserver.Server
-	if cfg.EmbeddedTurn && cfg.TurnSecret == "" && len(cfg.TurnServers) == 0 {
-		// Determine public IP for TURN server
-		publicIP := cfg.EmbeddedTurnPublicIP
-		if publicIP == "" {
-			// Try to get local IP
-			publicIP = getLocalIP()
-		}
-
-		turnCfg := turnserver.Config{
-			ListenAddr: cfg.EmbeddedTurnAddr,
-			Realm:      cfg.TurnRealm,
-			PublicIP:   publicIP,
-		}
-
+	var turnServer *turnserver.Server
+	if cfg.EmbeddedTurn {
 		var err error
-		turnSrv, err = turnserver.New(turnCfg)
+		turnServer, err = turnserver.New(turnserver.Config{
+			ListenAddr:       cfg.EmbeddedTurnAddr,
+			Realm:            cfg.TurnRealm,
+			Secret:           cfg.TurnSecret,
+			PublicIP:         cfg.EmbeddedTurnPublicIP,
+			MaxMbps:          cfg.EmbeddedTurnMaxMbps,
+			MaxCredentialTTL: cfg.MaxTurnTTL,
+		})
 		if err != nil {
-			log.Printf("Warning: Failed to start embedded TURN server: %v", err)
-		} else {
-			turnSrv.Start()
-			// Configure the HTTP server to use the embedded TURN server
-			cfg.TurnSecret = turnSrv.Secret()
-			cfg.TurnRealm = turnSrv.Realm()
-			// Extract port from listen address for dynamic URL generation
-			turnAddr := turnSrv.ListenAddr()
-			_, port, _ := net.SplitHostPort(turnAddr)
-			if port == "" {
-				port = "3478"
-			}
-			cfg.EmbeddedTurnPort = port
-			// If public IP is set, use static URL; otherwise handler uses request host
-			if publicIP != "" {
-				cfg.TurnServers = []string{
-					fmt.Sprintf("stun:%s:%s", publicIP, port),
-					fmt.Sprintf("turn:%s:%s?transport=udp", publicIP, port),
-				}
-				log.Printf("Embedded TURN configured: servers=%v", cfg.TurnServers)
-			} else {
-				log.Printf("Embedded TURN configured on port %s (URL derived from request host)", port)
-			}
+			log.Fatalf("Failed to start embedded TURN server: %v", err)
 		}
+		turnServer.Start()
+		cfg.TurnSecret = turnServer.Secret()
+		cfg.TurnRealm = turnServer.Realm()
+
+		host, port, err := net.SplitHostPort(turnServer.ListenAddr())
+		if err != nil {
+			_ = turnServer.Close()
+			log.Fatalf("Invalid embedded TURN listener address: %v", err)
+		}
+		advertisedIP := cfg.EmbeddedTurnPublicIP
+		if advertisedIP == "" {
+			advertisedIP = host
+		}
+		uriHost := formatURIHost(advertisedIP)
+		cfg.EmbeddedTurnPort = port
+		cfg.TurnServers = []string{
+			fmt.Sprintf("stun:%s:%s", uriHost, port),
+			fmt.Sprintf("turn:%s:%s?transport=udp", uriHost, port),
+		}
+		log.Printf("Embedded TURN listening on %s, advertised as %s, max=%d Mbps", turnServer.ListenAddr(), advertisedIP, cfg.EmbeddedTurnMaxMbps)
 	}
 
-	// Create server
-	srv, err := server.New(cfg)
+	daemon, err := server.New(cfg)
 	if err != nil {
+		if turnServer != nil {
+			_ = turnServer.Close()
+		}
 		log.Fatalf("Failed to create server: %v", err)
 	}
-
-	// Set up signal handling for graceful shutdown
-	sigChan := make(chan os.Signal, 1)
-	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
-
-	// Start server in a goroutine
-	errChan := make(chan error, 1)
-	go func() {
-		errChan <- srv.Run()
-	}()
-
-	// Wait for signal or error
-	select {
-	case sig := <-sigChan:
-		log.Printf("Received signal %v, shutting down...", sig)
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		defer cancel()
-		if err := srv.Shutdown(ctx); err != nil {
-			log.Printf("Error during shutdown: %v", err)
-		}
-		// Shutdown embedded TURN server if running
-		if turnSrv != nil {
-			if err := turnSrv.Close(); err != nil {
-				log.Printf("Error shutting down TURN server: %v", err)
-			}
-		}
-	case err := <-errChan:
-		if err != nil {
-			log.Fatalf("Server error: %v", err)
-		}
+	if turnServer != nil {
+		daemon.SetRelayStatsProvider(turnServer)
 	}
 
-	log.Println("Server stopped")
+	signalChannel := make(chan os.Signal, 1)
+	signal.Notify(signalChannel, syscall.SIGINT, syscall.SIGTERM)
+	errorChannel := make(chan error, 1)
+	go func() { errorChannel <- daemon.Run() }()
+
+	select {
+	case received := <-signalChannel:
+		log.Printf("Received signal %v, shutting down...", received)
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		if err := daemon.Shutdown(ctx); err != nil {
+			log.Printf("HTTP shutdown error: %v", err)
+		}
+		cancel()
+		if turnServer != nil {
+			if err := turnServer.Close(); err != nil {
+				log.Printf("TURN shutdown error: %v", err)
+			}
+		}
+	case err := <-errorChannel:
+		if err != nil {
+			log.Printf("Server stopped with error: %v", err)
+		}
+		if turnServer != nil {
+			_ = turnServer.Close()
+		}
+	}
 }
 
-// getLocalIP returns the local IP address of the machine.
-func getLocalIP() string {
-	addrs, err := net.InterfaceAddrs()
-	if err != nil {
-		return ""
+func setFlagString(target *string, value string) {
+	if value != "" {
+		*target = value
 	}
+}
 
-	for _, addr := range addrs {
-		if ipNet, ok := addr.(*net.IPNet); ok && !ipNet.IP.IsLoopback() {
-			if ipNet.IP.To4() != nil {
-				return ipNet.IP.String()
-			}
+func splitCSV(value string) []string {
+	parts := strings.Split(value, ",")
+	result := make([]string, 0, len(parts))
+	for _, part := range parts {
+		if trimmed := strings.TrimSpace(part); trimmed != "" {
+			result = append(result, trimmed)
 		}
 	}
-	return ""
+	return result
+}
+
+func formatURIHost(host string) string {
+	host = strings.Trim(host, "[]")
+	if strings.Contains(host, ":") {
+		return "[" + host + "]"
+	}
+	return host
 }

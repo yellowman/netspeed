@@ -1,221 +1,298 @@
 netspeed
 ========
 
-a self-hosted network speed test. measures download, upload, latency, jitter, and packet loss.
+A self-hosted network speed test that measures download, upload, unloaded and
+loaded latency, jitter, and directional packet loss.
 
-comes in three parts:
+It has three parts:
 
-1. **netspeedd** - a go backend that handles the actual measurements
-2. **netspeed** - a command-line client with ascii spinners and progress bars
-3. **web ui** - a slick browser interface with dark/light mode
+1. **netspeedd** — Go measurement daemon, WebRTC peer, and optional TURN relay;
+2. **netspeed** — command-line client with human, quiet, CSV, and JSON output;
+3. **web UI** — browser client with fixed-duration measurements and quality views.
 
-inspired by speed.cloudflare.com but you run it yourself.
+The module requires Go 1.21.3 or newer.
 
----
+This archive includes the completed Phase 1 measurement-integrity, Phase 2
+measurement-methodology, Phase 3 WebRTC-lifecycle, and Phase 4 service-hardening
+work. The canonical contracts are:
+
+- [`MEASUREMENT_PROTOCOL_V2.md`](MEASUREMENT_PROTOCOL_V2.md) — verified transfers,
+  fixed-duration windows, loaded-latency overlap, and packet frames;
+- [`WEBRTC_LIFECYCLE.md`](WEBRTC_LIFECYCLE.md) — session ownership, cancellation,
+  disconnect recovery, and teardown;
+- [`SERVICE_HARDENING.md`](SERVICE_HARDENING.md) — admission limits,
+  authentication, trusted proxies, TURN defaults, quotas, and metrics;
+- [`IMPROVEMENT_PHASES.md`](IMPROVEMENT_PHASES.md) — completed and remaining work.
 
 quick start
 -----------
 
-requires Go 1.21.3 or newer.
-
-This archive contains the completed Phase 1 measurement-integrity, Phase 2
-measurement-methodology, and Phase 3 WebRTC-lifecycle work. See
-[`MEASUREMENT_PROTOCOL_V2.md`](MEASUREMENT_PROTOCOL_V2.md) for the measurement
-contract, [`WEBRTC_LIFECYCLE.md`](WEBRTC_LIFECYCLE.md) for session ownership and
-teardown, and [`IMPROVEMENT_PHASES.md`](IMPROVEMENT_PHASES.md) for the remaining
-service-hardening, deployment, and release-qualification phases.
-
 ```bash
-# build the daemon
+# build the daemon and CLI
 go build -o netspeedd ./cmd/netspeedd
-
-# build the cli client
 go build -o netspeed ./cmd/netspeed
 
-# run the daemon with the web ui
+# serve the included web UI on HTTP localhost
 ./netspeedd -web-dir ./web
 
-# open http://localhost:8080 in your browser
-# or use the cli client
+# open http://localhost:8080 or run the CLI
 ./netspeed http://localhost:8080
 ```
 
----
+A normal Phase 2 client requires a Netspeed measurement-protocol-v2 server.
+Legacy endpoints without verified upload receipts can only be used for an
+explicit download-only test.
 
 running the daemon
 ------------------
 
 ```bash
-# basic usage
+# basic local service
 ./netspeedd
 
-# with options
+# public HTTP service behind an existing TLS reverse proxy
 ./netspeedd \
-  -listen :8080 \
+  -listen 127.0.0.1:8080 \
   -hostname speed.example.com \
-  -colo NYC \
+  -colo PDX \
   -web-dir ./web
 
-# tls mode
+# direct TLS mode
 ./netspeedd \
+  -listen :443 \
   -tls-cert /path/to/cert.pem \
   -tls-key /path/to/key.pem
 ```
 
-you can also use environment variables:
+Flags override environment values. Run `./netspeedd -h` for the complete flag
+list.
+
+### protected deployment
+
+A shared bearer token can protect the measurement and packet-test API:
 
 ```bash
-export NETSPEEDD_LISTEN_ADDR=:443
-export NETSPEEDD_HOSTNAME=speed.example.com
-export NETSPEEDD_COLO=NYC
-export NETSPEEDD_WEB_DIR=./web
-./netspeedd
+export NETSPEEDD_ACCESS_TOKEN='replace-with-at-least-16-random-bytes'
+export NETSPEEDD_MAX_CONCURRENT_TRANSFERS=128
+export NETSPEEDD_MAX_CONCURRENT_TRANSFERS_PER_CLIENT=12
+export NETSPEEDD_CLIENT_BANDWIDTH_QUOTA_BYTES=$((250 * 1024 * 1024 * 1024))
+export NETSPEEDD_CLIENT_BANDWIDTH_QUOTA_WINDOW=1h
+./netspeedd -web-dir ./web
 ```
 
----
+The CLI sends the token with every service request:
 
-configuration
+```bash
+NETSPEED_TOKEN="$NETSPEEDD_ACCESS_TOKEN" ./netspeed https://speed.example.com
+# equivalent:
+./netspeed --token "$NETSPEEDD_ACCESS_TOKEN" https://speed.example.com
+```
+
+The browser engine reads a configuration object defined before `speedtest.js`:
+
+```html
+<script>
+  window.NETSPEED_CONFIG = {
+    accessToken: "replace-with-a-deployment-token"
+  };
+</script>
+<script src="js/speedtest.js"></script>
+```
+
+A browser-visible token is not secret from that browser. Use this only for a
+controlled installation or inject a short-lived token through an authenticated
+upstream application.
+
+### trusted reverse proxy
+
+Forwarding headers are ignored by default. Configure every trusted proxy hop as
+a CIDR:
+
+```bash
+./netspeedd \
+  -listen 127.0.0.1:8080 \
+  -trusted-proxies '127.0.0.0/8,10.0.0.0/8'
+```
+
+`-trust-proxy` alone is insufficient and fails validation without trusted CIDRs.
+This prevents arbitrary clients from spoofing the identity used for quotas,
+rate limits, WebRTC ownership, metadata, and logs.
+
+service limits
+--------------
+
+Phase 4 applies immediate admission controls rather than queueing timed
+measurement work.
+
+| control | default |
+|---|---:|
+| one transfer | 1 GiB maximum |
+| active transfers | 256 global / 24 per client |
+| byte quota | 1 TiB per client per hour |
+| active WebRTC sessions | 64 global / 2 per client |
+| WebRTC offer rate | 12/minute, burst 4 |
+| ICE/TURN configuration rate | 60/minute, burst 10 |
+| offer/report JSON bodies | 128 KiB / 16 KiB |
+| embedded TURN | disabled |
+| metrics | disabled and token-required |
+
+`/meta` advertises the per-client transfer ceiling. The CLI and browser scale
+their flow counts down and reserve one slot for loaded-latency probes.
+
+See [`SERVICE_HARDENING.md`](SERVICE_HARDENING.md) for all flags, environment
+variables, status codes, quota semantics, and operational limitations.
+
+ICE, STUN, and TURN
+-------------------
+
+A STUN-only server list does not require a shared secret:
+
+```bash
+NETSPEEDD_TURN_SERVERS='stun:stun.example.com:3478' ./netspeedd
+```
+
+The bundled packet-test clients force TURN relay and report packet loss as
+unavailable for STUN-only configuration; custom direct-ICE clients can use the
+returned STUN list. External TURN URLs require `NETSPEEDD_TURN_SECRET`.
+Credentials are random,
+short-lived, and capped at 600 seconds by default.
+
+Embedded TURN is opt-in and loopback-only by default:
+
+```bash
+./netspeedd -embedded-turn -embedded-turn-addr 127.0.0.1:3478
+```
+
+A non-loopback relay listener requires an explicit advertised IP and has a
+combined inbound/outbound UDP rate ceiling:
+
+```bash
+NETSPEEDD_TURN_SECRET='replace-with-at-least-16-random-bytes' \
+  ./netspeedd \
+  -embedded-turn \
+  -embedded-turn-addr 0.0.0.0:3478 \
+  -embedded-turn-ip 198.51.100.20 \
+  -embedded-turn-max-mbps 100
+```
+
+Embedded TURN and user-configured external ICE URLs cannot be enabled together.
+
+metrics
+-------
+
+The Prometheus endpoint is opt-in and requires either its own bearer token or
+the service access token:
+
+```bash
+NETSPEEDD_ENABLE_METRICS=true \
+NETSPEEDD_METRICS_TOKEN='replace-with-a-separate-metrics-token' \
+  ./netspeedd
+
+curl -H 'Authorization: Bearer replace-with-a-separate-metrics-token' \
+  http://127.0.0.1:8080/metrics
+```
+
+Counters cover HTTP activity, authentication failures, transfer/session
+admission, quotas, measurement bytes, signaling, control-body rejection,
+internal failures, and embedded TURN UDP traffic.
+
+using the CLI
 -------------
 
-| flag | env var | description |
-|------|---------|-------------|
-| `-listen` | `NETSPEEDD_LISTEN_ADDR` | address to listen on (default `:8080`) |
-| `-hostname` | `NETSPEEDD_HOSTNAME` | hostname shown in results |
-| `-colo` | `NETSPEEDD_COLO` | datacenter code (iata style, like `JFK`) |
-| `-web-dir` | `NETSPEEDD_WEB_DIR` | path to web ui files |
-| `-tls-cert` | `NETSPEEDD_TLS_CERT` | tls certificate file |
-| `-tls-key` | `NETSPEEDD_TLS_KEY` | tls key file |
-| `-locations` | `NETSPEEDD_LOCATIONS_FILE` | json file with server locations |
-| `-trust-proxy` | `NETSPEEDD_TRUST_PROXY` | trust x-forwarded-for headers |
-| `-cors` | `NETSPEEDD_ENABLE_CORS` | enable cors (default true) |
-
-for packet loss testing via webrtc, you'll also want:
-
-| flag | env var | description |
-|------|---------|-------------|
-| `-turn-secret` | `NETSPEEDD_TURN_SECRET` | turn server shared secret |
-| `-turn-servers` | `NETSPEEDD_TURN_SERVERS` | turn server urls (comma-separated) |
-| `-turn-realm` | `NETSPEEDD_TURN_REALM` | turn realm |
-
----
-
-using the cli client
---------------------
-
-the cli client defaults to a local netspeedd server:
-
 ```bash
-# test against the local daemon
+# local daemon
 ./netspeed
 
-# test against another netspeedd server
+# another protocol-v2 daemon
 ./netspeed https://speed.example.com
 
-# legacy servers without verified upload receipts are download-only
-./netspeed --download-only --no-packet-loss https://speed.cloudflare.com
-
-# quick test (fewer samples)
+# quick test
 ./netspeed --quick
 
-# json output for scripting
+# scriptable output
 ./netspeed --json
+./netspeed --csv
 
-# verbose mode with detailed breakdown
-./netspeed -v
-
-# quiet mode (just the numbers)
+# detailed or compact terminal output
+./netspeed --verbose
 ./netspeed --quiet
-# outputs: download_mbps  upload_mbps  latency_ms  loss_percent (or n/a)
+
+# explicit legacy download-only mode
+./netspeed --download-only --no-packet-loss https://legacy.example.com
 ```
 
-**cli flags:**
+Important CLI flags:
 
 | flag | description |
-|------|-------------|
-| `-s, --server` | server url |
-| `-q, --quick` | quick test (fewer samples) |
-| `-j, --json` | output as json |
-| `--csv` | output as csv |
+|---|---|
+| `-s, --server` | server URL |
+| `--token` | shared bearer token; falls back to `NETSPEED_TOKEN` |
+| `-q, --quick` | reduced fixed-window test |
+| `-j, --json` | JSON output |
+| `--csv` | CSV output |
 | `-v, --verbose` | detailed output |
-| `--quiet` | minimal output |
-| `-d, --download-only` | skip upload tests |
-| `-u, --upload-only` | skip download tests |
-| `--no-packet-loss` | skip packet loss test |
-| `--no-color` | disable colors |
-| `-t, --timeout` | test timeout (default 60s) |
-
----
+| `--quiet` | compact numeric output |
+| `-d, --download-only` | skip upload |
+| `-u, --upload-only` | skip download |
+| `--no-packet-loss` | skip WebRTC packet test |
+| `--no-color` | disable terminal colors |
+| `-t, --timeout` | overall test timeout, default 60 seconds |
 
 what it measures
 ----------------
 
-- **download speed** - three bounded, fixed-duration windows after small baseline probes
-- **upload speed** - three bounded windows, with every request verified by an exact server receipt
-- **latency** - unloaded round-trip time using precise request/first-byte timing
-- **loaded latency** - probes accepted only when continuous download or upload traffic spans the entire probe
-- **jitter** - p90 latency minus median latency after warmup removal and conservative IQR filtering
-- **packet loss** - exact 1,200-byte WebRTC frames with transaction, forward, and reverse-acknowledgement loss reported separately
-- **packet-test lifecycle** - registered-before-callback ownership, disconnect recovery grace, and race-safe teardown
-- **confidence** - explicit gates for sample count, variability, overlap, timing, and packet-test completion
-
-the ui grades your connection for:
-- video streaming
-- online gaming
-- video chatting
-
----
+- **download speed** — three bounded, fixed-duration windows after verified
+  baseline probes;
+- **upload speed** — three bounded windows whose completed requests are checked
+  against exact server receipts;
+- **unloaded latency** — request-write to first-response-byte round trips;
+- **loaded latency** — probes accepted only when continuous transfer traffic
+  spans the complete probe interval;
+- **jitter** — p90 latency minus median latency after warmup removal and
+  conservative IQR filtering;
+- **packet loss** — exact 1,200-byte WebRTC frames with transaction, forward,
+  and reverse-acknowledgement loss reported separately;
+- **confidence** — explicit gates for sample count, variability, overlap, timing,
+  and directional packet accounting.
 
 project structure
 -----------------
 
-```
+```text
 netspeed/
-├── cmd/netspeedd/       # main entry point
+├── cmd/netspeed/        # Go CLI
+├── cmd/netspeedd/       # daemon entry point
 ├── internal/
-│   ├── config/          # configuration handling
-│   ├── server/          # http server and handlers
-│   ├── meta/            # client metadata extraction
+│   ├── clientaddr/      # trusted-proxy client identity
+│   ├── config/          # configuration and validation
+│   ├── limits/          # concurrency, byte quota, and token buckets
 │   ├── locations/       # server location data
-│   └── webrtc/          # packet loss testing
-├── web/                 # browser ui
-│   ├── index.html
-│   ├── css/styles.css
-│   └── js/
-│       ├── app.js       # main ui logic
-│       ├── speedtest.js # measurement engine
-│       └── charts.js    # visualizations
-└── configs/             # example configs
+│   ├── measurement/     # shared measurement planning/statistics
+│   ├── meta/            # client metadata and GeoIP
+│   ├── protocol/        # verified upload and packet-frame protocol
+│   ├── server/          # HTTP routes, security, and metrics
+│   ├── telemetry/       # cross-package operational snapshots
+│   ├── turn/            # optional bounded embedded TURN relay
+│   └── webrtc/          # packet-test session manager
+├── tests/web/           # dependency-free browser-engine tests
+├── web/                 # browser UI
+└── configs/             # legacy examples; YAML loading is Phase 5 work
 ```
 
----
-
-running the ui separately
+running the UI separately
 -------------------------
 
-if you want to serve the ui from somewhere else (nginx, cdn, whatever):
-
-```bash
-# run daemon without web-dir
-./netspeedd -listen :8080
-
-# serve web/ from your preferred static server
-# just make sure cors is enabled on the daemon
-```
-
-The current browser client uses relative API paths. Serve it from `netspeedd` or put
-all daemon routes behind the same-origin reverse proxy. A configurable cross-origin API
-base and complete CORS/timing-exposure contract remain Phase 5 work.
-
----
+The browser currently uses relative API paths. Serve `web/` through `netspeedd`
+or place every daemon route behind the same-origin reverse proxy as the static
+files. A configurable cross-origin API base and complete timing-exposure
+contract remain Phase 5 work.
 
 license
 -------
 
-see LICENSE file.
-
----
+See `LICENSE`.
 
 links
 -----
 
-- [github](https://github.com/yellowman/netspeed)
+- [GitHub repository](https://github.com/yellowman/netspeed)

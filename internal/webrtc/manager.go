@@ -20,6 +20,10 @@ var (
 	ErrManagerClosed = errors.New("WebRTC manager is shut down")
 	// ErrSessionClosed is returned when a peer fails or closes during signaling.
 	ErrSessionClosed = errors.New("WebRTC session closed")
+	// ErrSessionCapacity is returned when the global active-session ceiling is full.
+	ErrSessionCapacity = errors.New("WebRTC session capacity reached")
+	// ErrClientSessionCapacity is returned when one client reaches its active-session ceiling.
+	ErrClientSessionCapacity = errors.New("WebRTC per-client session capacity reached")
 )
 
 // SessionState is the manager-owned lifecycle state of a packet-test session.
@@ -58,22 +62,26 @@ func (state SessionState) String() string {
 
 // Config holds WebRTC manager configuration.
 type Config struct {
-	ICEServers       []pion.ICEServer
-	IdleTimeout      time.Duration // Close session if no packets or state activity occurs for this duration.
-	MaxSessionTime   time.Duration // Maximum session lifetime (safety net).
-	CleanupTicker    time.Duration // How often to scan for expired sessions.
-	DisconnectGrace  time.Duration // Time a transient disconnected state may recover.
-	ICEGatherTimeout time.Duration // Maximum time to wait for local ICE gathering.
+	ICEServers           []pion.ICEServer
+	IdleTimeout          time.Duration // Close session if no packets or state activity occurs for this duration.
+	MaxSessionTime       time.Duration // Maximum session lifetime (safety net).
+	CleanupTicker        time.Duration // How often to scan for expired sessions.
+	DisconnectGrace      time.Duration // Time a transient disconnected state may recover.
+	ICEGatherTimeout     time.Duration // Maximum time to wait for local ICE gathering.
+	MaxSessions          int           // Global active-session ceiling.
+	MaxSessionsPerClient int           // Active-session ceiling for one client identity.
 }
 
 // DefaultConfig returns a default configuration.
 func DefaultConfig() Config {
 	return Config{
-		IdleTimeout:      30 * time.Second,
-		MaxSessionTime:   120 * time.Second,
-		CleanupTicker:    10 * time.Second,
-		DisconnectGrace:  5 * time.Second,
-		ICEGatherTimeout: 10 * time.Second,
+		IdleTimeout:          30 * time.Second,
+		MaxSessionTime:       120 * time.Second,
+		CleanupTicker:        10 * time.Second,
+		DisconnectGrace:      5 * time.Second,
+		ICEGatherTimeout:     10 * time.Second,
+		MaxSessions:          64,
+		MaxSessionsPerClient: 2,
 	}
 }
 
@@ -93,6 +101,12 @@ func normalizeConfig(config Config) Config {
 	}
 	if config.ICEGatherTimeout <= 0 {
 		config.ICEGatherTimeout = defaults.ICEGatherTimeout
+	}
+	if config.MaxSessions <= 0 {
+		config.MaxSessions = defaults.MaxSessions
+	}
+	if config.MaxSessionsPerClient <= 0 {
+		config.MaxSessionsPerClient = defaults.MaxSessionsPerClient
 	}
 	config.ICEServers = cloneICEServers(config.ICEServers)
 	return config
@@ -134,10 +148,12 @@ type managerDependencies struct {
 // Manager handles WebRTC peer connections for packet loss testing. The manager
 // is the sole owner of session removal and resource closure.
 type Manager struct {
-	mu       sync.RWMutex
-	sessions map[string]*Session
-	config   Config
-	closed   bool
+	mu              sync.RWMutex
+	sessions        map[string]*Session
+	pendingOffers   int
+	pendingByClient map[string]int
+	config          Config
+	closed          bool
 
 	factory   peerConnectionFactory
 	now       func() time.Time
@@ -157,6 +173,7 @@ type Manager struct {
 type Session struct {
 	id          string
 	testProfile string
+	clientKey   string
 	createdAt   time.Time
 
 	peerConnection peerConnection
@@ -197,6 +214,7 @@ type SessionStats struct {
 type SessionSnapshot struct {
 	ID           string
 	TestProfile  string
+	ClientKey    string
 	State        SessionState
 	CreatedAt    time.Time
 	LastActivity time.Time
@@ -247,14 +265,15 @@ func newManager(config Config, dependencies managerDependencies) *Manager {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	manager := &Manager{
-		sessions:  make(map[string]*Session),
-		config:    config,
-		factory:   dependencies.factory,
-		now:       dependencies.now,
-		afterFunc: dependencies.afterFunc,
-		newID:     dependencies.newID,
-		ctx:       ctx,
-		cancel:    cancel,
+		sessions:        make(map[string]*Session),
+		pendingByClient: make(map[string]int),
+		config:          config,
+		factory:         dependencies.factory,
+		now:             dependencies.now,
+		afterFunc:       dependencies.afterFunc,
+		newID:           dependencies.newID,
+		ctx:             ctx,
+		cancel:          cancel,
 	}
 
 	manager.cleanupWG.Add(1)
@@ -341,16 +360,47 @@ func (manager *Manager) SetICEServers(servers []pion.ICEServer) {
 	manager.config.ICEServers = cloneICEServers(servers)
 }
 
-func (manager *Manager) beginOffer() bool {
+func (manager *Manager) beginOffer(clientKey string) error {
 	manager.mu.Lock()
 	defer manager.mu.Unlock()
 	if manager.closed {
-		return false
+		return ErrManagerClosed
 	}
+	if len(manager.sessions)+manager.pendingOffers >= manager.config.MaxSessions {
+		return ErrSessionCapacity
+	}
+	if clientKey != "" {
+		clientSessions := manager.pendingByClient[clientKey]
+		for _, session := range manager.sessions {
+			if session.clientKey == clientKey {
+				clientSessions++
+			}
+		}
+		if clientSessions >= manager.config.MaxSessionsPerClient {
+			return ErrClientSessionCapacity
+		}
+		manager.pendingByClient[clientKey]++
+	}
+	manager.pendingOffers++
 	// Add occurs under the same lock Shutdown uses to close admission. Once
 	// Shutdown releases that lock, no later Add can race with offerWG.Wait.
 	manager.offerWG.Add(1)
-	return true
+	return nil
+}
+
+func (manager *Manager) finishOffer(clientKey string) {
+	manager.mu.Lock()
+	manager.pendingOffers--
+	if clientKey != "" {
+		remaining := manager.pendingByClient[clientKey] - 1
+		if remaining <= 0 {
+			delete(manager.pendingByClient, clientKey)
+		} else {
+			manager.pendingByClient[clientKey] = remaining
+		}
+	}
+	manager.mu.Unlock()
+	manager.offerWG.Done()
 }
 
 func (manager *Manager) offerConfig() (Config, error) {
@@ -401,6 +451,20 @@ func (manager *Manager) registerSession(session *Session) error {
 	if _, exists := manager.sessions[session.id]; exists {
 		return fmt.Errorf("duplicate WebRTC session id %q", session.id)
 	}
+	if len(manager.sessions) >= manager.config.MaxSessions {
+		return ErrSessionCapacity
+	}
+	if session.clientKey != "" {
+		clientSessions := 0
+		for _, existing := range manager.sessions {
+			if existing.clientKey == session.clientKey {
+				clientSessions++
+			}
+		}
+		if clientSessions >= manager.config.MaxSessionsPerClient {
+			return ErrClientSessionCapacity
+		}
+	}
 	// Add under the same lock Shutdown uses to close registration. Once
 	// Shutdown observes closed, no later sessionWG.Add can race its Wait.
 	manager.sessionWG.Add(1)
@@ -411,20 +475,26 @@ func (manager *Manager) registerSession(session *Session) error {
 	return nil
 }
 
-// HandleOffer processes an SDP offer and returns an answer. Negotiation is
-// cancellable by the HTTP request or manager shutdown, but the established
-// session remains owned by the manager after this method returns.
+// HandleOffer processes an SDP offer without a per-client identity. Server
+// callers should use HandleOfferForClient so Phase 4 per-client ceilings apply.
 func (manager *Manager) HandleOffer(ctx context.Context, offerSDP string, testProfile string) (answerSDP string, testID string, err error) {
+	return manager.HandleOfferForClient(ctx, offerSDP, testProfile, "")
+}
+
+// HandleOfferForClient processes an SDP offer and attributes the resulting
+// active session to clientKey for admission control. Negotiation is cancellable
+// by the request or manager shutdown; an established session remains manager-owned.
+func (manager *Manager) HandleOfferForClient(ctx context.Context, offerSDP string, testProfile string, clientKey string) (answerSDP string, testID string, err error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
 	if err := ctx.Err(); err != nil {
 		return "", "", err
 	}
-	if !manager.beginOffer() {
-		return "", "", ErrManagerClosed
+	if err := manager.beginOffer(clientKey); err != nil {
+		return "", "", err
 	}
-	defer manager.offerWG.Done()
+	defer manager.finishOffer(clientKey)
 
 	config, err := manager.offerConfig()
 	if err != nil {
@@ -443,6 +513,7 @@ func (manager *Manager) HandleOffer(ctx context.Context, offerSDP string, testPr
 	}
 
 	session := newSession(manager.ctx, testID, testProfile, connection, manager.now)
+	session.clientKey = clientKey
 	if err := manager.registerSession(session); err != nil {
 		session.closeDetached("session registration failed")
 		return "", "", err
@@ -664,6 +735,25 @@ func (manager *Manager) PacketLossSnapshot(testID string) (PacketLossSnapshot, b
 	return session.packetLossSnapshot(), true
 }
 
+// CompletePacketLossSession atomically verifies session ownership, removes the
+// session from manager admission accounting, snapshots its packet counters, and
+// closes its resources outside the manager lock. A false result deliberately
+// does not distinguish a missing session from a session owned by another client.
+func (manager *Manager) CompletePacketLossSession(testID, clientKey string) (PacketLossSnapshot, bool) {
+	manager.mu.Lock()
+	session, ok := manager.sessions[testID]
+	if !ok || (session.clientKey != "" && session.clientKey != clientKey) {
+		manager.mu.Unlock()
+		return PacketLossSnapshot{}, false
+	}
+	delete(manager.sessions, testID)
+	manager.mu.Unlock()
+
+	snapshot := session.packetLossSnapshot()
+	session.closeDetached("packet test report completed")
+	return snapshot, true
+}
+
 // GetSession returns a session by ID.
 func (manager *Manager) GetSession(testID string) (*Session, bool) {
 	manager.mu.RLock()
@@ -765,6 +855,7 @@ func (session *Session) Snapshot() SessionSnapshot {
 	return SessionSnapshot{
 		ID:           session.id,
 		TestProfile:  session.testProfile,
+		ClientKey:    session.clientKey,
 		State:        session.state,
 		CreatedAt:    session.createdAt,
 		LastActivity: session.lastActivity,

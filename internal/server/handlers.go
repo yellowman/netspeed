@@ -2,20 +2,23 @@ package server
 
 import (
 	"crypto/hmac"
+	"crypto/rand"
 	"crypto/sha1"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log"
-	"net"
+	"math"
 	"net/http"
 	"strconv"
 	"strings"
 	"time"
 
-	"github.com/yellowman/netspeed/internal/meta"
 	"github.com/yellowman/netspeed/internal/protocol"
+	"github.com/yellowman/netspeed/internal/webrtc"
 )
 
 // calculateSpeedMbps calculates speed in megabits per second from bytes and duration.
@@ -49,6 +52,7 @@ func (s *Server) handleMeta(w http.ResponseWriter, r *http.Request) {
 
 	clientMeta := s.metaProvider.MetaFor(r)
 	clientMeta.MaxTransferBytes = s.cfg.MaxBytes
+	clientMeta.MaxConcurrentTransfersPerClient = s.cfg.MaxConcurrentTransfersPerClient
 	clientMeta.MeasurementProtocolVersion = protocol.MeasurementProtocolVersion
 	clientMeta.UploadReceiptVersion = protocol.UploadReceiptVersion
 	clientMeta.PacketLossFrameVersion = protocol.PacketLossFrameVersion
@@ -94,9 +98,17 @@ func (s *Server) handleDown(w http.ResponseWriter, r *http.Request) {
 		nBytes = v
 	}
 
-	// Get client info for headers and logging
+	// Get client info for headers, admission, quota, and logging.
 	clientMeta := s.metaProvider.MetaFor(r)
 	clientIP := clientMeta.ClientIP
+	release, admitted := s.beginTransfer(w, r)
+	if !admitted {
+		return
+	}
+	defer release()
+	if !s.reserveBandwidth(w, clientIP, nBytes) {
+		return
+	}
 
 	// Set headers
 	w.Header().Set("Content-Type", "application/octet-stream")
@@ -132,6 +144,9 @@ func (s *Server) handleDown(w http.ResponseWriter, r *http.Request) {
 			chunk = remaining
 		}
 		n, err := w.Write(buf[:chunk])
+		if n > 0 {
+			s.metrics.downloadBytes.Add(uint64(n))
+		}
 		if err != nil {
 			// Client disconnected - log partial transfer
 			duration := time.Since(start)
@@ -160,11 +175,39 @@ func (s *Server) handleUp(w http.ResponseWriter, r *http.Request) {
 
 	start := time.Now()
 	measID := r.URL.Query().Get("measId")
-	clientIP := meta.ClientIPFromRequest(r, s.cfg.TrustProxyHeaders)
+	clientIP := s.clientIP(r)
+	release, admitted := s.beginTransfer(w, r)
+	if !admitted {
+		return
+	}
+	defer release()
 
-	n, err := protocol.ReadUpload(r.Body, r.ContentLength, s.cfg.MaxBytes)
+	bodyReader := io.Reader(r.Body)
+	quotaReserved := false
+	if r.ContentLength >= 0 && r.ContentLength <= s.cfg.MaxBytes {
+		if !s.reserveBandwidth(w, clientIP, r.ContentLength) {
+			return
+		}
+		quotaReserved = true
+	}
+	if !quotaReserved {
+		bodyReader = &quotaChargingReader{reader: r.Body, quota: s.bandwidthQuota, key: clientIP}
+	}
+
+	n, err := protocol.ReadUpload(bodyReader, r.ContentLength, s.cfg.MaxBytes)
+	if n > 0 {
+		s.metrics.uploadBytes.Add(uint64(n))
+	}
 	if err != nil {
 		switch {
+		case errors.Is(err, errBandwidthQuotaExceeded):
+			s.metrics.bandwidthQuotaRejected.Add(1)
+			var quotaErr *bandwidthQuotaError
+			if errors.As(err, &quotaErr) {
+				setRetryAfter(w, quotaErr.retryAfter)
+			}
+			log.Printf("Upload quota rejected: client=%s measId=%s bytes=%d", clientIP, measID, n)
+			http.Error(w, errBandwidthQuotaExceeded.Error(), http.StatusTooManyRequests)
 		case errors.Is(err, protocol.ErrUploadTooLarge):
 			log.Printf("Upload rejected: client=%s measId=%s bytes=%d maxBytes=%d",
 				clientIP, measID, n, s.cfg.MaxBytes)
@@ -197,6 +240,7 @@ func (s *Server) handleUp(w http.ResponseWriter, r *http.Request) {
 	s.setServerTiming(w, start)
 	w.WriteHeader(http.StatusOK)
 	if err := json.NewEncoder(w).Encode(receipt); err != nil {
+		s.metrics.internalFailures.Add(1)
 		log.Printf("Upload receipt write error: client=%s measId=%s error=%v", clientIP, measID, err)
 	}
 }
@@ -259,46 +303,35 @@ func (s *Server) handleTurnCredentials(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Determine TURN servers - either configured or derived from embedded TURN
-	var turnServers []string
-	if len(s.cfg.TurnServers) > 0 {
-		turnServers = s.cfg.TurnServers
-	} else if s.cfg.EmbeddedTurnPort != "" && s.cfg.TurnSecret != "" {
-		// Derive TURN server URL from request host
-		host := r.Host
-		// Strip port from host if present, handling IPv6 addresses properly
-		if h, _, err := net.SplitHostPort(host); err == nil {
-			host = h
-		}
-		// RFC 7065/3986: IPv6 addresses must be enclosed in brackets in URIs
-		// net.SplitHostPort strips brackets, so we need to re-add them for IPv6
-		// But if SplitHostPort failed (no port), brackets may already be present
-		if strings.Contains(host, ":") && !strings.HasPrefix(host, "[") {
-			host = "[" + host + "]"
-		}
-		// Include both STUN and TURN URLs - browsers need STUN for reflexive candidates
-		turnServers = []string{
-			fmt.Sprintf("stun:%s:%s", host, s.cfg.EmbeddedTurnPort),
-			fmt.Sprintf("turn:%s:%s?transport=udp", host, s.cfg.EmbeddedTurnPort),
+	clientKey := s.clientIP(r)
+	if allowed, retryAfter := s.turnCredentialLimiter.Allow(clientKey); !allowed {
+		s.metrics.turnCredentialRateRejected.Add(1)
+		rejectRateLimited(w, retryAfter, "TURN credential request rate exceeded")
+		return
+	}
+	if len(s.cfg.TurnServers) == 0 {
+		http.Error(w, "ICE servers not configured", http.StatusServiceUnavailable)
+		return
+	}
+	hasTURN := false
+	for _, raw := range s.cfg.TurnServers {
+		lower := strings.ToLower(strings.TrimSpace(raw))
+		if strings.HasPrefix(lower, "turn:") || strings.HasPrefix(lower, "turns:") {
+			hasTURN = true
+			break
 		}
 	}
-
-	// Check if TURN is configured
-	if s.cfg.TurnSecret == "" || len(turnServers) == 0 {
-		http.Error(w, "TURN not configured", http.StatusServiceUnavailable)
+	if hasTURN && s.cfg.TurnSecret == "" {
+		http.Error(w, "TURN credentials are not configured", http.StatusServiceUnavailable)
 		return
 	}
 
-	// Parse optional TTL parameter
-	ttlStr := r.URL.Query().Get("ttl")
-	var ttl int64 = 600 // Default 10 minutes
-	if ttlStr != "" {
-		if v, err := strconv.ParseInt(ttlStr, 10, 64); err == nil && v > 0 {
-			ttl = v
+	ttl := int64(600)
+	if ttlStr := r.URL.Query().Get("ttl"); ttlStr != "" {
+		if parsed, err := strconv.ParseInt(ttlStr, 10, 64); err == nil && parsed > 0 {
+			ttl = parsed
 		}
 	}
-
-	// Clamp TTL
 	if ttl < 60 {
 		ttl = 60
 	}
@@ -306,33 +339,34 @@ func (s *Server) handleTurnCredentials(w http.ResponseWriter, r *http.Request) {
 		ttl = s.cfg.MaxTurnTTL
 	}
 
-	// Compute expiry and generate username
-	now := time.Now().Unix()
-	exp := now + ttl
-
-	// Generate a simple token (could be session-based)
-	token := fmt.Sprintf("%x", now)
-	username := fmt.Sprintf("%d:%s", exp, token)
-
-	// Compute HMAC-SHA1 credential
-	mac := hmac.New(sha1.New, []byte(s.cfg.TurnSecret))
-	mac.Write([]byte(username))
-	credential := base64.StdEncoding.EncodeToString(mac.Sum(nil))
-
-	resp := TurnCredentialsResponse{
-		Username:   username,
-		Credential: credential,
-		TTLSec:     ttl,
-		Servers:    turnServers,
-		Realm:      s.cfg.TurnRealm,
+	response := TurnCredentialsResponse{
+		Servers: append([]string(nil), s.cfg.TurnServers...),
+		Realm:   s.cfg.TurnRealm,
 	}
-
-	log.Printf("TURN credentials: servers=%v username=%s realm=%s", turnServers, username, s.cfg.TurnRealm)
+	if hasTURN {
+		tokenBytes := make([]byte, 16)
+		if _, err := rand.Read(tokenBytes); err != nil {
+			s.metrics.internalFailures.Add(1)
+			http.Error(w, "failed to generate TURN credential", http.StatusInternalServerError)
+			return
+		}
+		expiry := time.Now().Unix() + ttl
+		response.Username = fmt.Sprintf("%d:%s", expiry, hex.EncodeToString(tokenBytes))
+		mac := hmac.New(sha1.New, []byte(s.cfg.TurnSecret))
+		_, _ = mac.Write([]byte(response.Username))
+		response.Credential = base64.StdEncoding.EncodeToString(mac.Sum(nil))
+		response.TTLSec = ttl
+	}
 
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-store")
-
-	json.NewEncoder(w).Encode(resp)
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	if err := json.NewEncoder(w).Encode(response); err != nil {
+		s.metrics.internalFailures.Add(1)
+		log.Printf("TURN credential response write error: client=%s error=%v", clientKey, err)
+		return
+	}
+	s.metrics.turnCredentialsIssued.Add(1)
 }
 
 // PacketTestOfferRequest is the request body for /api/packet-test/offer.
@@ -356,47 +390,58 @@ func (s *Server) handlePacketTestOffer(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-
-	// Check if WebRTC manager is available
 	if s.webrtcManager == nil {
 		http.Error(w, "WebRTC not available", http.StatusServiceUnavailable)
 		return
 	}
 
-	// Parse request
-	var req PacketTestOfferRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "invalid request body", http.StatusBadRequest)
+	clientKey := s.clientIP(r)
+	if allowed, retryAfter := s.offerRateLimiter.Allow(clientKey); !allowed {
+		s.metrics.webrtcOfferRateRejected.Add(1)
+		rejectRateLimited(w, retryAfter, "WebRTC offer rate exceeded")
 		return
 	}
 
-	if req.Type != "offer" {
+	var request PacketTestOfferRequest
+	if !s.decodeControlJSON(w, r, s.cfg.MaxOfferBodyBytes, &request) {
+		return
+	}
+	if request.Type != "offer" {
 		http.Error(w, "type must be 'offer'", http.StatusBadRequest)
 		return
 	}
-
-	if req.SDP == "" {
+	if request.SDP == "" {
 		http.Error(w, "sdp is required", http.StatusBadRequest)
 		return
 	}
 
-	// Handle the offer and get an answer
-	answerSDP, testID, err := s.webrtcManager.HandleOffer(r.Context(), req.SDP, req.TestProfile)
+	answerSDP, testID, err := s.webrtcManager.HandleOfferForClient(r.Context(), request.SDP, request.TestProfile, clientKey)
 	if err != nil {
-		http.Error(w, fmt.Sprintf("failed to process offer: %v", err), http.StatusInternalServerError)
+		switch {
+		case errors.Is(err, webrtc.ErrClientSessionCapacity):
+			s.metrics.webrtcCapacityRejected.Add(1)
+			rejectRateLimited(w, time.Second, err.Error())
+		case errors.Is(err, webrtc.ErrSessionCapacity), errors.Is(err, webrtc.ErrManagerClosed):
+			s.metrics.webrtcCapacityRejected.Add(1)
+			w.Header().Set("Retry-After", "1")
+			http.Error(w, err.Error(), http.StatusServiceUnavailable)
+		default:
+			s.metrics.internalFailures.Add(1)
+			log.Printf("Packet-test offer failed: client=%s error=%v", clientKey, err)
+			http.Error(w, "failed to process offer", http.StatusInternalServerError)
+		}
 		return
 	}
 
-	resp := PacketTestOfferResponse{
-		SDP:    answerSDP,
-		Type:   "answer",
-		TestID: testID,
-	}
-
+	s.metrics.webrtcOffers.Add(1)
+	response := PacketTestOfferResponse{SDP: answerSDP, Type: "answer", TestID: testID}
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-store")
-
-	json.NewEncoder(w).Encode(resp)
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	if err := json.NewEncoder(w).Encode(response); err != nil {
+		s.metrics.internalFailures.Add(1)
+		log.Printf("Packet-test offer response write error: client=%s testId=%s error=%v", clientKey, testID, err)
+	}
 }
 
 // PacketTestReportRequest is the request body for /api/packet-test/report.
@@ -427,6 +472,45 @@ type PacketTestReportResponse struct {
 	AckSendFailures      int  `json:"ackSendFailures"`
 }
 
+func validatePacketTestReport(report PacketTestReportRequest) error {
+	if report.Sent < 1 || report.Sent > 100_000 {
+		return fmt.Errorf("sent must be between 1 and 100000")
+	}
+	if report.Received < 0 || report.Received > report.Sent {
+		return fmt.Errorf("received must be between 0 and sent")
+	}
+	if report.LossPercent < 0 || report.LossPercent > 100 {
+		return fmt.Errorf("lossPercent must be between 0 and 100")
+	}
+	expectedLoss := float64(report.Sent-report.Received) * 100 / float64(report.Sent)
+	if math.Abs(report.LossPercent-expectedLoss) > 0.1 {
+		return fmt.Errorf("lossPercent does not match sent and received counts")
+	}
+	for name, value := range map[string]float64{
+		"rttMinMs":    report.RTTMin,
+		"rttMedianMs": report.RTTMedian,
+		"rttP90Ms":    report.RTTP90,
+		"jitterMs":    report.JitterMs,
+	} {
+		if value < 0 || value > 60_000 {
+			return fmt.Errorf("%s must be between 0 and 60000", name)
+		}
+	}
+	if report.Received == 0 {
+		if report.RTTMin != 0 || report.RTTMedian != 0 || report.RTTP90 != 0 || report.JitterMs != 0 {
+			return fmt.Errorf("RTT and jitter must be zero when no acknowledgements were received")
+		}
+		return nil
+	}
+	if report.RTTMin > report.RTTMedian || report.RTTMedian > report.RTTP90 {
+		return fmt.Errorf("RTT values must satisfy min <= median <= p90")
+	}
+	if math.Abs(report.JitterMs-(report.RTTP90-report.RTTMedian)) > 0.1 {
+		return fmt.Errorf("jitterMs must equal rttP90Ms minus rttMedianMs")
+	}
+	return nil
+}
+
 // handlePacketTestReport handles POST /api/packet-test/report.
 // This endpoint receives packet loss test results from the client.
 func (s *Server) handlePacketTestReport(w http.ResponseWriter, r *http.Request) {
@@ -436,8 +520,7 @@ func (s *Server) handlePacketTestReport(w http.ResponseWriter, r *http.Request) 
 	}
 
 	var req PacketTestReportRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "invalid request body", http.StatusBadRequest)
+	if !s.decodeControlJSON(w, r, s.cfg.MaxReportBodyBytes, &req) {
 		return
 	}
 	if req.TestID == "" {
@@ -449,13 +532,18 @@ func (s *Server) handlePacketTestReport(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	snapshot, ok := s.webrtcManager.PacketLossSnapshot(req.TestID)
+	if err := validatePacketTestReport(req); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	clientIP := s.clientIP(r)
+	snapshot, ok := s.webrtcManager.CompletePacketLossSession(req.TestID, clientIP)
 	if !ok {
 		http.Error(w, "packet test session not found", http.StatusNotFound)
 		return
 	}
 
-	clientIP := meta.ClientIPFromRequest(r, s.cfg.TrustProxyHeaders)
 	log.Printf("Packet test report: testId=%s client=%s sent=%d transactionReceived=%d clientLoss=%.2f%% forwardReceived=%d acksSent=%d invalid=%d duplicates=%d ackSendFailures=%d rtt=[%.2f/%.2f/%.2f]ms jitter=%.2fms",
 		req.TestID, clientIP, req.Sent, req.Received, req.LossPercent,
 		snapshot.ForwardReceived, snapshot.AcknowledgementsSent, snapshot.InvalidFrames,
@@ -473,13 +561,10 @@ func (s *Server) handlePacketTestReport(w http.ResponseWriter, r *http.Request) 
 		AckSendFailures:      snapshot.AckSendFailures,
 	}
 
-	// Snapshot first, then close. Closing before the snapshot would erase the
-	// only authoritative record of which forward probes reached the server.
-	s.webrtcManager.CloseSession(req.TestID)
-
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-store")
 	if err := json.NewEncoder(w).Encode(response); err != nil {
+		s.metrics.internalFailures.Add(1)
 		log.Printf("Packet test report response write error: testId=%s error=%v", req.TestID, err)
 	}
 }

@@ -51,6 +51,7 @@ type Config struct {
 	DownloadOnly   bool
 	UploadOnly     bool
 	SkipPacketLoss bool
+	AccessToken    string
 	OnProgress     func(phase string, current, total int, value float64)
 }
 
@@ -68,12 +69,15 @@ const (
 // UserAgent matches python-requests default format
 const UserAgent = "python-requests/2.32.0"
 
-// setRequestHeaders adds headers matching python requests library defaults
-func setRequestHeaders(req *http.Request) {
+// setRequestHeaders adds measurement headers and optional shared-token auth.
+func (c *Client) setRequestHeaders(req *http.Request) {
 	req.Header.Set("User-Agent", UserAgent)
 	req.Header.Set("Accept", "*/*")
 	req.Header.Set("Accept-Encoding", "identity")
 	req.Header.Set("Connection", "keep-alive")
+	if c.cfg.AccessToken != "" {
+		req.Header.Set("Authorization", "Bearer "+c.cfg.AccessToken)
+	}
 }
 
 // Latency adaptation constants shared with the browser implementation.
@@ -85,11 +89,12 @@ const (
 
 // Client performs speed tests.
 type Client struct {
-	cfg                    Config
-	httpClient             *http.Client
-	maxTransferBytes       int64
-	uploadReceiptVersion   int
-	packetLossFrameVersion int
+	cfg                             Config
+	httpClient                      *http.Client
+	maxTransferBytes                int64
+	uploadReceiptVersion            int
+	packetLossFrameVersion          int
+	maxConcurrentTransfersPerClient int
 }
 
 // New creates a new speed test client.
@@ -101,8 +106,9 @@ func New(cfg Config) *Client {
 	}
 
 	return &Client{
-		cfg:              cfg,
-		maxTransferBytes: legacyMaxTransferBytes,
+		cfg:                             cfg,
+		maxTransferBytes:                legacyMaxTransferBytes,
+		maxConcurrentTransfersPerClient: 24,
 		httpClient: &http.Client{
 			Transport: &http.Transport{
 				DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
@@ -155,6 +161,12 @@ func (c *Client) Run(ctx context.Context) (*Results, error) {
 	results.Meta = meta
 	if meta.MaxTransferBytes > 0 {
 		c.maxTransferBytes = meta.MaxTransferBytes
+	}
+	if meta.MaxConcurrentTransfersPerClient > 0 {
+		c.maxConcurrentTransfersPerClient = meta.MaxConcurrentTransfersPerClient
+	}
+	if c.maxConcurrentTransfersPerClient < 2 {
+		return nil, fmt.Errorf("server per-client transfer limit %d is too low for concurrent loaded-latency measurement; need at least 2", c.maxConcurrentTransfersPerClient)
 	}
 	c.uploadReceiptVersion = meta.UploadReceiptVersion
 	c.packetLossFrameVersion = meta.PacketLossFrameVersion
@@ -222,7 +234,7 @@ func (c *Client) fetchMeta(ctx context.Context) (*Meta, error) {
 	if err != nil {
 		return nil, err
 	}
-	setRequestHeaders(req)
+	c.setRequestHeaders(req)
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
@@ -298,8 +310,11 @@ func (c *Client) runAdaptiveLatencyTest(ctx context.Context, phase string, count
 	// Phase 3: Run remaining probes
 	remaining := count - len(samples)
 	if useParallel {
-		// Batch 5 probes at a time
+		// Respect the server-advertised per-client transfer ceiling.
 		batchSize := 5
+		if c.maxConcurrentTransfersPerClient < batchSize {
+			batchSize = c.maxConcurrentTransfersPerClient
+		}
 		for i := 0; i < remaining; i += batchSize {
 			batch := batchSize
 			if i+batch > remaining {
@@ -431,7 +446,7 @@ func (c *Client) measureLatency(ctx context.Context, phase string, seq int) (tim
 	if err != nil {
 		return 0, err
 	}
-	setRequestHeaders(req)
+	c.setRequestHeaders(req)
 	req.Header.Set("Cache-Control", "no-store")
 
 	resp, err := c.httpClient.Do(req)
@@ -638,6 +653,17 @@ func medianProfileSpeed(samples []ThroughputSample, profileName string) float64 
 	return measurement.Percentile(values, 50)
 }
 
+func (c *Client) clampLoadConcurrency(requested int) int {
+	maximum := c.maxConcurrentTransfersPerClient - 1 // reserve one slot for the loaded-latency probe
+	if maximum < 1 {
+		maximum = 1
+	}
+	if requested > maximum {
+		return maximum
+	}
+	return requested
+}
+
 // runDownloadTests runs small verified baselines, then bounded fixed-duration
 // windows. The selected window owns the loaded-latency probes.
 func (c *Client) runDownloadTests(ctx context.Context) ([]ThroughputSample, []LatencySample, error) {
@@ -650,6 +676,7 @@ func (c *Client) runDownloadTests(ctx context.Context) ([]ThroughputSample, []La
 		return nil, nil, err
 	}
 	plan := selectWindowPlan(medianProfileSpeed(baseline, "1MB"), c.maxTransferBytes, c.cfg.Quick)
+	plan.Concurrency = c.clampLoadConcurrency(plan.Concurrency)
 	windows, loaded, err := c.runSustainedWindows(ctx, "download", plan)
 	if err != nil {
 		return nil, nil, err
@@ -668,6 +695,7 @@ func (c *Client) runUploadTests(ctx context.Context) ([]ThroughputSample, []Late
 		return nil, nil, err
 	}
 	plan := selectWindowPlan(medianProfileSpeed(baseline, "1MB"), c.maxTransferBytes, c.cfg.Quick)
+	plan.Concurrency = c.clampLoadConcurrency(plan.Concurrency)
 	windows, loaded, err := c.runSustainedWindows(ctx, "upload", plan)
 	if err != nil {
 		return nil, nil, err
@@ -1007,7 +1035,7 @@ func (c *Client) measureDownloadTracked(
 	if err != nil {
 		return ThroughputSample{}, err
 	}
-	setRequestHeaders(req)
+	c.setRequestHeaders(req)
 	req.Header.Set("Cache-Control", "no-store")
 
 	requestStart := time.Now()
@@ -1221,7 +1249,7 @@ func (c *Client) measureUploadTracked(
 	if err != nil {
 		return ThroughputSample{}, err
 	}
-	setRequestHeaders(req)
+	c.setRequestHeaders(req)
 	req.Header.Set("Content-Type", "application/octet-stream")
 	req.ContentLength = numBytes
 

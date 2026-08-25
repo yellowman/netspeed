@@ -17,11 +17,33 @@ it covers:
 ---
 
 
-> **Phase 2 authority:** [`MEASUREMENT_PROTOCOL_V2.md`](MEASUREMENT_PROTOCOL_V2.md)
-> is the canonical implemented measurement contract. It supersedes earlier
-> upload-sink, giant-profile, post-transfer loaded-latency, and short JSON packet
-> examples in this combined design document. Phases 3–5 still own lifecycle,
-> public-service hardening, and deployment/HTTP corrections.
+> **Implemented authority:** [`MEASUREMENT_PROTOCOL_V2.md`](MEASUREMENT_PROTOCOL_V2.md)
+> is the canonical measurement contract,
+> [`WEBRTC_LIFECYCLE.md`](WEBRTC_LIFECYCLE.md) is the canonical session contract,
+> and [`SERVICE_HARDENING.md`](SERVICE_HARDENING.md) is the canonical Phase 4
+> deployment-safety contract. Those documents supersede incompatible legacy
+> examples in this combined design note. Phase 5 still owns HTTP timeout,
+> cross-origin, response-writer, shutdown-order, YAML, TLS, and GeoIP contract
+> corrections.
+
+Phase 4 normative addendum
+--------------------------
+
+The implemented daemon applies bounded defaults even without authentication:
+256 active transfers globally, 24 per resolved client, a 1 TiB/client/hour byte
+quota, 64 active WebRTC sessions globally, two per client, token-bucket limits
+for signaling and ICE configuration, and 128 KiB/16 KiB JSON body limits.
+Overloaded measurement work is rejected immediately with `429` or `503`; it is
+not queued.
+
+`NETSPEEDD_ACCESS_TOKEN` optionally protects the measurement and `/api/`
+surface with `Authorization: Bearer`. `/health` stays public. `/metrics` is
+opt-in and requires its own token or the access token. Forwarded client
+addresses are accepted only from `NETSPEEDD_TRUSTED_PROXY_CIDRS` and malformed
+chains are ignored. Embedded TURN is disabled and loopback-only by default; a
+non-loopback listener requires an explicit advertised IP and a positive UDP rate
+ceiling. See `SERVICE_HARDENING.md` for the complete status and configuration
+contract.
 
 1. api surface
 ==============
@@ -62,6 +84,7 @@ returns per-client metadata similar to `https://speed.cloudflare.com/meta`, typi
   "longitude": -73.935242,
   "timezone": "America/New_York",
   "maxTransferBytes": 1073741824,
+  "maxConcurrentTransfersPerClient": 24,
   "measurementProtocolVersion": 2,
   "uploadReceiptVersion": 1,
   "packetLossFrameVersion": 1
@@ -277,29 +300,50 @@ responsibilities:
 
 ```go
 type Config struct {
-    ListenAddr          string        // ":8080" or ":443"
-    TLSCertFile         string        // if empty => http only
-    TLSKeyFile          string
+    ListenAddr     string
+    TLSCertFile    string
+    TLSKeyFile     string
+    MaxBytes       int64
+    ReadTimeout    time.Duration
+    WriteTimeout   time.Duration
+    IdleTimeout    time.Duration
+    EnableCORS     bool
+    AllowedOrigins []string
 
-    MaxBytes            int64         // hard cap for bytes/upload, e.g. 1<<30
-    DefaultMaxBytes     int64         // optional lower per-request limit
+    LocationsFile       string
+    GeoIPDatabasePath   string
+    TrustedProxyCIDRs   []string
 
-    ReadTimeout         time.Duration
-    WriteTimeout        time.Duration
-    IdleTimeout         time.Duration
+    MaxConcurrentTransfers          int
+    MaxConcurrentTransfersPerClient int
+    ClientBandwidthQuotaBytes       int64
+    ClientBandwidthQuotaWindow      time.Duration
+    MaxWebRTCSessions               int
+    MaxWebRTCSessionsPerClient      int
+    WebRTCOfferRatePerMinute        int
+    WebRTCOfferBurst                int
+    TurnCredentialRatePerMinute     int
+    TurnCredentialBurst             int
+    MaxOfferBodyBytes               int64
+    MaxReportBodyBytes              int64
 
-    EnableServerTiming  bool
+    AccessToken   string
+    MetricsToken  string
+    EnableMetrics bool
 
-    EnableCORS          bool
-    AllowedOrigins      []string      // or "*" for public
-
-    LocationsFile       string        // path to JSON file with Location list
-
-    // meta / geo configuration
-    GeoIPDatabasePath   string        // optional maxmind db path
-    TrustProxyHeaders   bool          // whether to honor X-Forwarded-For, etc.
+    TurnSecret          string
+    TurnServers         []string
+    TurnRealm           string
+    MaxTurnTTL          int64
+    EmbeddedTurn        bool
+    EmbeddedTurnAddr    string
+    EmbeddedTurnPublicIP string
+    EmbeddedTurnMaxMbps int64
 }
 ```
+
+The complete defaults, validation rules, flags, and environment variables are
+normative in `SERVICE_HARDENING.md`.
 
 2.3 core interfaces
 -------------------
@@ -321,8 +365,9 @@ type ClientMeta struct {
     Latitude      float64 `json:"latitude"`
     Longitude     float64 `json:"longitude"`
     Timezone                   string  `json:"timezone,omitempty"`
-    MaxTransferBytes           int64   `json:"maxTransferBytes"`
-    MeasurementProtocolVersion int     `json:"measurementProtocolVersion"`
+    MaxTransferBytes                int64 `json:"maxTransferBytes"`
+    MaxConcurrentTransfersPerClient int   `json:"maxConcurrentTransfersPerClient"`
+    MeasurementProtocolVersion      int   `json:"measurementProtocolVersion"`
     UploadReceiptVersion       int     `json:"uploadReceiptVersion"`
     PacketLossFrameVersion     int     `json:"packetLossFrameVersion"`
 }
@@ -344,9 +389,10 @@ type MetaProvider interface {
      - asn and as org
    - maps country / region / city to closest colo or uses a separate colo map.
 
-3. `HeaderMetaProvider`  
-   - reads “trusted” upstream headers like `CF-IPCountry`, `CF-Connecting-IP`, `CF-Region`, etc.
-   - useful when your daemon sits behind an existing cdn and wants to reuse their metadata.
+3. Trusted proxy client-address resolution
+   - forwarding headers are ignored unless the direct peer belongs to an explicitly configured proxy CIDR;
+   - `X-Forwarded-For` is walked from the trusted edge inward and a malformed chain is rejected as a whole;
+   - single-IP headers such as `CF-Connecting-IP` and `X-Real-IP` are accepted only from a trusted direct peer.
 
 the daemon selects the implementation based on config at startup.
 
@@ -408,27 +454,15 @@ type Server struct {
 
 ### 2.5.1 helper: client ip extraction
 
-```go
-func clientIPFromRequest(r *http.Request, trustProxy bool) string {
-    if trustProxy {
-        if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
-            // take the first entry before the first comma
-            if idx := strings.Index(xff, ","); idx != -1 {
-                return strings.TrimSpace(xff[:idx])
-            }
-            return strings.TrimSpace(xff)
-        }
-        if cip := r.Header.Get("CF-Connecting-IP"); cip != "" {
-            return cip
-        }
-    }
-    host, _, err := net.SplitHostPort(r.RemoteAddr)
-    if err != nil {
-        return r.RemoteAddr // fallback; not ideal but ok
-    }
-    return host
-}
-```
+Client identity is resolved by `internal/clientaddr.Resolver`. With no trusted
+CIDRs it returns the direct TCP peer and ignores every forwarding header. With a
+trusted direct peer it walks the complete `X-Forwarded-For` chain from right to
+left, stopping at the first untrusted address. Empty, malformed, or partially
+malformed chains are rejected rather than partially trusted.
+
+The same resolved identity is used for metadata, logs, transfer/session limits,
+byte quotas, rate limits, and packet-report ownership. This invariant prevents a
+client from selecting a cheaper identity for one control surface than another.
 
 ---
 
@@ -437,8 +471,8 @@ func clientIPFromRequest(r *http.Request, trustProxy bool) string {
 handler flow:
 
 1. build `ClientMeta` via `s.metaProvider.MetaFor(r)`;
-2. set `maxTransferBytes` and the three protocol capability versions from the
-   daemon's implemented contract;
+2. set `maxTransferBytes`, `maxConcurrentTransfersPerClient`, and the three
+   protocol capability versions from the daemon's implemented contract;
 3. set `Content-Type: application/json; charset=utf-8`;
 4. set `Cache-Control: no-store`;
 5. JSON encode to `w`.
@@ -728,13 +762,16 @@ and adds:
 
 **infra pieces:**
 
-- **turn server** - two options:
-  1. **embedded turn server** (default, zero config)
-     - netspeedd includes a built-in turn server using pion/turn
-     - listens on `:3478` udp by default
-     - auto-generates credentials
-     - no external dependencies
-  2. **external turn server** (e.g. coturn)
+- **ICE/TURN server** - three supported deployment modes:
+  1. **STUN-only configuration**
+     - one or more `stun:`/`stuns:` URLs;
+     - no shared secret or username/credential is required.
+  2. **embedded TURN server** (opt-in)
+     - disabled by default and listens on `127.0.0.1:3478` when enabled;
+     - a non-loopback listener requires an explicit advertised relay IP;
+     - credentials are short-lived and the UDP socket has a combined byte-rate ceiling;
+     - a random process-lifetime secret is generated when none is supplied.
+  3. **external TURN server** (e.g. coturn)
      - example addresses:
        - `turn1.example.com:3478` (udp/tcp)
        - `turns1.example.com:5349` (tls)
@@ -760,8 +797,9 @@ the browser never talks directly to the turn secret; it only sees derived userna
 - method: `GET`
 - path: `/api/turn/credentials`
 - auth:
-  - at minimum, **same-origin** cookie/session
-  - optionally require a short-lived app jwt
+  - when `NETSPEEDD_ACCESS_TOKEN` is configured, require
+    `Authorization: Bearer <token>`;
+  - the endpoint also has a per-resolved-client token bucket;
 - query params:
   - `ttl` (optional, int seconds) – requested lifetime, capped by server
 
@@ -792,10 +830,8 @@ the browser never talks directly to the turn secret; it only sees derived userna
    exp := now + ttl
    ```
 
-2. generate `token` (optional):
-
-   - either random
-   - or derived from user id / session id
+2. generate a cryptographically random 16-byte token suffix for every TURN
+   username;
 
 3. build username:
 
@@ -816,7 +852,7 @@ the browser never talks directly to the turn secret; it only sees derived userna
 #### browser usage
 
 ```ts
-const res = await fetch('/api/turn/credentials', { credentials: 'include' });
+const res = await fetch('/api/turn/credentials', { headers: serviceHeaders() });
 const turn = await res.json();
 
 const pc = new RTCPeerConnection({
@@ -864,13 +900,14 @@ const pc = new RTCPeerConnection({
 
 #### server behavior (using e.g. pion/webrtc)
 
-1. read request, validate `type == "offer"`.
-2. create `PeerConnection` with same `iceServers` you gave the client.
-3. set remote description to the offer sdp.
-4. create answer, set local description.
-5. register `OnDataChannel` handler for the `"packet-loss"` channel.
-6. respond with answer sdp + generated `testId`.
-7. keep the peer connection alive long enough for the test to run (e.g. 30s timeout).
+1. authenticate, rate-limit, bound the JSON body, and validate `type == "offer"`.
+2. reserve global and per-client session capacity before allocating a peer connection.
+3. create `PeerConnection` with the applicable ICE configuration.
+4. register the session before callbacks, then set the remote description.
+5. create and install the local answer under the cancellable lifecycle contract.
+6. respond with answer SDP plus generated `testId`.
+7. bind report completion to the same resolved client identity and close through
+   the common manager-owned teardown path.
 
 ---
 

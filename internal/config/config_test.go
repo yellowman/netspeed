@@ -1,0 +1,122 @@
+package config
+
+import (
+	"strings"
+	"testing"
+)
+
+func TestDefaultPhase4ConfigurationIsValidAndTURNIsOptIn(t *testing.T) {
+	cfg := Default()
+	if cfg.EmbeddedTurn {
+		t.Fatal("embedded TURN must be opt-in")
+	}
+	if cfg.EmbeddedTurnAddr != "127.0.0.1:3478" {
+		t.Fatalf("embedded TURN address=%q; want loopback", cfg.EmbeddedTurnAddr)
+	}
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("default validation: %v", err)
+	}
+}
+
+func TestValidateRequiresProxyCIDRs(t *testing.T) {
+	cfg := Default()
+	cfg.TrustProxyHeaders = true
+	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "CIDR") {
+		t.Fatalf("validation error=%v; want trusted CIDR requirement", err)
+	}
+
+	cfg.TrustedProxyCIDRs = []string{"10.0.0.0/8"}
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("trusted proxy validation: %v", err)
+	}
+}
+
+func TestValidateRejectsPublicEmbeddedTURNWithoutPublicIP(t *testing.T) {
+	cfg := Default()
+	cfg.EmbeddedTurn = true
+	cfg.EmbeddedTurnAddr = "0.0.0.0:3478"
+	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "PUBLIC_IP") {
+		t.Fatalf("validation error=%v; want public IP requirement", err)
+	}
+
+	cfg.EmbeddedTurnPublicIP = "203.0.113.10"
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("public embedded TURN validation: %v", err)
+	}
+}
+
+func TestValidateAllowsCustomEmbeddedTURNSecret(t *testing.T) {
+	cfg := Default()
+	cfg.EmbeddedTurn = true
+	cfg.TurnSecret = "0123456789abcdef"
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("embedded TURN with custom secret: %v", err)
+	}
+}
+
+func TestValidateAllowsSTUNOnlyConfiguration(t *testing.T) {
+	cfg := Default()
+	cfg.TurnServers = []string{"stun:stun.example.test:3478", "stuns:stun.example.test:5349"}
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("STUN-only validation: %v", err)
+	}
+}
+
+func TestValidateRequiresSecretForExternalTURN(t *testing.T) {
+	cfg := Default()
+	cfg.TurnServers = []string{"stun:stun.example.test:3478", "turn:turn.example.test:3478?transport=udp"}
+	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "TURN_SECRET") {
+		t.Fatalf("validation error=%v; want secret requirement", err)
+	}
+	cfg.TurnSecret = "0123456789abcdef"
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("external TURN validation: %v", err)
+	}
+}
+
+func TestValidateRejectsLimitInversions(t *testing.T) {
+	cfg := Default()
+	cfg.MaxConcurrentTransfers = 4
+	cfg.MaxConcurrentTransfersPerClient = 5
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("expected transfer limit inversion error")
+	}
+
+	cfg = Default()
+	cfg.MaxWebRTCSessions = 1
+	cfg.MaxWebRTCSessionsPerClient = 2
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("expected WebRTC limit inversion error")
+	}
+}
+
+func TestMetricsAreOptInAndRequireAuthentication(t *testing.T) {
+	cfg := Default()
+	if cfg.EnableMetrics {
+		t.Fatal("metrics must be opt-in")
+	}
+	cfg.EnableMetrics = true
+	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "metrics require") {
+		t.Fatalf("validation error=%v; want metrics authentication requirement", err)
+	}
+	cfg.MetricsToken = "0123456789abcdef"
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("authenticated metrics validation: %v", err)
+	}
+}
+
+func TestValidateRequiresTwoPerClientTransferSlots(t *testing.T) {
+	cfg := Default()
+	cfg.MaxConcurrentTransfersPerClient = 1
+	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "at least 2") {
+		t.Fatalf("validation error=%v; want loaded-latency concurrency requirement", err)
+	}
+}
+
+func TestValidateRejectsOrphanTURNSecret(t *testing.T) {
+	cfg := Default()
+	cfg.TurnSecret = "0123456789abcdef"
+	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "without any TURN servers") {
+		t.Fatalf("validation error=%v; want orphan TURN secret rejection", err)
+	}
+}
