@@ -560,7 +560,7 @@ void json_number(json_writer_t *w, double val)
         writer_append(w, "null");
     } else {
         /* Use %g for compact representation */
-        snprintf(buf, sizeof(buf), "%.6g", val);
+        snprintf(buf, sizeof(buf), "%.15g", val);
         writer_append(w, buf);
     }
 
@@ -616,160 +616,240 @@ void json_kv_bool(json_writer_t *w, const char *key, bool val)
 
 /* ===================== Results Serialization ===================== */
 
-char *results_to_json(const results_t *r)
+static void write_meta(json_writer_t *w, const meta_t *meta)
 {
-    json_writer_t w;
-    json_writer_init(&w);
-
-    json_start_object(&w);
-
-    /* meta */
-    json_key(&w, "meta");
-    json_start_object(&w);
-    json_kv_string(&w, "hostname", r->meta.hostname);
-    json_kv_string(&w, "clientIp", r->meta.client_ip);
-    json_kv_string(&w, "httpProtocol", r->meta.http_protocol);
-    json_kv_int(&w, "asn", r->meta.asn);
-    json_kv_string(&w, "asOrganization", r->meta.as_organization);
-    json_kv_string(&w, "colo", r->meta.colo);
-    json_kv_string(&w, "country", r->meta.country);
-    json_kv_string(&w, "city", r->meta.city);
-    json_kv_string(&w, "region", r->meta.region);
-    json_kv_string(&w, "postalCode", r->meta.postal_code);
-    json_kv_number(&w, "latitude", r->meta.latitude);
-    json_kv_number(&w, "longitude", r->meta.longitude);
-    if (r->meta.timezone[0]) {
-        json_kv_string(&w, "timezone", r->meta.timezone);
+    json_start_object(w);
+    json_kv_string(w, "hostname", meta->hostname);
+    json_kv_string(w, "clientIp", meta->client_ip);
+    json_kv_string(w, "httpProtocol", meta->http_protocol);
+    json_kv_int(w, "asn", meta->asn);
+    json_kv_string(w, "asOrganization", meta->as_organization);
+    json_kv_string(w, "colo", meta->colo);
+    json_kv_string(w, "country", meta->country);
+    json_kv_string(w, "city", meta->city);
+    json_kv_string(w, "region", meta->region);
+    json_kv_string(w, "postalCode", meta->postal_code);
+    json_kv_number(w, "latitude", meta->latitude);
+    json_kv_number(w, "longitude", meta->longitude);
+    if (meta->timezone[0]) {
+        json_kv_string(w, "timezone", meta->timezone);
     }
-    json_end_object(&w);
-
-    /* summary */
-    json_key(&w, "summary");
-    json_start_object(&w);
-    json_kv_number(&w, "downloadMbps", r->summary.download_mbps);
-    json_kv_number(&w, "uploadMbps", r->summary.upload_mbps);
-    json_kv_number(&w, "latencyUnloadedMs", r->summary.latency_unloaded_ms);
-    json_kv_number(&w, "latencyDownloadMs", r->summary.latency_download_ms);
-    json_kv_number(&w, "latencyUploadMs", r->summary.latency_upload_ms);
-    json_kv_number(&w, "jitterMs", r->summary.jitter_ms);
-    json_kv_number(&w, "packetLossPercent", r->summary.packet_loss_percent);
-    json_end_object(&w);
-
-    /* quality */
-    json_key(&w, "quality");
-    json_start_object(&w);
-    json_kv_string(&w, "videoStreaming", r->quality.video_streaming);
-    json_kv_string(&w, "gaming", r->quality.gaming);
-    json_kv_string(&w, "videoChatting", r->quality.video_chatting);
-    json_end_object(&w);
-
-    /* throughputSamples */
-    json_key(&w, "throughputSamples");
-    json_start_array(&w);
-    for (int i = 0; i < r->throughput_count; i++) {
-        const throughput_sample_t *s = &r->throughput_samples[i];
-        json_start_object(&w);
-        json_kv_int(&w, "timestamp", s->ts);
-        json_kv_string(&w, "direction", s->direction);
-        json_kv_int(&w, "sizeBytes", s->size_bytes);
-        json_kv_number(&w, "durationMs", s->duration_ms);
-        json_kv_number(&w, "mbps", s->mbps);
-        json_kv_string(&w, "profile", s->profile);
-        json_kv_int(&w, "run", s->run_index);
-        json_end_object(&w);
-    }
-    json_end_array(&w);
-
-    /* latencySamples */
-    json_key(&w, "latencySamples");
-    json_start_array(&w);
-    for (int i = 0; i < r->latency_count; i++) {
-        const latency_sample_t *s = &r->latency_samples[i];
-        json_start_object(&w);
-        json_kv_int(&w, "timestamp", s->ts);
-        json_kv_number(&w, "rttMs", s->rtt_ms);
-        json_kv_string(&w, "phase", s->phase);
-        json_end_object(&w);
-    }
-    json_end_array(&w);
-
-    /* packetLoss */
-    json_key(&w, "packetLoss");
-    if (r->packet_loss.unavailable) {
-        json_start_object(&w);
-        json_kv_bool(&w, "unavailable", true);
-        json_kv_string(&w, "reason", r->packet_loss.reason);
-        json_end_object(&w);
-    } else {
-        json_start_object(&w);
-        json_kv_int(&w, "sent", r->packet_loss.sent);
-        json_kv_int(&w, "received", r->packet_loss.received);
-        json_kv_number(&w, "lossPercent", r->packet_loss.loss_percent);
-        json_key(&w, "rttStatsMs");
-        json_start_object(&w);
-        json_kv_number(&w, "min", r->packet_loss.rtt_stats_ms.min);
-        json_kv_number(&w, "median", r->packet_loss.rtt_stats_ms.median);
-        json_kv_number(&w, "p90", r->packet_loss.rtt_stats_ms.p90);
-        json_end_object(&w);
-        json_kv_number(&w, "jitterMs", r->packet_loss.jitter_ms);
-        json_kv_string(&w, "testId", r->packet_loss.test_id);
-        json_end_object(&w);
-    }
-
-    /* startTime, endTime */
-    json_kv_int(&w, "startTime", r->start_time);
-    json_kv_int(&w, "endTime", r->end_time);
-
-    json_end_object(&w);
-
-    /* Transfer ownership of buffer */
-    char *result = w.buf;
-    w.buf = NULL;
-    return result;
+    json_kv_int(w, "maxTransferBytes", meta->max_transfer_bytes);
+    json_kv_int(w, "maxConcurrentTransfersPerClient", meta->max_concurrent_transfers_per_client);
+    json_kv_int(w, "measurementProtocolVersion", meta->measurement_protocol_version);
+    json_kv_int(w, "uploadReceiptVersion", meta->upload_receipt_version);
+    json_kv_int(w, "packetLossFrameVersion", meta->packet_loss_frame_version);
+    json_end_object(w);
 }
 
-int meta_from_json(const char *json_str, meta_t *meta)
+static void write_summary(json_writer_t *w, const summary_t *summary)
 {
-    json_value_t *root = json_parse(json_str);
+    json_start_object(w);
+    json_kv_number(w, "downloadMbps", summary->download_mbps);
+    json_kv_number(w, "uploadMbps", summary->upload_mbps);
+    json_kv_number(w, "latencyUnloadedMs", summary->latency_unloaded_ms);
+    json_kv_number(w, "latencyDownloadMs", summary->latency_download_ms);
+    json_kv_number(w, "latencyUploadMs", summary->latency_upload_ms);
+    json_kv_number(w, "jitterMs", summary->jitter_ms);
+    json_key(w, "packetLossPercent");
+    if (summary->packet_loss_available) {
+        json_number(w, summary->packet_loss_percent);
+    } else {
+        json_null(w);
+    }
+    json_end_object(w);
+}
+
+static void write_quality(json_writer_t *w, const quality_t *quality)
+{
+    json_start_object(w);
+    json_kv_string(w, "videoStreaming", quality->video_streaming);
+    json_kv_string(w, "gaming", quality->gaming);
+    json_kv_string(w, "videoChatting", quality->video_chatting);
+    json_end_object(w);
+}
+
+static void write_confidence(json_writer_t *w, const test_confidence_t *confidence)
+{
+    json_start_object(w);
+    json_kv_string(w, "overall", confidence->overall);
+    json_kv_int(w, "overallScore", confidence->overall_score);
+    json_key(w, "metrics");
+    json_start_object(w);
+    json_key(w, "sampleCount");
+    json_start_object(w);
+    json_kv_int(w, "downloadWindows", confidence->sample_count.download_windows);
+    json_kv_int(w, "uploadWindows", confidence->sample_count.upload_windows);
+    json_kv_int(w, "unloadedLatency", confidence->sample_count.unloaded_latency);
+    json_kv_int(w, "downloadLoadedLatency", confidence->sample_count.download_loaded_latency);
+    json_kv_int(w, "uploadLoadedLatency", confidence->sample_count.upload_loaded_latency);
+    json_kv_bool(w, "adequate", confidence->sample_count.adequate);
+    json_end_object(w);
+    json_key(w, "coefficientOfVariation");
+    json_start_object(w);
+    json_kv_number(w, "download", confidence->variability.download);
+    json_kv_number(w, "upload", confidence->variability.upload);
+    json_kv_number(w, "latency", confidence->variability.latency);
+    json_kv_bool(w, "acceptable", confidence->variability.acceptable);
+    json_end_object(w);
+    json_key(w, "loadedOverlap");
+    json_start_object(w);
+    json_kv_int(w, "downloadAccepted", confidence->loaded_overlap.download_accepted);
+    json_kv_int(w, "uploadAccepted", confidence->loaded_overlap.upload_accepted);
+    json_kv_bool(w, "complete", confidence->loaded_overlap.complete);
+    json_end_object(w);
+    json_key(w, "timingAccuracy");
+    json_start_object(w);
+    json_kv_bool(w, "accurate", confidence->timing_accurate);
+    json_end_object(w);
+    json_key(w, "packetTest");
+    json_start_object(w);
+    json_kv_bool(w, "completed", confidence->packet_test_completed);
+    json_end_object(w);
+    json_end_object(w);
+    json_key(w, "warnings");
+    json_start_array(w);
+    for (int index = 0; index < confidence->warning_count; index++) {
+        json_string(w, confidence->warnings[index]);
+    }
+    json_end_array(w);
+    json_end_object(w);
+}
+
+static void write_packet_loss(json_writer_t *w, const results_t *results)
+{
+    if (!results->packet_loss_present) {
+        json_null(w);
+        return;
+    }
+    const packet_loss_result_t *packet = &results->packet_loss;
+    json_start_object(w);
+    json_kv_int(w, "sent", packet->sent);
+    json_kv_int(w, "received", packet->received);
+    json_key(w, "lossPercent");
+    if (packet->unavailable) json_null(w); else json_number(w, packet->loss_percent);
+    json_key(w, "transactionLossPercent");
+    if (packet->unavailable) json_null(w); else json_number(w, packet->transaction_loss_percent);
+    json_kv_int(w, "forwardSent", packet->forward_sent);
+    json_kv_int(w, "forwardReceived", packet->forward_received);
+    json_key(w, "forwardLossPercent");
+    if (!packet->unavailable && packet->forward_loss_available) json_number(w, packet->forward_loss_percent); else json_null(w);
+    json_kv_int(w, "acknowledgementsSent", packet->acknowledgements_sent);
+    json_kv_int(w, "acknowledgementsReceived", packet->acknowledgements_received);
+    json_key(w, "reverseAcknowledgementLossPercent");
+    if (!packet->unavailable && packet->reverse_loss_available) json_number(w, packet->reverse_acknowledgement_loss_percent); else json_null(w);
+    json_kv_int(w, "frameSizeBytes", packet->frame_size_bytes);
+    json_kv_int(w, "duplicateFrames", packet->duplicate_frames);
+    json_kv_int(w, "invalidFrames", packet->invalid_frames);
+    json_kv_int(w, "ackSendFailures", packet->ack_send_failures);
+    json_key(w, "rttStatsMs");
+    json_start_object(w);
+    json_kv_number(w, "min", packet->rtt_stats_ms.min);
+    json_kv_number(w, "median", packet->rtt_stats_ms.median);
+    json_kv_number(w, "p90", packet->rtt_stats_ms.p90);
+    json_end_object(w);
+    json_kv_number(w, "jitterMs", packet->jitter_ms);
+    if (packet->test_id[0]) json_kv_string(w, "testId", packet->test_id);
+    if (packet->unavailable) {
+        json_kv_bool(w, "unavailable", true);
+        json_kv_string(w, "reason", packet->reason);
+    }
+    json_end_object(w);
+}
+
+char *results_to_json(const results_t *results)
+{
+    json_writer_t writer;
+    json_writer_init(&writer);
+    if (!writer.buf) return NULL;
+    json_start_object(&writer);
+    json_key(&writer, "meta");
+    write_meta(&writer, &results->meta);
+    json_key(&writer, "summary");
+    write_summary(&writer, &results->summary);
+    json_key(&writer, "quality");
+    write_quality(&writer, &results->quality);
+    json_key(&writer, "testConfidence");
+    write_confidence(&writer, &results->test_confidence);
+
+    json_key(&writer, "throughputSamples");
+    json_start_array(&writer);
+    for (int index = 0; index < results->throughput_count; index++) {
+        const throughput_sample_t *sample = &results->throughput_samples[index];
+        json_start_object(&writer);
+        json_kv_int(&writer, "ts", sample->ts);
+        json_kv_string(&writer, "direction", sample->direction);
+        json_kv_int(&writer, "sizeBytes", sample->size_bytes);
+        json_kv_number(&writer, "durationMs", sample->duration_ms);
+        json_kv_number(&writer, "mbps", sample->mbps);
+        json_kv_string(&writer, "profile", sample->profile);
+        json_kv_int(&writer, "runIndex", sample->run_index);
+        if (sample->sample_kind[0]) json_kv_string(&writer, "sampleKind", sample->sample_kind);
+        if (sample->has_window_index) json_kv_int(&writer, "windowIndex", sample->window_index);
+        if (sample->concurrency) json_kv_int(&writer, "concurrency", sample->concurrency);
+        if (sample->chunk_bytes) json_kv_int(&writer, "chunkBytes", sample->chunk_bytes);
+        if (sample->request_count) json_kv_int(&writer, "requestCount", sample->request_count);
+        if (sample->timing_source[0]) json_kv_string(&writer, "timingSource", sample->timing_source);
+        json_end_object(&writer);
+    }
+    json_end_array(&writer);
+
+    json_key(&writer, "latencySamples");
+    json_start_array(&writer);
+    for (int index = 0; index < results->latency_count; index++) {
+        const latency_sample_t *sample = &results->latency_samples[index];
+        json_start_object(&writer);
+        json_kv_int(&writer, "ts", sample->ts);
+        if (sample->started_at) json_kv_int(&writer, "startedAt", sample->started_at);
+        if (sample->ended_at) json_kv_int(&writer, "endedAt", sample->ended_at);
+        json_kv_number(&writer, "rttMs", sample->rtt_ms);
+        json_kv_string(&writer, "condition", sample->condition);
+        if (sample->load_overlapped) json_kv_bool(&writer, "loadOverlapped", true);
+        if (sample->load_tracking_accurate) json_kv_bool(&writer, "loadTrackingAccurate", true);
+        if (sample->timing_source[0]) json_kv_string(&writer, "timingSource", sample->timing_source);
+        json_end_object(&writer);
+    }
+    json_end_array(&writer);
+
+    json_key(&writer, "packetLoss");
+    write_packet_loss(&writer, results);
+    json_kv_string(&writer, "startTime", results->start_time_rfc3339);
+    json_kv_string(&writer, "endTime", results->end_time_rfc3339);
+    json_end_object(&writer);
+    char *output = writer.buf;
+    writer.buf = NULL;
+    return output;
+}
+
+int meta_from_json(const char *json_string, meta_t *meta)
+{
+    json_value_t *root = json_parse(json_string ? json_string : "");
     if (!root) return -1;
-
     memset(meta, 0, sizeof(*meta));
-
-    const char *s;
-    if ((s = json_get_string(root, "hostname"))) {
-        strncpy(meta->hostname, s, sizeof(meta->hostname) - 1);
-    }
-    if ((s = json_get_string(root, "clientIp"))) {
-        strncpy(meta->client_ip, s, sizeof(meta->client_ip) - 1);
-    }
-    if ((s = json_get_string(root, "httpProtocol"))) {
-        strncpy(meta->http_protocol, s, sizeof(meta->http_protocol) - 1);
-    }
+    const char *value;
+#define COPY_STRING(field, key) do { \
+    value = json_get_string(root, key); \
+    if (value) snprintf(meta->field, sizeof(meta->field), "%s", value); \
+} while (0)
+    COPY_STRING(hostname, "hostname");
+    COPY_STRING(client_ip, "clientIp");
+    COPY_STRING(http_protocol, "httpProtocol");
     meta->asn = json_get_int(root, "asn", 0);
-    if ((s = json_get_string(root, "asOrganization"))) {
-        strncpy(meta->as_organization, s, sizeof(meta->as_organization) - 1);
-    }
-    if ((s = json_get_string(root, "colo"))) {
-        strncpy(meta->colo, s, sizeof(meta->colo) - 1);
-    }
-    if ((s = json_get_string(root, "country"))) {
-        strncpy(meta->country, s, sizeof(meta->country) - 1);
-    }
-    if ((s = json_get_string(root, "city"))) {
-        strncpy(meta->city, s, sizeof(meta->city) - 1);
-    }
-    if ((s = json_get_string(root, "region"))) {
-        strncpy(meta->region, s, sizeof(meta->region) - 1);
-    }
-    if ((s = json_get_string(root, "postalCode"))) {
-        strncpy(meta->postal_code, s, sizeof(meta->postal_code) - 1);
-    }
+    COPY_STRING(as_organization, "asOrganization");
+    COPY_STRING(colo, "colo");
+    COPY_STRING(country, "country");
+    COPY_STRING(city, "city");
+    COPY_STRING(region, "region");
+    COPY_STRING(postal_code, "postalCode");
     meta->latitude = json_get_number(root, "latitude", 0);
     meta->longitude = json_get_number(root, "longitude", 0);
-    if ((s = json_get_string(root, "timezone"))) {
-        strncpy(meta->timezone, s, sizeof(meta->timezone) - 1);
-    }
-
+    COPY_STRING(timezone, "timezone");
+#undef COPY_STRING
+    meta->max_transfer_bytes = (int64_t)json_get_number(root, "maxTransferBytes", 0);
+    meta->max_concurrent_transfers_per_client = json_get_int(root, "maxConcurrentTransfersPerClient", 0);
+    meta->measurement_protocol_version = json_get_int(root, "measurementProtocolVersion", 0);
+    meta->upload_receipt_version = json_get_int(root, "uploadReceiptVersion", 0);
+    meta->packet_loss_frame_version = json_get_int(root, "packetLossFrameVersion", 0);
     json_free(root);
     return 0;
 }

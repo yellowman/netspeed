@@ -13,7 +13,7 @@
         quality: null,
         isRunning: false,
         isPaused: false,
-        currentPhase: 'idle',
+        currentStage: 'idle',
         downloadSamples: [],
         uploadSamples: [],
         latencySamples: [],
@@ -436,8 +436,8 @@
         if (elements.uploadGrid) elements.uploadGrid.innerHTML = '';
 
         // Clear latency charts
-        ['unloaded', 'download', 'upload'].forEach(phase => {
-            const chartEl = elements[`${phase}LatencyChart`];
+        ['unloaded', 'download', 'upload'].forEach(condition => {
+            const chartEl = elements[`${condition}LatencyChart`];
             if (chartEl) chartEl.innerHTML = '';
         });
     }
@@ -490,10 +490,10 @@
     /**
      * Handle progress updates
      */
-    function handleProgress(phase, progress) {
-        state.currentPhase = phase;
+    function handleProgress(stage, progress) {
+        state.currentStage = stage;
 
-        const phaseLabels = {
+        const stageLabels = {
             'meta': 'Loading metadata...',
             'latency': 'Measuring latency...',
             'warmup': 'Warming up connection...',
@@ -504,16 +504,16 @@
         };
 
         if (elements.progressText) {
-            elements.progressText.textContent = phaseLabels[phase] || 'Running tests...';
+            elements.progressText.textContent = stageLabels[stage] || 'Running tests...';
         }
 
-        // Update main status bar for phase changes
+        // Update the main status bar when the active operation changes.
         if (elements.progressStatus) {
-            elements.progressStatus.textContent = phaseLabels[phase] || 'Running tests...';
+            elements.progressStatus.textContent = stageLabels[stage] || 'Running tests...';
         }
 
-        // Reset progress bar at start of new phase
-        if (elements.progressFill && phase === 'packet-loss') {
+        // Reset the progress bar when packet-loss testing starts.
+        if (elements.progressFill && stage === 'packet-loss') {
             elements.progressFill.style.width = '0%';
         }
     }
@@ -570,13 +570,13 @@
     /**
      * Handle latency progress
      */
-    function handleLatencyProgress(phase, current, total, sample) {
+    function handleLatencyProgress(condition, current, total, sample) {
         state.latencySamples.push(sample);
 
-        const phaseSamples = state.latencySamples.filter(s => s.phase === phase);
-        const values = phaseSamples.map(s => s.rttMs);
+        const conditionSamples = state.latencySamples.filter(s => s.condition === condition);
+        const values = conditionSamples.map(s => s.rttMs);
 
-        if (phase === 'unloaded') {
+        if (condition === 'unloaded') {
             // Update hero latency value
             const medianLatency = Charts.median(values);
             if (elements.latencyValue) {
@@ -614,7 +614,7 @@
                     });
                 }
             }
-        } else if (phase === 'download') {
+        } else if (condition === 'download') {
             // Update count badge
             if (elements.downloadLatencyCount) {
                 elements.downloadLatencyCount.textContent = `${current}/5`;
@@ -643,7 +643,7 @@
                     unit: 'ms'
                 });
             }
-        } else if (phase === 'upload') {
+        } else if (condition === 'upload') {
             // Update count badge
             if (elements.uploadLatencyCount) {
                 elements.uploadLatencyCount.textContent = `${current}/5`;
@@ -1161,8 +1161,8 @@
     /**
      * Update latency table
      */
-    function updateLatencyTable(phase, samples) {
-        const tableEl = elements[`${phase}LatencyTable`];
+    function updateLatencyTable(condition, samples) {
+        const tableEl = elements[`${condition}LatencyTable`];
         if (!tableEl) return;
 
         tableEl.innerHTML = `
@@ -1332,15 +1332,15 @@
     /**
      * Update progress indicator
      */
-    function updateProgress(current, total, phase) {
+    function updateProgress(current, total, direction) {
         if (elements.progressFill) {
             const percent = (current / total) * 100;
             elements.progressFill.style.width = `${percent}%`;
         }
 
         if (elements.progressStatus) {
-            const phaseLabel = phase === 'download' ? 'download' : 'upload';
-            elements.progressStatus.textContent = `Testing ${phaseLabel}... (${current}/${total})`;
+            const directionLabel = direction === 'download' ? 'download' : 'upload';
+            elements.progressStatus.textContent = `Testing ${directionLabel}... (${current}/${total})`;
         }
     }
 
@@ -1480,9 +1480,9 @@
         // Sample arrays with delta encoding (all samples)
         const dl = encodeSamplesDelta(state.downloadSamples.map(s => s.mbps));
         const ul = encodeSamplesDelta(state.uploadSamples.map(s => s.mbps));
-        const latU = encodeSamplesDelta(state.latencySamples.filter(s => s.phase === 'unloaded').map(s => s.rttMs));
-        const latD = encodeSamplesDelta(state.latencySamples.filter(s => s.phase === 'download').map(s => s.rttMs));
-        const latL = encodeSamplesDelta(state.latencySamples.filter(s => s.phase === 'upload').map(s => s.rttMs));
+        const latU = encodeSamplesDelta(state.latencySamples.filter(s => s.condition === 'unloaded').map(s => s.rttMs));
+        const latD = encodeSamplesDelta(state.latencySamples.filter(s => s.condition === 'download').map(s => s.rttMs));
+        const latL = encodeSamplesDelta(state.latencySamples.filter(s => s.condition === 'upload').map(s => s.rttMs));
 
         // Loss distribution (10 segments) with delta encoding
         const lossDist = encodeSamplesDelta(lp?.lossDistribution || []);
@@ -2513,7 +2513,7 @@
         }
 
         // Older shared-result URLs carry only the aggregate confidence level.
-        // The detailed gates are available on newly measured Phase 2 results.
+        // The detailed gates are available on newly measured results.
         const metrics = confidence.metrics;
         if (!metrics) return;
 

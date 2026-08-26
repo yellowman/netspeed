@@ -1,13 +1,13 @@
 # Netspeed service hardening and operational controls
 
-This document is the canonical Phase 4 contract for exposing `netspeedd` to
-untrusted clients. It supplements the measurement contract in
+This document is the canonical contract for exposing `netspeedd` to untrusted
+clients. It supplements the measurement contract in
 [`MEASUREMENT_PROTOCOL_V2.md`](MEASUREMENT_PROTOCOL_V2.md) and the session
 ownership contract in [`WEBRTC_LIFECYCLE.md`](WEBRTC_LIFECYCLE.md).
 
-Phase 4 deliberately rejects overloaded work immediately. Measurement requests
-are never queued behind an admission limit because queueing would corrupt
-throughput and latency timing.
+The daemon rejects overloaded work immediately. Measurement requests are never
+queued behind an admission limit because queueing would corrupt throughput and
+latency timing.
 
 ## 1. bounded defaults
 
@@ -64,7 +64,7 @@ enablement guard. Validation fails unless trusted CIDRs are also supplied.
 
 Clients sharing a NAT address also share the per-client ceilings and quota.
 Deployments that require per-user accounting should authenticate upstream and
-apply principal-aware policy there; Phase 4's built-in shared bearer token is not
+apply principal-aware policy there; the built-in shared bearer token is not
 an identity provider.
 
 ## 3. bearer authentication
@@ -86,6 +86,13 @@ Protected routes are:
 `/health` and static web assets remain public. CORS preflight requests are
 answered before authentication. An unauthorized service request receives `401`,
 `WWW-Authenticate: Bearer realm="netspeed"`, and `Cache-Control: no-store`.
+
+Successful `/locations` responses are also `Cache-Control: private, no-store`
+with `Pragma: no-cache` and `Vary: Authorization`. This is part of the authentication boundary: a shared
+reverse-proxy or CDN cache must never reuse an authenticated locations response
+for a later request that did not reach the daemon's authentication middleware.
+`Authorization` is not treated as a substitute cache key, and protected
+responses must not be changed back to `public` caching.
 
 The Go client accepts either:
 
@@ -234,8 +241,8 @@ exclusive. A TURN URL without a shared secret, an orphaned shared secret, an
 invalid URL scheme, a short secret, or a non-loopback embedded listener without
 an advertised IP fails startup validation.
 
-Phase 4 supports UDP relay only. TCP/TLS relay listeners and distributed quota
-coordination are outside the embedded server's scope.
+The embedded server supports UDP relay only. TCP/TLS relay listeners and
+distributed quota coordination are outside its scope.
 
 ## 8. operational metrics
 
@@ -269,7 +276,7 @@ The Prometheus text endpoint reports:
 
 Metrics are process-local and reset on restart.
 
-## 9. Phase 4 configuration reference
+## 9. configuration reference
 
 | flag | environment variable | default / meaning |
 |---|---|---|
@@ -301,22 +308,22 @@ Metrics are process-local and reset on restart.
 
 Existing daemon settings such as listen address, TLS paths, CORS origins, maximum
 transfer bytes, locations, GeoIP databases, hostname, and colo remain available.
-Run `netspeedd -h` for the flag list. Phase 5 removed the unsupported YAML
-example; flags and strictly parsed `NETSPEEDD_*` environment variables are the
-canonical configuration surface. See [`HTTP_DEPLOYMENT.md`](HTTP_DEPLOYMENT.md).
+Run `netspeedd -h` for the flag list. The unsupported YAML example is absent;
+flags and strictly parsed `NETSPEEDD_*` environment variables are the canonical
+configuration surface. See [`HTTP_DEPLOYMENT.md`](HTTP_DEPLOYMENT.md).
 
 ## 10. remaining boundaries
 
-Phase 4 reduces unauthenticated bandwidth, memory, session, and relay abuse, but
-it does not turn a shared-token speed test into a multi-tenant identity system.
-It also does not persist quotas across restarts or coordinate them across daemon
-replicas.
+These controls reduce unauthenticated bandwidth, memory, session, and relay
+abuse, but they do not turn a shared-token speed test into a multi-tenant
+identity system. Quotas are process-local: they do not persist across restarts
+or coordinate across daemon replicas.
 
-Phase 5 completed endpoint-aware deadlines, cross-origin API routing and timing
-exposure, response-writer/recovery semantics, HTTP-first shutdown, TLS
-validation, the configuration-format decision, and independent ASN/City GeoIP
-wiring. Those details are canonical in [`HTTP_DEPLOYMENT.md`](HTTP_DEPLOYMENT.md).
+Endpoint-aware deadlines, cross-origin API routing and timing exposure,
+response-writer recovery semantics, HTTP-first shutdown, TLS validation,
+configuration, and independent ASN/City GeoIP wiring are canonical in
+[`HTTP_DEPLOYMENT.md`](HTTP_DEPLOYMENT.md).
 
-Phase 6 adds genuine Pion WebRTC/TURN interoperability,
-supported-OS CI, vulnerability scanning, end-to-end release qualification, and
-reproducible release artifacts.
+Release qualification includes genuine Pion WebRTC/TURN interoperability,
+supported-OS CI, vulnerability scanning, end-to-end fixtures, and reproducible
+release artifacts.

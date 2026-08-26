@@ -476,7 +476,7 @@ func (manager *Manager) registerSession(session *Session) error {
 }
 
 // HandleOffer processes an SDP offer without a per-client identity. Server
-// callers should use HandleOfferForClient so Phase 4 per-client ceilings apply.
+// Callers should use HandleOfferForClient so per-client ceilings apply.
 func (manager *Manager) HandleOffer(ctx context.Context, offerSDP string, testProfile string) (answerSDP string, testID string, err error) {
 	return manager.HandleOfferForClient(ctx, offerSDP, testProfile, "")
 }

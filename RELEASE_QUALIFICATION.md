@@ -1,65 +1,92 @@
 # Netspeed release qualification
 
-This document defines the release gate introduced in Phase 6. A source tree is
-not release-qualified merely because it compiles on one workstation. A release
-is qualified only when the real dependency graph and the required process,
-browser, operating-system, security, and reproducibility checks pass for the
-exact tagged commit.
+This document defines the blocking release gate. A source tree is not
+release-qualified merely because it compiles on one workstation. A release is
+qualified only when the real dependency graph and the required process,
+browser, operating-system, native-client, security, and reproducibility checks
+pass for the exact tagged commit.
 
 ## 1. Supported release surface
 
-Official release artifacts contain:
+Supported components are:
 
 - the Go `netspeed` protocol-v2 client;
+- the native C `netspeed-c` protocol-v2 client;
 - the Go `netspeedd` daemon;
-- the browser UI and static assets;
+- the browser protocol-v2 client and static UI;
 - deployment examples and canonical protocol documentation.
 
-The legacy C implementation under `netspeed.c/` is retained in the source tree
-but is not a supported client. It predates measurement protocol v2 and is not
-included in binary release archives. CI compiles it with GCC and Clang using
-warnings as errors as a source-health check only.
+The C implementation is an independent supported client. It must satisfy the
+same verified-transfer, sustained-window, loaded-overlap, statistics, result,
+and exact packet-test contract as the Go client. Its detailed boundary is
+[`C_CLIENT_PARITY.md`](C_CLIENT_PARITY.md).
+
+A platform archive contains `netspeed-c` only when the release workflow supplies
+a qualified native executable for that exact OS/architecture. `BUILDINFO.txt`
+and `release-manifest.json` state which C platforms were included. The current
+publishing workflow requires a complete `WEBRTC=yes` Linux/amd64 C executable;
+it does not silently publish an HTTP-only C build.
 
 ## 2. Required CI gates
 
-The workflow in `.github/workflows/ci.yml` performs the following against the
-actual modules in `go.mod`; compile-time stubs and local `replace` directives are
-not accepted. Go 1.27.0 is pinned for release construction and security analysis,
-while Go 1.21.3 remains the compatibility floor:
+The workflows in `.github/workflows/ci.yml` and
+`.github/workflows/release.yml` use the actual modules in `go.mod`; compile-time
+stubs and local `replace` directives are not accepted. Go 1.27.0 is pinned for
+release construction and security analysis, while Go 1.21.3 remains the module
+compatibility floor.
+
+Required gates are:
 
 1. `go mod download`, `go mod verify`, and a clean `go mod tidy` result;
-2. Go tests at the module minimum, Go 1.21.3, and the pinned Go 1.27.0 release toolchain;
+2. Go tests at Go 1.21.3 and the pinned Go 1.27.0 release toolchain;
 3. the race detector, `go vet`, Staticcheck, and `govulncheck`;
 4. browser-engine unit tests and a real Chromium transfer smoke test;
-5. daemon/CLI process tests, HTTP boundary tests, and embedded Pion/TURN packet
+5. daemon/Go-CLI process tests, HTTP boundary tests, and embedded Pion/TURN
    reconciliation over exact 1,200-byte frames;
-6. native Windows build and tests;
-7. native OpenBSD build and tests inside an OpenBSD virtual machine;
-8. source-hygiene and local Markdown-link validation;
-9. GCC and Clang source-health builds for the unsupported C client;
-10. commit-pinned workflow actions with write permission limited to publishing;
-11. two independent cross-platform release builds whose artifacts must match
-   byte for byte.
+6. native Windows Go builds and tests;
+7. native OpenBSD Go builds and tests inside an OpenBSD virtual machine;
+8. root and C Makefile parsing/execution by OpenBSD base `make` plus a source
+   check that rejects GNU-only make constructs;
+9. strict GCC and Clang C-client builds with warnings as errors;
+10. C protocol/statistics/frame units, positive and negative protocol-v2 process
+    fixtures, and AddressSanitizer/UndefinedBehaviorSanitizer runs;
+11. a pinned real libdatachannel build and C-client-to-Pion-daemon packet test
+    through embedded TURN;
+12. source-hygiene and local Markdown-link validation;
+13. commit-pinned workflow actions with release write permission limited to the
+    final publishing job;
+14. two independent cross-platform release constructions whose artifacts must
+    match byte for byte.
 
 A failed or skipped required gate blocks a release.
 
 ## 3. End-to-end fixtures
 
-`tests/integration/e2e_test.go` builds both commands from the checked-out source,
-launches a real daemon, and verifies:
+`tests/integration/e2e_test.go` builds the Go commands, launches a real daemon,
+and verifies:
 
 - `/meta` protocol and transfer capabilities;
 - exact download length and cache policy;
 - exact upload receipt accounting;
 - known-length oversize rejection;
-- quick download-only and upload-only CLI results;
-- optional real WebRTC and embedded-TURN packet-test completion.
+- quick download-only and upload-only Go CLI results;
+- real Go/Pion and embedded-TURN packet completion;
+- real C/libdatachannel to Pion-daemon packet completion, exact frame size, and
+  directional counter consistency.
 
-The TURN test is enabled with:
+The TURN fixtures are enabled with:
 
 ```sh
 NETSPEED_E2E_TURN=1 make integration-turn
+
+NETSPEED_C_CLIENT="$PWD/bin/netspeed-c" \
+NETSPEED_E2E_TURN=1 \
+make integration-c-turn
 ```
+
+`netspeed.c/tests/test_client.py` separately runs the native client against a
+protocol-v2 HTTP fixture. It checks authenticated positive download/upload runs
+and rejects old metadata, truncated downloads, and incorrect upload receipts.
 
 `tests/browser/smoke.spec.js` launches the daemon through Playwright, loads the
 actual UI in Chromium, fetches protocol metadata, streams a download, and checks
@@ -79,28 +106,51 @@ The builder:
 - requires a clean Git tree for an official release;
 - derives version, commit, and date from the exact tag and commit;
 - honors `SOURCE_DATE_EPOCH`, defaulting to the commit timestamp;
-- uses `CGO_ENABLED=0`, `-trimpath`, `-buildvcs=false`, and an empty Go build ID;
-- injects one shared version/commit/date record into both Go commands;
+- builds the Go commands with `CGO_ENABLED=0`, `-trimpath`,
+  `-buildvcs=false`, and an empty Go build ID;
+- injects version, commit, and source date into both Go commands;
+- accepts a prequalified native client through
+  `--c-binary GOOS/GOARCH=PATH`;
+- can require selected native artifacts through
+  `--require-c-platform GOOS/GOARCH`;
+- records included C platforms in `release-manifest.json` and each archive's
+  `BUILDINFO.txt`;
 - writes archive members in stable order with normalized timestamps and modes;
 - emits `SHA256SUMS` and `release-manifest.json`;
-- refuses unsafe output paths, symlink outputs, and directories containing unknown files;
-- excludes the unsupported C executable from binary archives.
+- refuses unsafe output paths, symlink outputs, and directories containing
+  unknown files.
 
-The CI reproducibility job runs the complete builder twice and compares every
-output file by SHA-256. The release workflow repeats the same comparison before
-publishing a tag.
+The CI reproducibility job includes a native C executable in the Linux/amd64
+packaging test, runs the complete builder twice, and compares every output file.
+The publishing workflow repeats the comparison with the qualified
+`WEBRTC=yes` C release executable before uploading a tag.
 
-## 5. Source hygiene
+## 5. Native dependency pin
+
+`scripts/install_libdatachannel.sh` builds the exact libdatachannel commit pinned
+by the repository. CI builds it without media, examples, WebSockets, or upstream
+tests, installs its C API and pkg-config metadata into an isolated prefix, and
+links the Netspeed client using static libdatachannel metadata.
+
+The native client still uses system ABI dependencies such as libc, libcurl, the
+C++ runtime, and TLS libraries. Release notes must describe the target runtime
+and cannot claim a fully static binary unless the artifact is independently
+verified as such.
+
+## 6. Source hygiene
 
 `scripts/check_source_hygiene.py` rejects tracked native binaries, object files,
 libraries, Java archives, Python bytecode, top-level `netspeed`/`netspeedd`
 executables, files larger than 5 MiB, and `go.mod` replacement directives.
 
-This makes stale executable detection a release invariant rather than a manual
-review item. `scripts/check_markdown_links.py` separately rejects broken local
-documentation links before qualification or publishing.
+`scripts/check_make_portability.py` rejects GNU-only conditionals, make
+functions, directives, pattern rules, and order-only prerequisites from the two
+portable Makefiles. Actual OpenBSD base-make execution remains the authoritative
+pmake check.
 
-## 6. Local commands
+`scripts/check_markdown_links.py` rejects broken local documentation links.
+
+## 7. Local commands
 
 With the real Go modules available:
 
@@ -108,14 +158,26 @@ With the real Go modules available:
 make fmt-check
 make hygiene
 make docs-check
+make make-portability-check
 make release-tools
 make test
 make race
 make vet
 make web-test
 make c-check
+make test-parity WEBRTC=no
+make c-sanitize
 make integration
 NETSPEED_E2E_TURN=1 make integration-turn
+```
+
+With libdatachannel installed:
+
+```sh
+make c-client WEBRTC=yes WEBRTC_STATIC=yes
+NETSPEED_C_CLIENT="$PWD/bin/netspeed-c" \
+NETSPEED_E2E_TURN=1 \
+make integration-c-turn
 ```
 
 After installing `@playwright/test` and Chromium:
@@ -124,21 +186,14 @@ After installing `@playwright/test` and Chromium:
 make browser-smoke
 ```
 
-Build an exact tagged release:
+Build an exact tagged release with a qualified Linux C binary:
 
 ```sh
-python3 scripts/release.py --output dist
+python3 scripts/release.py \
+  --output dist \
+  --c-binary linux/amd64=bin/netspeed-c \
+  --require-c-platform linux/amd64
 ```
 
-For an untagged CI or developer rehearsal, supply an explicit version. Official
-publishing still requires a clean, tagged commit:
-
-```sh
-python3 scripts/release.py --version v0.0.0-ci --output dist
-```
-
-## 7. Publishing
-
-`.github/workflows/release.yml` runs on version tags. It reruns the real module,
-test, race, process, TURN, source-health, and reproducibility gates before using
-GitHub's release API to publish the generated archives, manifest, and checksums.
+Developer-only dirty-tree builds require `--allow-dirty`; official publishing
+does not use that option.

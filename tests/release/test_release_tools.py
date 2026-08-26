@@ -5,6 +5,7 @@ from pathlib import Path
 import sys
 import tempfile
 import unittest
+from unittest import mock
 import zipfile
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -34,6 +35,89 @@ class ReleaseToolTests(unittest.TestCase):
 
     def test_platform_parser(self) -> None:
         self.assertEqual(release.parse_platform("openbsd/amd64"), ("openbsd", "amd64"))
+
+    def test_c_binary_parser(self) -> None:
+        self.assertEqual(
+            release.parse_c_binary("linux/amd64=bin/netspeed-c"),
+            (("linux", "amd64"), Path("bin/netspeed-c")),
+        )
+
+    def test_resolve_c_binaries_rejects_duplicate_platform(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            binary = root / "netspeed-c"
+            binary.write_bytes(b"native")
+            values = [
+                (("linux", "amd64"), Path("netspeed-c")),
+                (("linux", "amd64"), Path("netspeed-c")),
+            ]
+            with self.assertRaises(SystemExit):
+                release.resolve_c_binaries(root, values)
+
+    def test_binary_archive_includes_qualified_c_client(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            stage = root / "stage"
+            stage.mkdir()
+            (stage / "netspeed").write_bytes(b"go-client")
+            (stage / "netspeedd").write_bytes(b"go-daemon")
+            c_binary = root / "netspeed-c"
+            c_binary.write_bytes(b"c-client")
+            output = root / "release.zip"
+            meta = release.ReleaseMetadata(
+                version="v1.2.3",
+                commit="abc123",
+                source_date_epoch=1_787_691_487,
+                date="2026-08-25T00:00:00Z",
+                go_version="go version go1.27.0 linux/amd64",
+            )
+            with mock.patch.object(release, "BINARY_PAYLOAD", ()):
+                release.write_binary_archive(
+                    root,
+                    output,
+                    stage,
+                    "linux",
+                    "amd64",
+                    meta,
+                    c_binary,
+                )
+            with zipfile.ZipFile(output) as archive:
+                prefix = "netspeed-1.2.3-linux-amd64"
+                self.assertEqual(archive.read(f"{prefix}/netspeed-c"), b"c-client")
+                self.assertIn(
+                    b"c_client=included",
+                    archive.read(f"{prefix}/BUILDINFO.txt"),
+                )
+
+    def test_binary_archive_marks_unpublished_c_platform(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            stage = root / "stage"
+            stage.mkdir()
+            (stage / "netspeed").write_bytes(b"go-client")
+            (stage / "netspeedd").write_bytes(b"go-daemon")
+            output = root / "release.zip"
+            meta = release.ReleaseMetadata(
+                version="v1.2.3",
+                commit="abc123",
+                source_date_epoch=1_787_691_487,
+                date="2026-08-25T00:00:00Z",
+                go_version="go version go1.27.0 linux/amd64",
+            )
+            with mock.patch.object(release, "BINARY_PAYLOAD", ()):
+                release.write_binary_archive(
+                    root,
+                    output,
+                    stage,
+                    "linux",
+                    "amd64",
+                    meta,
+                )
+            with zipfile.ZipFile(output) as archive:
+                self.assertIn(
+                    b"c_client=not-published-for-platform",
+                    archive.read("netspeed-1.2.3-linux-amd64/BUILDINFO.txt"),
+                )
 
     def test_release_versions(self) -> None:
         accepted = (

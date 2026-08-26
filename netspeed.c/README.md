@@ -1,35 +1,74 @@
-# Legacy C client — unsupported compatibility source
+# Netspeed native C client
 
-The program in this directory is retained for reference and source portability
-checks. It is **not** an official Netspeed release client.
+This directory contains the first-class native C implementation of Netspeed
+measurement protocol v2. It is intended to produce results equivalent to the Go
+`cmd/netspeed` client while using libcurl for HTTP and libdatachannel for the
+exact WebRTC packet test.
 
-The supported client is the Go program in `cmd/netspeed`. That client implements
-the measurement protocol documented in `MEASUREMENT_PROTOCOL_V2.md`, including
-verified upload receipts, sustained fixed-duration load, overlap-qualified
-loaded latency, and exact-size packet-loss reconciliation.
+The canonical feature and qualification matrix is
+[`../C_CLIENT_PARITY.md`](../C_CLIENT_PARITY.md). The wire and statistical
+contract is [`../MEASUREMENT_PROTOCOL_V2.md`](../MEASUREMENT_PROTOCOL_V2.md).
 
-The C implementation predates that protocol and therefore must not be used to
-compare or publish authoritative results from a current `netspeedd` server. It is excluded from binary release archives and official binaries. Its source
-remains in the full source archive for historical and portability work. CI only
-verifies that it continues to compile cleanly with GCC and Clang using warnings
-as errors.
+## Dependencies
 
-## Source-health build
+Required for throughput and latency:
+
+- a C11 compiler;
+- POSIX threads;
+- libcurl development files;
+- pkg-config or `curl-config`.
+
+Required for the exact 1,200-byte packet-loss test:
+
+- libdatachannel with its C API headers and link metadata.
+
+## Build
+
+The Makefile works with GNU make and BSD pmake.
 
 ```sh
-make check-compilers
-```
-
-A single-toolchain build remains available for developers inspecting the legacy
-implementation. The Makefile requires GNU Make; use `gmake` on OpenBSD and the
-other BSDs when base `make` is not GNU Make.
-
-```sh
+# Auto-detect libdatachannel.
 make
-./netspeed --version
-make clean
+
+# Require the complete packet-test build.
+make WEBRTC=yes
+
+# Explicit HTTP-only build; packet loss is reported unavailable.
+make WEBRTC=no
 ```
 
-Promoting this client back into the supported release would require a complete
-protocol-v2 migration and end-to-end interoperability qualification; a clean
-compiler build alone is not sufficient.
+The resulting executable is `./netspeed`. The repository-level build copies it
+to `bin/netspeed-c` so it can coexist with the Go client.
+
+```sh
+../bin/netspeed-c --quick http://localhost:8080
+```
+
+## Qualification
+
+```sh
+# GCC and Clang, protocol units, and protocol-v2 process fixtures.
+make check-compilers
+
+# AddressSanitizer and UndefinedBehaviorSanitizer.
+make sanitize
+
+# Compare Go and C process results from the repository root.
+make -C .. test-parity WEBRTC=no
+
+# Require libdatachannel for exact-frame compilation and units.
+make WEBRTC=yes WEBRTC_STATIC=yes protocol-check
+```
+
+The repository integration gate runs the complete C client against the real Go
+daemon and embedded Pion TURN relay:
+
+```sh
+make -C .. c-client WEBRTC=yes WEBRTC_STATIC=yes
+NETSPEED_C_CLIENT="$PWD/../bin/netspeed-c" \
+NETSPEED_E2E_TURN=1 \
+make -C .. integration-c-turn
+```
+
+`WEBRTC=no` is useful for platform bring-up and HTTP-core qualification, but an
+official C release binary must be built and tested with `WEBRTC=yes`.

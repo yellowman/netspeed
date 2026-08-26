@@ -23,9 +23,8 @@ import (
 
 // timingInfo captures precise HTTP timing events.
 type timingInfo struct {
-	wroteRequest   time.Time
-	gotFirstByte   time.Time
-	onWroteRequest func()
+	wroteRequest time.Time
+	gotFirstByte time.Time
 }
 
 // createTrace creates an httptrace.ClientTrace for precise timing.
@@ -33,9 +32,6 @@ func createTrace(t *timingInfo) *httptrace.ClientTrace {
 	return &httptrace.ClientTrace{
 		WroteRequest: func(info httptrace.WroteRequestInfo) {
 			t.wroteRequest = time.Now()
-			if t.onWroteRequest != nil {
-				t.onWroteRequest()
-			}
 		},
 		GotFirstResponseByte: func() {
 			t.gotFirstByte = time.Now()
@@ -52,7 +48,7 @@ type Config struct {
 	UploadOnly     bool
 	SkipPacketLoss bool
 	AccessToken    string
-	OnProgress     func(phase string, current, total int, value float64)
+	OnProgress     func(stage string, current, total int, value float64)
 }
 
 // Buffer sizes for high-speed connections
@@ -258,14 +254,14 @@ func (c *Client) fetchMeta(ctx context.Context) (*Meta, error) {
 }
 
 // runAdaptiveLatencyTest runs latency probes with adaptive batching (matching web client).
-func (c *Client) runAdaptiveLatencyTest(ctx context.Context, phase string, count int) ([]LatencySample, error) {
+func (c *Client) runAdaptiveLatencyTest(ctx context.Context, condition string, count int) ([]LatencySample, error) {
 	if c.cfg.Quick {
 		count = 5
 	}
 
 	samples := make([]LatencySample, 0, count)
 
-	// Phase 1: Run first 3 probes sequentially to estimate connection quality
+	// Run the first probes sequentially to estimate connection quality.
 	initialProbes := 3
 	if count < initialProbes {
 		initialProbes = count
@@ -278,7 +274,7 @@ func (c *Client) runAdaptiveLatencyTest(ctx context.Context, phase string, count
 		default:
 		}
 
-		sample, err := c.measureLatencySample(ctx, phase, i)
+		sample, err := c.measureLatencySample(ctx, condition, i)
 		if err != nil {
 			continue
 		}
@@ -290,10 +286,10 @@ func (c *Client) runAdaptiveLatencyTest(ctx context.Context, phase string, count
 	}
 
 	if len(samples) == 0 {
-		return samples, fmt.Errorf("%s latency test produced no valid samples", phase)
+		return samples, fmt.Errorf("%s latency test produced no valid samples", condition)
 	}
 
-	// Phase 2: Decide batching strategy based on median RTT
+	// Choose the batching strategy from the observed median RTT.
 	medianRTT := c.calculateMedianRTT(samples)
 	useParallel := false
 
@@ -307,7 +303,7 @@ func (c *Client) runAdaptiveLatencyTest(ctx context.Context, phase string, count
 		useParallel = true // 50-100ms range
 	}
 
-	// Phase 3: Run remaining probes
+	// Run the remaining probes with the selected batching strategy.
 	remaining := count - len(samples)
 	if useParallel {
 		// Respect the server-advertised per-client transfer ceiling.
@@ -321,7 +317,7 @@ func (c *Client) runAdaptiveLatencyTest(ctx context.Context, phase string, count
 				batch = remaining - i
 			}
 
-			batchSamples := c.runParallelLatencyProbes(ctx, phase, len(samples), batch)
+			batchSamples := c.runParallelLatencyProbes(ctx, condition, len(samples), batch)
 			samples = append(samples, batchSamples...)
 
 			if c.cfg.OnProgress != nil {
@@ -337,7 +333,7 @@ func (c *Client) runAdaptiveLatencyTest(ctx context.Context, phase string, count
 			default:
 			}
 
-			sample, err := c.measureLatencySample(ctx, phase, i)
+			sample, err := c.measureLatencySample(ctx, condition, i)
 			if err != nil {
 				continue
 			}
@@ -350,13 +346,13 @@ func (c *Client) runAdaptiveLatencyTest(ctx context.Context, phase string, count
 	}
 
 	if len(samples) < requiredSuccessfulRuns(count) {
-		return samples, fmt.Errorf("%s latency test produced %d/%d valid samples", phase, len(samples), count)
+		return samples, fmt.Errorf("%s latency test produced %d/%d valid samples", condition, len(samples), count)
 	}
 	return samples, nil
 }
 
 // runParallelLatencyProbes runs multiple latency probes in parallel.
-func (c *Client) runParallelLatencyProbes(ctx context.Context, phase string, startSeq, count int) []LatencySample {
+func (c *Client) runParallelLatencyProbes(ctx context.Context, condition string, startSeq, count int) []LatencySample {
 	var wg sync.WaitGroup
 	results := make(chan LatencySample, count)
 
@@ -364,7 +360,7 @@ func (c *Client) runParallelLatencyProbes(ctx context.Context, phase string, sta
 		wg.Add(1)
 		go func(seq int) {
 			defer wg.Done()
-			sample, err := c.measureLatencySample(ctx, phase, seq)
+			sample, err := c.measureLatencySample(ctx, condition, seq)
 			if err != nil {
 				return
 			}
@@ -410,9 +406,9 @@ func (c *Client) quickBandwidthEstimate(ctx context.Context) float64 {
 	return sample.Mbps
 }
 
-func (c *Client) measureLatencySample(ctx context.Context, phase string, seq int) (LatencySample, error) {
+func (c *Client) measureLatencySample(ctx context.Context, condition string, seq int) (LatencySample, error) {
 	startedAt := time.Now()
-	rtt, err := c.measureLatency(ctx, phase, seq)
+	rtt, err := c.measureLatency(ctx, condition, seq)
 	endedAt := time.Now()
 	if err != nil {
 		return LatencySample{}, err
@@ -422,19 +418,19 @@ func (c *Client) measureLatencySample(ctx context.Context, phase string, seq int
 		StartedAt:    startedAt,
 		EndedAt:      endedAt,
 		RTT:          rtt,
-		Phase:        phase,
+		Condition:    condition,
 		TimingSource: "httptrace",
 	}, nil
 }
 
 // measureLatency measures a single latency probe using precise timing.
 // RTT = GotFirstResponseByte - WroteRequest (excludes connection setup, TLS, DNS)
-func (c *Client) measureLatency(ctx context.Context, phase string, seq int) (time.Duration, error) {
-	measID := fmt.Sprintf("%d-%s-%d", time.Now().UnixNano(), phase, seq)
+func (c *Client) measureLatency(ctx context.Context, condition string, seq int) (time.Duration, error) {
+	measID := fmt.Sprintf("%d-%s-%d", time.Now().UnixNano(), condition, seq)
 	requestURL := buildMeasurementURL(c.cfg.ServerURL, "/__down", url.Values{
 		"bytes":  {"0"},
 		"measId": {measID},
-		"during": {phase},
+		"during": {condition},
 		"seq":    {fmt.Sprintf("%d", seq)},
 	})
 
@@ -932,7 +928,7 @@ func (c *Client) runThroughputWindow(
 	}, probes, nil
 }
 
-func (c *Client) runLoadedLatencyProbes(ctx context.Context, phase string, count int, activity *loadActivity) ([]LatencySample, error) {
+func (c *Client) runLoadedLatencyProbes(ctx context.Context, condition string, count int, activity *loadActivity) ([]LatencySample, error) {
 	if count <= 0 {
 		return nil, nil
 	}
@@ -957,7 +953,7 @@ func (c *Client) runLoadedLatencyProbes(ctx context.Context, phase string, count
 			continue
 		}
 		startedAt := time.Now()
-		rtt, err := c.measureLatency(ctx, phase, attempt)
+		rtt, err := c.measureLatency(ctx, condition, attempt)
 		endedAt := time.Now()
 		if err != nil {
 			lastErr = err
@@ -978,7 +974,7 @@ func (c *Client) runLoadedLatencyProbes(ctx context.Context, phase string, count
 			StartedAt:            startedAt,
 			EndedAt:              endedAt,
 			RTT:                  rtt,
-			Phase:                phase,
+			Condition:            condition,
 			LoadOverlapped:       true,
 			LoadTrackingAccurate: true,
 			TimingSource:         "httptrace",
@@ -999,7 +995,7 @@ func (c *Client) runLoadedLatencyProbes(ctx context.Context, phase string, count
 			lastErr = fmt.Errorf("insufficient overlapping probes")
 		}
 		return samples, fmt.Errorf("%s loaded latency produced %d/%d continuously-overlapped probes: %w",
-			phase, len(samples), count, lastErr)
+			condition, len(samples), count, lastErr)
 	}
 	return samples, nil
 }
@@ -1242,7 +1238,7 @@ func (c *Client) measureUploadTracked(
 	})
 	body := newTimedRequestBodyWithActivity(numBytes, activity)
 	defer body.finishActivity()
-	timing := timingInfo{onWroteRequest: body.finishActivity}
+	timing := timingInfo{}
 	traceContext := httptrace.WithClientTrace(ctx, createTrace(&timing))
 
 	req, err := http.NewRequestWithContext(traceContext, http.MethodPost, requestURL, body)
@@ -1326,10 +1322,10 @@ func throughputValues(samples []ThroughputSample, direction string) []float64 {
 	return measurement.FilterIQR(fallbackValues)
 }
 
-func latencyValues(samples []LatencySample, phase string, requireOverlap bool) []float64 {
+func latencyValues(samples []LatencySample, condition string, requireOverlap bool) []float64 {
 	values := make([]float64, 0, len(samples))
 	for _, sample := range samples {
-		if sample.Phase != phase || (requireOverlap && !sample.LoadOverlapped) {
+		if sample.Condition != condition || (requireOverlap && !sample.LoadOverlapped) {
 			continue
 		}
 		values = append(values, float64(sample.RTT.Microseconds())/1000)
@@ -1393,10 +1389,10 @@ func countWindows(samples []ThroughputSample, direction string) int {
 	return count
 }
 
-func countLatency(samples []LatencySample, phase string, overlapOnly bool) int {
+func countLatency(samples []LatencySample, condition string, overlapOnly bool) int {
 	count := 0
 	for _, sample := range samples {
-		if sample.Phase == phase && (!overlapOnly || sample.LoadOverlapped) {
+		if sample.Condition == condition && (!overlapOnly || sample.LoadOverlapped) {
 			count++
 		}
 	}

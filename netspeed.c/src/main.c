@@ -1,242 +1,231 @@
-/*
- * main.c - netspeed CLI entry point
- *
- * Parse arguments and run speed test.
- */
-
-#include "types.h"
+/* main.c - First-class protocol-v2 native C CLI. */
 #include "http.h"
-#include "speedtest.h"
 #include "output.h"
+#include "speedtest.h"
+#include "types.h"
 
+#include <ctype.h>
+#include <errno.h>
+#include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <signal.h>
 
-/* Global speedtest context for signal handling */
-static speedtest_t *g_speedtest = NULL;
+static speedtest_t *global_test;
+static output_t *global_output;
 
-static void signal_handler(int sig)
+static void signal_handler(int signal_number)
 {
-    (void)sig;
-    if (g_speedtest) {
-        speedtest_abort(g_speedtest);
-    }
+    (void)signal_number;
+    if (global_test) speedtest_abort(global_test);
 }
 
-static void print_usage(const char *prog)
+static void usage(const char *program)
 {
-    printf("Usage: %s [OPTIONS] [SERVER_URL]\n", prog);
-    printf("\n");
-    printf("Options:\n");
-    printf("  -s, --server URL     Speed test server URL (required)\n");
-    printf("  -j, --json           Output results as JSON\n");
-    printf("  -c, --csv            Output results as CSV\n");
-    printf("  -q, --quiet          Minimal output (just numbers)\n");
-    printf("  -v, --verbose        Show detailed test information\n");
-    printf("  -f, --quick          Run quick test with fewer probes\n");
-    printf("  -d, --download-only  Run download test only\n");
-    printf("  -u, --upload-only    Run upload test only\n");
-    printf("  --no-packet-loss     Skip packet loss test\n");
-    printf("  --no-color           Disable colored output\n");
-    printf("  --timeout SECONDS    Request timeout (default: 120)\n");
-    printf("  -h, --help           Show this help\n");
-    printf("  -V, --version        Show version\n");
-    printf("\n");
-    printf("Examples:\n");
-    printf("  %s -s https://speed.example.com\n", prog);
-    printf("  %s -s https://speed.example.com --json\n", prog);
-    printf("  %s -s https://speed.example.com -v --download-only\n", prog);
-    printf("\n");
+    fprintf(stderr, "Usage: %s [flags] [server-url]\n\n", program);
+    fprintf(stderr, "A native C speed-test client for netspeedd measurement protocol v2.\n\n");
+    fprintf(stderr, "Flags:\n");
+    fprintf(stderr, "  -s, --server URL       Server URL (default: %s)\n", DEFAULT_SERVER_URL);
+    fprintf(stderr, "      --token TOKEN      Shared bearer token (or NETSPEED_TOKEN)\n");
+    fprintf(stderr, "  -j, --json             Output results as JSON\n");
+    fprintf(stderr, "  -c, --csv              Output results as CSV\n");
+    fprintf(stderr, "      --quiet            Minimal output (final values only)\n");
+    fprintf(stderr, "  -v, --verbose          Show detailed progress and samples\n");
+    fprintf(stderr, "  -q, --quick            Quick mode (fewer samples/windows)\n");
+    fprintf(stderr, "  -d, --download-only    Skip upload tests\n");
+    fprintf(stderr, "  -u, --upload-only      Skip download tests\n");
+    fprintf(stderr, "      --no-packet-loss   Skip the exact-size WebRTC packet test\n");
+    fprintf(stderr, "      --no-color         Disable terminal colors\n");
+    fprintf(stderr, "  -t, --timeout DURATION Total timeout (default: 60s)\n");
+    fprintf(stderr, "  -V, --version          Show version and exit\n");
+    fprintf(stderr, "  -h, --help             Show this help\n\n");
+    fprintf(stderr, "Examples:\n");
+    fprintf(stderr, "  %s\n", program);
+    fprintf(stderr, "  %s --quick https://speed.example.com\n", program);
+    fprintf(stderr, "  %s --token secret --json\n", program);
 }
 
 static void print_version(void)
 {
-    printf("netspeed %s\n", NETSPEED_VERSION);
+    printf("netspeed %s commit=%s date=%s\n", NETSPEED_VERSION, NETSPEED_COMMIT, NETSPEED_BUILD_DATE);
 }
 
-static int parse_args(int argc, char *argv[], config_t *cfg)
+static int64_t parse_duration_ms(const char *text)
 {
-    memset(cfg, 0, sizeof(*cfg));
-    cfg->timeout_sec = REQUEST_TIMEOUT_SEC;
-
-    for (int i = 1; i < argc; i++) {
-        const char *arg = argv[i];
-
-        if (strcmp(arg, "-h") == 0 || strcmp(arg, "--help") == 0) {
-            print_usage(argv[0]);
-            exit(0);
-        } else if (strcmp(arg, "-V") == 0 || strcmp(arg, "--version") == 0) {
-            print_version();
-            exit(0);
-        } else if (strcmp(arg, "-s") == 0 || strcmp(arg, "--server") == 0) {
-            if (i + 1 >= argc) {
-                fprintf(stderr, "Error: --server requires an argument\n");
-                return -1;
-            }
-            strncpy(cfg->server_url, argv[++i], sizeof(cfg->server_url) - 1);
-        } else if (strcmp(arg, "-j") == 0 || strcmp(arg, "--json") == 0) {
-            cfg->json_output = true;
-        } else if (strcmp(arg, "-c") == 0 || strcmp(arg, "--csv") == 0) {
-            cfg->csv_output = true;
-        } else if (strcmp(arg, "-q") == 0 || strcmp(arg, "--quiet") == 0) {
-            cfg->quiet = true;
-        } else if (strcmp(arg, "-v") == 0 || strcmp(arg, "--verbose") == 0) {
-            cfg->verbose = true;
-        } else if (strcmp(arg, "-f") == 0 || strcmp(arg, "--quick") == 0) {
-            cfg->quick = true;
-        } else if (strcmp(arg, "-d") == 0 || strcmp(arg, "--download-only") == 0) {
-            cfg->download_only = true;
-        } else if (strcmp(arg, "-u") == 0 || strcmp(arg, "--upload-only") == 0) {
-            cfg->upload_only = true;
-        } else if (strcmp(arg, "--no-packet-loss") == 0) {
-            cfg->skip_packet_loss = true;
-        } else if (strcmp(arg, "--no-color") == 0) {
-            cfg->no_color = true;
-        } else if (strcmp(arg, "--timeout") == 0) {
-            if (i + 1 >= argc) {
-                fprintf(stderr, "Error: --timeout requires an argument\n");
-                return -1;
-            }
-            cfg->timeout_sec = atoi(argv[++i]);
-        } else if (arg[0] == '-') {
-            fprintf(stderr, "Error: Unknown option: %s\n", arg);
-            return -1;
-        } else {
-            /* Positional argument: server URL */
-            if (cfg->server_url[0] == '\0') {
-                strncpy(cfg->server_url, arg, sizeof(cfg->server_url) - 1);
-            }
-        }
-    }
-
-    /* Validate required arguments */
-    if (cfg->server_url[0] == '\0') {
-        fprintf(stderr, "Error: Server URL is required. Use -s or --server.\n");
-        print_usage(argv[0]);
+    if (!text || !*text) return -1;
+    errno = 0;
+    char *end = NULL;
+    double value = strtod(text, &end);
+    if (errno != 0 || end == text || value <= 0) return -1;
+    double multiplier = 1000.0;
+    if (*end == '\0' || strcmp(end, "s") == 0) {
+        multiplier = 1000.0;
+    } else if (strcmp(end, "ms") == 0) {
+        multiplier = 1.0;
+    } else if (strcmp(end, "m") == 0) {
+        multiplier = 60000.0;
+    } else if (strcmp(end, "h") == 0) {
+        multiplier = 3600000.0;
+    } else {
         return -1;
     }
+    double milliseconds = value * multiplier;
+    if (milliseconds > 86400000.0) return -1;
+    return (int64_t)milliseconds;
+}
 
-    /* Validate URL scheme */
-    if (strncmp(cfg->server_url, "http://", 7) != 0 &&
-        strncmp(cfg->server_url, "https://", 8) != 0) {
-        fprintf(stderr, "Error: Server URL must start with http:// or https://\n");
+static int copy_argument(char *destination, size_t capacity, const char *value,
+                         const char *name)
+{
+    if (!value || strlen(value) >= capacity) {
+        fprintf(stderr, "Error: %s is too long\n", name);
         return -1;
     }
-
-    /* Validate conflicting options */
-    if (cfg->download_only && cfg->upload_only) {
-        fprintf(stderr, "Error: Cannot use both --download-only and --upload-only\n");
-        return -1;
-    }
-
-    int output_modes = 0;
-    if (cfg->json_output) output_modes++;
-    if (cfg->csv_output) output_modes++;
-    if (cfg->quiet) output_modes++;
-    if (output_modes > 1) {
-        fprintf(stderr, "Error: Only one of --json, --csv, or --quiet can be specified\n");
-        return -1;
-    }
-
+    snprintf(destination, capacity, "%s", value);
     return 0;
 }
 
-/* Progress callback */
-static output_t *g_output = NULL;
-
-static void progress_callback(const char *phase, int current, int total, double value)
+static int parse_args(int argc, char **argv, config_t *config)
 {
-    if (g_output) {
-        output_progress(g_output, phase, current, total, value);
+    memset(config, 0, sizeof(*config));
+    snprintf(config->server_url, sizeof(config->server_url), "%s", DEFAULT_SERVER_URL);
+    config->timeout_ms = DEFAULT_TEST_TIMEOUT_MS;
+    bool server_set = false;
+
+    for (int index = 1; index < argc; index++) {
+        const char *argument = argv[index];
+        if (strcmp(argument, "-h") == 0 || strcmp(argument, "--help") == 0) {
+            usage(argv[0]);
+            exit(0);
+        } else if (strcmp(argument, "-V") == 0 || strcmp(argument, "--version") == 0) {
+            print_version();
+            exit(0);
+        } else if (strcmp(argument, "-s") == 0 || strcmp(argument, "--server") == 0) {
+            if (++index >= argc || copy_argument(config->server_url, sizeof(config->server_url),
+                                                 argv[index], "server URL") != 0) return -1;
+            server_set = true;
+        } else if (strcmp(argument, "--token") == 0) {
+            if (++index >= argc || copy_argument(config->access_token, sizeof(config->access_token),
+                                                 argv[index], "access token") != 0) return -1;
+        } else if (strcmp(argument, "-j") == 0 || strcmp(argument, "--json") == 0) {
+            config->json_output = true;
+        } else if (strcmp(argument, "-c") == 0 || strcmp(argument, "--csv") == 0) {
+            config->csv_output = true;
+        } else if (strcmp(argument, "--quiet") == 0) {
+            config->quiet = true;
+        } else if (strcmp(argument, "-v") == 0 || strcmp(argument, "--verbose") == 0) {
+            config->verbose = true;
+        } else if (strcmp(argument, "-q") == 0 || strcmp(argument, "--quick") == 0) {
+            config->quick = true;
+        } else if (strcmp(argument, "-d") == 0 || strcmp(argument, "--download-only") == 0) {
+            config->download_only = true;
+        } else if (strcmp(argument, "-u") == 0 || strcmp(argument, "--upload-only") == 0) {
+            config->upload_only = true;
+        } else if (strcmp(argument, "--no-packet-loss") == 0) {
+            config->skip_packet_loss = true;
+        } else if (strcmp(argument, "--no-color") == 0) {
+            config->no_color = true;
+        } else if (strcmp(argument, "-t") == 0 || strcmp(argument, "--timeout") == 0) {
+            if (++index >= argc) {
+                fprintf(stderr, "Error: %s requires a duration\n", argument);
+                return -1;
+            }
+            config->timeout_ms = parse_duration_ms(argv[index]);
+            if (config->timeout_ms <= 0) {
+                fprintf(stderr, "Error: invalid timeout duration %s\n", argv[index]);
+                return -1;
+            }
+        } else if (argument[0] == '-') {
+            fprintf(stderr, "Error: unknown option %s\n", argument);
+            return -1;
+        } else if (!server_set) {
+            if (copy_argument(config->server_url, sizeof(config->server_url), argument,
+                              "server URL") != 0) return -1;
+            server_set = true;
+        } else {
+            fprintf(stderr, "Error: unexpected positional argument %s\n", argument);
+            return -1;
+        }
     }
+
+    if (config->access_token[0] == '\0') {
+        const char *environment_token = getenv("NETSPEED_TOKEN");
+        if (environment_token && copy_argument(config->access_token, sizeof(config->access_token),
+                                               environment_token, "NETSPEED_TOKEN") != 0) return -1;
+    }
+    if (strncmp(config->server_url, "http://", 7) != 0 &&
+        strncmp(config->server_url, "https://", 8) != 0) {
+        fprintf(stderr, "Error: server URL must start with http:// or https://\n");
+        return -1;
+    }
+    size_t server_length = strlen(config->server_url);
+    while (server_length > 8 && config->server_url[server_length - 1] == '/') {
+        config->server_url[--server_length] = '\0';
+    }
+    if (config->download_only && config->upload_only) {
+        fprintf(stderr, "Error: --download-only and --upload-only are mutually exclusive\n");
+        return -1;
+    }
+    int output_modes = config->json_output + config->csv_output + config->quiet;
+    if (output_modes > 1) {
+        fprintf(stderr, "Error: choose only one of --json, --csv, or --quiet\n");
+        return -1;
+    }
+    return 0;
 }
 
-int main(int argc, char *argv[])
+static void progress_callback(const char *stage, int current, int total, double value)
+{
+    if (global_output) output_progress(global_output, stage, current, total, value);
+}
+
+int main(int argc, char **argv)
 {
     config_t config;
-    speedtest_t st;
-    output_t out;
-    int ret = 0;
-
-    /* Parse command line */
-    if (parse_args(argc, argv, &config) < 0) {
+    if (parse_args(argc, argv, &config) != 0) {
+        usage(argv[0]);
+        return 2;
+    }
+    if (http_global_init() != ERR_OK) {
+        fprintf(stderr, "Error: failed to initialize libcurl\n");
         return 1;
     }
 
-    /* Initialize SSL */
-    ssl_init();
+    output_t output;
+    output_init(&output, &config);
+    global_output = &output;
+    speedtest_t test;
+    speedtest_init(&test, &config);
+    speedtest_set_progress(&test, progress_callback);
+    global_test = &test;
 
-    /* Initialize output */
-    output_init(&out, &config);
-    g_output = &out;
-
-    /* Initialize speedtest */
-    speedtest_init(&st, &config);
-    speedtest_set_progress(&st, progress_callback);
-    g_speedtest = &st;
-
-    /* Setup signal handlers */
     signal(SIGINT, signal_handler);
     signal(SIGTERM, signal_handler);
-    signal(SIGPIPE, SIG_IGN);  /* Ignore SIGPIPE so write() returns EPIPE */
+#ifdef SIGPIPE
+    signal(SIGPIPE, SIG_IGN);
+#endif
 
-    /* Print header */
-    output_header(&out, config.server_url);
-
-    /* Run speed test */
-    int err = speedtest_run(&st);
-
-    if (err != ERR_OK && err != ERR_TIMEOUT) {
-        const char *err_msg;
-        switch (err) {
-        case ERR_NETWORK:
-            err_msg = "Network error - check connection and server URL";
-            break;
-        case ERR_DNS:
-            err_msg = "DNS resolution failed";
-            break;
-        case ERR_TLS:
-            err_msg = "TLS/SSL handshake failed";
-            break;
-        case ERR_HTTP:
-            err_msg = "HTTP protocol error";
-            break;
-        case ERR_PARSE:
-            err_msg = "Failed to parse server response";
-            break;
-        case ERR_MEMORY:
-            err_msg = "Out of memory";
-            break;
-        case ERR_ARGS:
-            err_msg = "Invalid arguments";
-            break;
-        default:
-            err_msg = "Unknown error";
-            break;
-        }
-        output_error(&out, err_msg);
-        ret = 1;
+    output_header(&output, config.server_url);
+    int status = speedtest_run(&test);
+    if (status != ERR_OK) {
+        output_error(&output, speedtest_error(&test));
+        speedtest_cleanup(&test);
+        http_global_cleanup();
+        return 1;
+    }
+    const results_t *results = speedtest_results(&test);
+    if (config.json_output) {
+        output_json(results);
+    } else if (config.csv_output) {
+        output_csv(results);
+    } else if (config.quiet) {
+        output_quiet(results);
     } else {
-        /* Output results */
-        const results_t *r = speedtest_results(&st);
-
-        if (config.json_output) {
-            output_json(r);
-        } else if (config.csv_output) {
-            output_csv(r);
-        } else if (config.quiet) {
-            output_quiet(r);
-        } else {
-            output_results(&out, r);
-            output_verbose(&out, r);
-        }
+        output_results(&output, results);
+        output_verbose(&output, results);
     }
 
-    /* Cleanup */
-    speedtest_cleanup(&st);
-    ssl_cleanup();
-
-    return ret;
+    speedtest_cleanup(&test);
+    http_global_cleanup();
+    return 0;
 }

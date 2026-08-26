@@ -33,7 +33,7 @@ type LatencySample struct {
 	StartedAt            time.Time     `json:"-"`
 	EndedAt              time.Time     `json:"-"`
 	RTT                  time.Duration `json:"-"`
-	Phase                string        `json:"-"` // "unloaded", "download", "upload"
+	Condition            string        `json:"-"` // "unloaded", "download", "upload"
 	LoadOverlapped       bool          `json:"-"`
 	LoadTrackingAccurate bool          `json:"-"`
 	TimingSource         string        `json:"-"`
@@ -45,7 +45,7 @@ type LatencySampleJSON struct {
 	StartedAt            int64   `json:"startedAt,omitempty"`
 	EndedAt              int64   `json:"endedAt,omitempty"`
 	RttMs                float64 `json:"rttMs"`
-	Phase                string  `json:"phase"`
+	Condition            string  `json:"condition"`
 	LoadOverlapped       bool    `json:"loadOverlapped,omitempty"`
 	LoadTrackingAccurate bool    `json:"loadTrackingAccurate,omitempty"`
 	TimingSource         string  `json:"timingSource,omitempty"`
@@ -56,7 +56,7 @@ func (s LatencySample) ToJSON() LatencySampleJSON {
 	out := LatencySampleJSON{
 		Ts:                   s.Timestamp.UnixMilli(),
 		RttMs:                float64(s.RTT.Microseconds()) / 1000.0,
-		Phase:                s.Phase,
+		Condition:            s.Condition,
 		LoadOverlapped:       s.LoadOverlapped,
 		LoadTrackingAccurate: s.LoadTrackingAccurate,
 		TimingSource:         s.TimingSource,

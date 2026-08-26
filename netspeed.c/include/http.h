@@ -1,113 +1,82 @@
 /*
- * http.h - HTTP client interface
- *
- * Provides HTTP/1.1 client with TLS support for speed testing.
- * Uses OpenSSL/LibreSSL for TLS.
+ * http.h - libcurl-based HTTP/1.1 transport for the protocol-v2 C client.
  */
-
 #ifndef NETSPEED_HTTP_H
 #define NETSPEED_HTTP_H
 
 #include "types.h"
-#include <openssl/ssl.h>
 
-/* HTTP response */
+#include <curl/curl.h>
+#include <signal.h>
+#include <stdatomic.h>
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+typedef struct {
+    char base_url[MAX_URL_LEN];
+    char access_token[MAX_TOKEN_LEN];
+    long request_timeout_ms;
+    volatile sig_atomic_t *aborted;
+} http_client_t;
+
+typedef struct {
+    const http_client_t *client;
+    CURL *easy;
+    char error[CURL_ERROR_SIZE];
+    atomic_bool *request_cancel;
+} http_session_t;
+
 typedef struct {
     int status_code;
+    char content_type[128];
+    char cache_control[256];
+    int64_t content_length;
     char *body;
     size_t body_len;
-    size_t body_cap;
-    timing_info_t timing;
+    size_t body_capacity;
+    int64_t transferred_bytes;
+    double request_to_first_byte_ms;
+    double body_duration_ms;
+    char timing_source[48];
 } http_response_t;
 
-/* HTTP connection (persistent) */
 typedef struct {
-    int sockfd;
-    SSL_CTX *ssl_ctx;
-    SSL *ssl;
-    char host[MAX_HOSTNAME_LEN];
-    int port;
-    bool is_https;
-    bool connected;
-    /* Heap-allocated buffered reader (matches system buffer size, thread-safe) */
-    char *read_buf;        /* Allocated in http_conn_init, freed in http_disconnect */
-    size_t read_buf_size;  /* Size of allocated buffer */
-    size_t read_pos;       /* Current position in buffer */
-    size_t read_len;       /* Amount of data in buffer */
-} http_conn_t;
+    void (*begin)(void *opaque);
+    void (*end)(void *opaque);
+    void *opaque;
+} http_activity_t;
 
-/* URL components */
-typedef struct {
-    char scheme[8];
-    char host[MAX_HOSTNAME_LEN];
-    int port;
-    char path[MAX_URL_LEN];
-} url_t;
+int http_global_init(void);
+void http_global_cleanup(void);
 
-/*
- * Parse URL into components.
- * Returns 0 on success, -1 on error.
- */
-int url_parse(const char *url_str, url_t *url);
-
-/*
- * Initialize HTTP connection.
- * Does not connect yet - use http_connect().
- */
-void http_conn_init(http_conn_t *conn);
-
-/*
- * Connect to server.
- * Returns 0 on success, error code on failure.
- */
-int http_connect(http_conn_t *conn, const char *host, int port, bool https);
-
-/*
- * Disconnect from server (keeps buffer allocated for reconnect).
- */
-void http_disconnect(http_conn_t *conn);
-
-/*
- * Full cleanup including freeing read buffer (call when done with connection).
- */
-void http_conn_cleanup(http_conn_t *conn);
-
-/*
- * HTTP GET request with precise timing.
- * Caller must free response->body if not NULL.
- * Returns 0 on success, error code on failure.
- */
-int http_get(http_conn_t *conn, const char *path, http_response_t *response);
-
-/*
- * HTTP POST request with precise timing.
- * Caller must free response->body if not NULL.
- * Returns 0 on success, error code on failure.
- */
-int http_post(http_conn_t *conn, const char *path,
-              const void *body, size_t body_len,
-              http_response_t *response);
-
-/*
- * Free response body.
- */
+int http_client_init(http_client_t *client, const char *base_url,
+                     const char *access_token, long request_timeout_ms,
+                     volatile sig_atomic_t *aborted);
+void http_session_init(http_session_t *session, const http_client_t *client);
+void http_session_cleanup(http_session_t *session);
+void http_session_set_cancel(http_session_t *session, atomic_bool *cancel);
+const char *http_session_error(const http_session_t *session);
 void http_response_free(http_response_t *response);
 
-/*
- * Set socket options for high-speed transfers.
- * - TCP_NODELAY
- * - Large send/receive buffers
- */
-int http_set_socket_opts(int sockfd);
+int http_get_json(http_session_t *session, const char *path,
+                  size_t max_body, http_response_t *response);
+int http_post_json(http_session_t *session, const char *path,
+                   const char *json_body, size_t max_response,
+                   http_response_t *response);
+int http_measure_download(http_session_t *session, const char *path,
+                          int64_t expected_bytes, const http_activity_t *activity,
+                          http_response_t *response);
+int http_measure_upload(http_session_t *session, const char *path,
+                        int64_t bytes, const http_activity_t *activity,
+                        size_t max_response, http_response_t *response);
 
-/*
- * Global SSL initialization (call once at startup).
- */
-void ssl_init(void);
+/* Percent-encode a query component. The caller owns the returned buffer. */
+char *http_escape(http_session_t *session, const char *value);
 
-/*
- * Global SSL cleanup (call once at shutdown).
- */
-void ssl_cleanup(void);
+#ifdef __cplusplus
+}
+#endif
 
 #endif /* NETSPEED_HTTP_H */

@@ -1,594 +1,589 @@
 /*
- * http.c - HTTP client implementation
- *
- * Uses POSIX sockets and OpenSSL/LibreSSL for TLS.
+ * http.c - Bounded, persistent libcurl transport for the C client.
  */
-
 #include "http.h"
 #include "timing.h"
 
+#include <ctype.h>
+#include <errno.h>
+#include <inttypes.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <strings.h>
-#include <unistd.h>
-#include <errno.h>
-#include <fcntl.h>
-#include <sys/types.h>
-#include <sys/socket.h>
-#include <netinet/in.h>
-#include <netinet/tcp.h>
-#include <netdb.h>
-#include <arpa/inet.h>
 
-#include <openssl/ssl.h>
-#include <openssl/err.h>
+#define USER_AGENT "netspeed-c/" NETSPEED_VERSION
+#define RESPONSE_SLACK 1
 
-/* Initial response buffer size */
-#define INITIAL_BUF_SIZE 4096
+typedef enum {
+    BODY_BUFFER,
+    BODY_DISCARD
+} body_mode_t;
 
-/* Read buffer for body transfer */
-static char body_read_buf[READ_BUFFER_SIZE];
+typedef struct {
+    http_response_t *response;
+    body_mode_t mode;
+    size_t max_body;
+    int64_t expected_bytes;
+    bool first_body;
+    struct timespec first_body_at;
+    struct timespec last_body_at;
+    const http_activity_t *activity;
+    bool activity_active;
+    bool overflow;
+} write_state_t;
 
-void ssl_init(void)
+typedef struct {
+    int64_t remaining;
+    int64_t transferred;
+    struct timespec first_read_at;
+    struct timespec last_read_at;
+    bool first_read;
+    const http_activity_t *activity;
+    bool activity_active;
+} read_state_t;
+
+typedef struct {
+    http_response_t *response;
+    read_state_t *upload;
+} header_state_t;
+
+static void response_init(http_response_t *response)
 {
-    SSL_library_init();
-    SSL_load_error_strings();
-    OpenSSL_add_all_algorithms();
+    memset(response, 0, sizeof(*response));
+    response->content_length = -1;
+    snprintf(response->timing_source, sizeof(response->timing_source), "%s", "libcurl");
 }
 
-void ssl_cleanup(void)
+static void activity_begin(const http_activity_t *activity, bool *active)
 {
-    EVP_cleanup();
-    ERR_free_strings();
+    if (!activity || !activity->begin || *active) {
+        return;
+    }
+    activity->begin(activity->opaque);
+    *active = true;
 }
 
-int url_parse(const char *url_str, url_t *url)
+static void activity_end(const http_activity_t *activity, bool *active)
 {
-    memset(url, 0, sizeof(*url));
-    url->port = 80;
+    if (!activity || !activity->end || !*active) {
+        return;
+    }
+    activity->end(activity->opaque);
+    *active = false;
+}
 
-    /* Parse scheme */
-    const char *p = url_str;
-    if (strncmp(p, "https://", 8) == 0) {
-        strcpy(url->scheme, "https");
-        url->port = 443;
-        p += 8;
-    } else if (strncmp(p, "http://", 7) == 0) {
-        strcpy(url->scheme, "http");
-        p += 7;
-    } else {
+static int append_body(http_response_t *response, const void *data, size_t len,
+                       size_t max_body)
+{
+    if (len > max_body || response->body_len > max_body - len) {
         return -1;
     }
-
-    /* Parse host */
-    const char *host_end = p;
-    while (*host_end && *host_end != ':' && *host_end != '/') {
-        host_end++;
-    }
-
-    size_t host_len = host_end - p;
-    if (host_len >= MAX_HOSTNAME_LEN) return -1;
-    strncpy(url->host, p, host_len);
-    p = host_end;
-
-    /* Parse port */
-    if (*p == ':') {
-        p++;
-        url->port = atoi(p);
-        while (*p && *p != '/') p++;
-    }
-
-    /* Parse path */
-    if (*p == '/') {
-        strncpy(url->path, p, MAX_URL_LEN - 1);
-    } else {
-        strcpy(url->path, "/");
-    }
-
-    return 0;
-}
-
-int http_set_socket_opts(int sockfd)
-{
-    int yes = 1;
-
-    /* TCP_NODELAY - disable Nagle's algorithm */
-    if (setsockopt(sockfd, IPPROTO_TCP, TCP_NODELAY, &yes, sizeof(yes)) < 0) {
-        return -1;
-    }
-
-    /* Large receive buffer */
-    int rcvbuf = READ_BUFFER_SIZE;
-    setsockopt(sockfd, SOL_SOCKET, SO_RCVBUF, &rcvbuf, sizeof(rcvbuf));
-
-    /* Large send buffer */
-    int sndbuf = WRITE_BUFFER_SIZE;
-    setsockopt(sockfd, SOL_SOCKET, SO_SNDBUF, &sndbuf, sizeof(sndbuf));
-
-    return 0;
-}
-
-void http_conn_init(http_conn_t *conn)
-{
-    memset(conn, 0, sizeof(*conn));
-    conn->sockfd = -1;
-
-    /* Allocate read buffer matching system buffer size for optimal performance */
-    conn->read_buf_size = READ_BUFFER_SIZE;  /* 4MB - matches SO_RCVBUF */
-    conn->read_buf = malloc(conn->read_buf_size);
-    if (!conn->read_buf) {
-        /* Fallback to smaller buffer if allocation fails */
-        conn->read_buf_size = 64 * 1024;  /* 64KB fallback */
-        conn->read_buf = malloc(conn->read_buf_size);
-    }
-    conn->read_pos = 0;
-    conn->read_len = 0;
-}
-
-int http_connect(http_conn_t *conn, const char *host, int port, bool https)
-{
-    struct addrinfo hints, *res, *rp;
-    char port_str[16];
-    int err;
-
-    /* Disconnect if already connected */
-    http_disconnect(conn);
-
-    /* Ensure read buffer is allocated (may have been freed by disconnect) */
-    if (!conn->read_buf) {
-        conn->read_buf_size = READ_BUFFER_SIZE;
-        conn->read_buf = malloc(conn->read_buf_size);
-        if (!conn->read_buf) {
-            conn->read_buf_size = 64 * 1024;
-            conn->read_buf = malloc(conn->read_buf_size);
-            if (!conn->read_buf) {
-                return ERR_MEMORY;
-            }
-        }
-    }
-
-    snprintf(port_str, sizeof(port_str), "%d", port);
-
-    memset(&hints, 0, sizeof(hints));
-    hints.ai_family = AF_UNSPEC;
-    hints.ai_socktype = SOCK_STREAM;
-
-    err = getaddrinfo(host, port_str, &hints, &res);
-    if (err != 0) {
-        return ERR_DNS;
-    }
-
-    /* Try each address */
-    for (rp = res; rp != NULL; rp = rp->ai_next) {
-        conn->sockfd = socket(rp->ai_family, rp->ai_socktype, rp->ai_protocol);
-        if (conn->sockfd < 0) continue;
-
-        /* Set socket options before connect */
-        http_set_socket_opts(conn->sockfd);
-
-        /* Set connect timeout */
-        struct timeval tv;
-        tv.tv_sec = CONNECT_TIMEOUT_SEC;
-        tv.tv_usec = 0;
-        setsockopt(conn->sockfd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
-
-        if (connect(conn->sockfd, rp->ai_addr, rp->ai_addrlen) == 0) {
-            break;
-        }
-
-        close(conn->sockfd);
-        conn->sockfd = -1;
-    }
-
-    freeaddrinfo(res);
-
-    if (conn->sockfd < 0) {
-        return ERR_NETWORK;
-    }
-
-    strncpy(conn->host, host, MAX_HOSTNAME_LEN - 1);
-    conn->port = port;
-    conn->is_https = https;
-
-    /* TLS handshake */
-    if (https) {
-        conn->ssl_ctx = SSL_CTX_new(TLS_client_method());
-        if (!conn->ssl_ctx) {
-            close(conn->sockfd);
-            conn->sockfd = -1;
-            return ERR_TLS;
-        }
-
-        conn->ssl = SSL_new(conn->ssl_ctx);
-        if (!conn->ssl) {
-            SSL_CTX_free(conn->ssl_ctx);
-            close(conn->sockfd);
-            conn->sockfd = -1;
-            return ERR_TLS;
-        }
-
-        SSL_set_fd(conn->ssl, conn->sockfd);
-        SSL_set_tlsext_host_name(conn->ssl, host);
-
-        if (SSL_connect(conn->ssl) != 1) {
-            SSL_free(conn->ssl);
-            SSL_CTX_free(conn->ssl_ctx);
-            close(conn->sockfd);
-            conn->sockfd = -1;
-            return ERR_TLS;
-        }
-    }
-
-    conn->connected = true;
-    return ERR_OK;
-}
-
-void http_disconnect(http_conn_t *conn)
-{
-    if (conn->ssl) {
-        SSL_shutdown(conn->ssl);
-        SSL_free(conn->ssl);
-        conn->ssl = NULL;
-    }
-
-    if (conn->ssl_ctx) {
-        SSL_CTX_free(conn->ssl_ctx);
-        conn->ssl_ctx = NULL;
-    }
-
-    if (conn->sockfd >= 0) {
-        close(conn->sockfd);
-        conn->sockfd = -1;
-    }
-
-    conn->connected = false;
-
-    /* Clear buffer state but keep buffer allocated for reuse */
-    conn->read_pos = 0;
-    conn->read_len = 0;
-}
-
-/* Free all resources including read buffer (call when done with connection) */
-void http_conn_cleanup(http_conn_t *conn)
-{
-    http_disconnect(conn);
-
-    if (conn->read_buf) {
-        free(conn->read_buf);
-        conn->read_buf = NULL;
-        conn->read_buf_size = 0;
-    }
-}
-
-/* Write data to connection */
-static ssize_t conn_write(http_conn_t *conn, const void *buf, size_t len)
-{
-    if (conn->is_https) {
-        return SSL_write(conn->ssl, buf, len);
-    } else {
-        return write(conn->sockfd, buf, len);
-    }
-}
-
-/* Read data from connection (raw, unbuffered) */
-static ssize_t conn_read_raw(http_conn_t *conn, void *buf, size_t len)
-{
-    if (conn->is_https) {
-        return SSL_read(conn->ssl, buf, len);
-    } else {
-        return read(conn->sockfd, buf, len);
-    }
-}
-
-/* Read a single byte using buffered I/O (for efficient header parsing) */
-static int conn_read_byte(http_conn_t *conn, char *c)
-{
-    /* Refill buffer if empty */
-    if (conn->read_pos >= conn->read_len) {
-        if (!conn->read_buf) {
-            return -1;
-        }
-        ssize_t n = conn_read_raw(conn, conn->read_buf, conn->read_buf_size);
-        if (n <= 0) {
-            return -1;
-        }
-        conn->read_pos = 0;
-        conn->read_len = (size_t)n;
-    }
-
-    *c = conn->read_buf[conn->read_pos++];
-    return 0;
-}
-
-/* Read from connection buffer first, then raw (for body after headers) */
-static ssize_t conn_read(http_conn_t *conn, void *buf, size_t len)
-{
-    /* If connection buffer has leftover data, use it first */
-    if (conn->read_pos < conn->read_len) {
-        size_t avail = conn->read_len - conn->read_pos;
-        size_t to_copy = (len < avail) ? len : avail;
-        memcpy(buf, conn->read_buf + conn->read_pos, to_copy);
-        conn->read_pos += to_copy;
-        return (ssize_t)to_copy;
-    }
-
-    /* Buffer empty, read directly */
-    return conn_read_raw(conn, buf, len);
-}
-
-/* Send HTTP request */
-static int send_request(http_conn_t *conn, const char *method,
-                        const char *path, const void *body, size_t body_len,
-                        timing_info_t *timing)
-{
-    char header[4096];
-    int header_len;
-
-    /* Clear read buffer to discard any stale data from previous response */
-    conn->read_pos = 0;
-    conn->read_len = 0;
-
-    /* Headers matching python-requests library defaults */
-    if (body && body_len > 0) {
-        header_len = snprintf(header, sizeof(header),
-            "%s %s HTTP/1.1\r\n"
-            "Host: %s\r\n"
-            "User-Agent: python-requests/2.32.0\r\n"
-            "Accept: */*\r\n"
-            "Accept-Encoding: identity\r\n"
-            "Connection: keep-alive\r\n"
-            "Content-Type: application/octet-stream\r\n"
-            "Content-Length: %zu\r\n"
-            "\r\n",
-            method, path, conn->host, body_len);
-    } else {
-        header_len = snprintf(header, sizeof(header),
-            "%s %s HTTP/1.1\r\n"
-            "Host: %s\r\n"
-            "User-Agent: python-requests/2.32.0\r\n"
-            "Accept: */*\r\n"
-            "Accept-Encoding: identity\r\n"
-            "Connection: keep-alive\r\n"
-            "\r\n",
-            method, path, conn->host);
-    }
-
-    /* Send headers */
-    if (conn_write(conn, header, header_len) != header_len) {
-        return ERR_NETWORK;
-    }
-
-    /* Mark when we start sending body (for upload timing) */
-    timing_mark_wrote_request(timing);
-
-    /* Send body if present */
-    if (body && body_len > 0) {
-        size_t sent = 0;
-        while (sent < body_len) {
-            ssize_t n = conn_write(conn, (const char *)body + sent, body_len - sent);
-            if (n <= 0) {
-                return ERR_NETWORK;
-            }
-            sent += (size_t)n;
-        }
-    }
-
-    return ERR_OK;
-}
-
-/* Parse HTTP status line */
-static int parse_status_line(const char *line, int *status_code)
-{
-    /* HTTP/1.1 200 OK */
-    if (strncmp(line, "HTTP/", 5) != 0) {
-        return -1;
-    }
-
-    const char *code = strchr(line, ' ');
-    if (!code) return -1;
-
-    *status_code = atoi(code + 1);
-    return 0;
-}
-
-/* Receive HTTP response */
-static int receive_response(http_conn_t *conn, http_response_t *response,
-                            timing_info_t *timing)
-{
-    char line[4096];
-    size_t line_len = 0;
-    bool first_byte_received = false;
-    bool in_headers = true;
-    int content_length = -1;
-    bool chunked = false;
-
-    response->status_code = 0;
-    response->body = NULL;
-    response->body_len = 0;
-    response->body_cap = 0;
-
-    /* Read headers using buffered I/O (much faster than byte-by-byte syscalls) */
-    while (in_headers) {
-        char c;
-        if (conn_read_byte(conn, &c) < 0) {
-            return ERR_NETWORK;
-        }
-
-        if (!first_byte_received) {
-            timing_mark_got_first_byte(timing);
-            first_byte_received = true;
-        }
-
-        if (c == '\r') continue;
-
-        if (c == '\n') {
-            line[line_len] = '\0';
-
-            if (line_len == 0) {
-                /* End of headers */
-                in_headers = false;
-            } else if (response->status_code == 0) {
-                /* Status line */
-                if (parse_status_line(line, &response->status_code) < 0) {
-                    return ERR_HTTP;
-                }
-            } else {
-                /* Header line */
-                if (strncasecmp(line, "Content-Length:", 15) == 0) {
-                    content_length = atoi(line + 15);
-                } else if (strncasecmp(line, "Transfer-Encoding:", 18) == 0) {
-                    if (strstr(line + 18, "chunked")) {
-                        chunked = true;
-                    }
-                }
-            }
-
-            line_len = 0;
-        } else {
-            if (line_len < sizeof(line) - 1) {
-                line[line_len++] = c;
-            }
-        }
-    }
-
-    /* Read body */
-    if (content_length > 0) {
-        size_t body_size = (size_t)content_length;
-        response->body = malloc(body_size + 1);
-        if (!response->body) {
-            return ERR_MEMORY;
-        }
-        response->body_cap = body_size + 1;
-
-        size_t total = 0;
-        while (total < body_size) {
-            size_t to_read = body_size - total;
-            if (to_read > sizeof(body_read_buf)) {
-                to_read = sizeof(body_read_buf);
-            }
-
-            /* Use conn_read to drain any leftover header buffer data first */
-            ssize_t n = conn_read(conn, body_read_buf, to_read);
-            if (n <= 0) {
+    size_t needed = response->body_len + len + RESPONSE_SLACK;
+    if (needed > response->body_capacity) {
+        size_t capacity = response->body_capacity ? response->body_capacity : 4096;
+        while (capacity < needed) {
+            if (capacity > max_body / 2) {
+                capacity = max_body + RESPONSE_SLACK;
                 break;
             }
-
-            memcpy(response->body + total, body_read_buf, (size_t)n);
-            total += (size_t)n;
+            capacity *= 2;
         }
-
-        response->body_len = total;
-        response->body[total] = '\0';
-    } else if (content_length == 0) {
-        /* Empty body */
-        response->body = NULL;
-        response->body_len = 0;
-    } else if (chunked) {
-        /* Chunked transfer - simplified handling */
-        response->body = malloc(INITIAL_BUF_SIZE);
-        if (!response->body) {
-            return ERR_MEMORY;
+        char *next = realloc(response->body, capacity);
+        if (!next) {
+            return -1;
         }
-        response->body_cap = INITIAL_BUF_SIZE;
-        response->body_len = 0;
+        response->body = next;
+        response->body_capacity = capacity;
+    }
+    memcpy(response->body + response->body_len, data, len);
+    response->body_len += len;
+    response->body[response->body_len] = '\0';
+    return 0;
+}
 
-        while (1) {
-            /* Read chunk size line using buffered I/O */
-            line_len = 0;
-            while (1) {
-                char c;
-                if (conn_read_byte(conn, &c) < 0) break;
-                if (c == '\r') continue;
-                if (c == '\n') break;
-                if (line_len < sizeof(line) - 1) {
-                    line[line_len++] = c;
-                }
-            }
-            line[line_len] = '\0';
+static size_t write_callback(char *ptr, size_t size, size_t nmemb, void *opaque)
+{
+    write_state_t *state = opaque;
+    if (size != 0 && nmemb > SIZE_MAX / size) {
+        state->overflow = true;
+        return 0;
+    }
+    size_t len = size * nmemb;
+    if (len == 0) {
+        return 0;
+    }
 
-            size_t chunk_size = strtoul(line, NULL, 16);
-            if (chunk_size == 0) break;
+    struct timespec now;
+    timing_now(&now);
+    if (!state->first_body) {
+        state->first_body = true;
+        state->first_body_at = now;
+        activity_begin(state->activity, &state->activity_active);
+    }
+    state->last_body_at = now;
 
-            /* Grow buffer if needed */
-            while (response->body_len + chunk_size + 1 > response->body_cap) {
-                size_t new_cap = response->body_cap * 2;
-                char *new_body = realloc(response->body, new_cap);
-                if (!new_body) {
-                    /* Keep original buffer for cleanup by caller */
-                    return ERR_MEMORY;
-                }
-                response->body = new_body;
-                response->body_cap = new_cap;
-            }
+    if (state->response->transferred_bytes > INT64_MAX - (int64_t)len) {
+        state->overflow = true;
+        return 0;
+    }
+    state->response->transferred_bytes += (int64_t)len;
 
-            /* Read chunk data */
-            size_t read_total = 0;
-            while (read_total < chunk_size) {
-                size_t to_read = chunk_size - read_total;
-                if (to_read > sizeof(body_read_buf)) {
-                    to_read = sizeof(body_read_buf);
-                }
+    if (state->mode == BODY_BUFFER &&
+        append_body(state->response, ptr, len, state->max_body) != 0) {
+        state->overflow = true;
+        return 0;
+    }
+    if (state->mode == BODY_DISCARD && state->expected_bytes >= 0 &&
+        state->response->transferred_bytes > state->expected_bytes) {
+        state->overflow = true;
+        return 0;
+    }
+    return len;
+}
 
-                ssize_t n = conn_read(conn, body_read_buf, to_read);
-                if (n <= 0) break;
+static char *trim_header_value(char *value)
+{
+    while (*value && isspace((unsigned char)*value)) {
+        value++;
+    }
+    char *end = value + strlen(value);
+    while (end > value && isspace((unsigned char)end[-1])) {
+        *--end = '\0';
+    }
+    return value;
+}
 
-                memcpy(response->body + response->body_len, body_read_buf, (size_t)n);
-                response->body_len += (size_t)n;
-                read_total += (size_t)n;
-            }
+static size_t header_callback(char *buffer, size_t size, size_t nitems, void *opaque)
+{
+    header_state_t *state = opaque;
+    http_response_t *response = state->response;
+    if (size != 0 && nitems > SIZE_MAX / size) {
+        return 0;
+    }
+    size_t len = size * nitems;
+    if (len == 0 || len >= 4096) {
+        return len;
+    }
+    char line[4096];
+    memcpy(line, buffer, len);
+    line[len] = '\0';
 
-            /* Read trailing CRLF (use conn_read_byte to handle buffer boundaries) */
-            char c;
-            if (conn_read_byte(conn, &c) < 0) break;  /* \r */
-            if (conn_read_byte(conn, &c) < 0) break;  /* \n */
-        }
-
-        if (response->body) {
-            response->body[response->body_len] = '\0';
+    /* The first final response status line proves the server has consumed the
+     * request body. Keep upload load active until this point rather than ending
+     * it when libcurl merely copies the last generator chunk into its local
+     * send buffer. */
+    if (state->upload && strncmp(line, "HTTP/", 5) == 0) {
+        char *status_start = strchr(line, ' ');
+        long status = status_start ? strtol(status_start + 1, NULL, 10) : 0;
+        if (status >= 200) {
+            activity_end(state->upload->activity, &state->upload->activity_active);
         }
     }
 
-    timing_mark_body_done(timing);
+    char *colon = strchr(line, ':');
+    if (!colon) {
+        return len;
+    }
+    *colon = '\0';
+    char *value = trim_header_value(colon + 1);
+    if (strcasecmp(line, "Content-Length") == 0) {
+        errno = 0;
+        char *end = NULL;
+        long long parsed = strtoll(value, &end, 10);
+        if (errno == 0 && end && *end == '\0' && parsed >= 0) {
+            response->content_length = (int64_t)parsed;
+        }
+    } else if (strcasecmp(line, "Content-Type") == 0) {
+        snprintf(response->content_type, sizeof(response->content_type), "%s", value);
+    } else if (strcasecmp(line, "Cache-Control") == 0) {
+        snprintf(response->cache_control, sizeof(response->cache_control), "%s", value);
+    }
+    return len;
+}
+
+static size_t read_callback(char *buffer, size_t size, size_t nitems, void *opaque)
+{
+    read_state_t *state = opaque;
+    if (size != 0 && nitems > SIZE_MAX / size) {
+        return CURL_READFUNC_ABORT;
+    }
+    size_t capacity = size * nitems;
+    if (capacity == 0 || state->remaining <= 0) {
+        return 0;
+    }
+    size_t len = capacity;
+    if ((int64_t)len > state->remaining) {
+        len = (size_t)state->remaining;
+    }
+    memset(buffer, 0, len);
+    struct timespec now;
+    timing_now(&now);
+    if (!state->first_read) {
+        state->first_read = true;
+        state->first_read_at = now;
+        activity_begin(state->activity, &state->activity_active);
+    }
+    state->last_read_at = now;
+    state->remaining -= (int64_t)len;
+    state->transferred += (int64_t)len;
+    return len;
+}
+
+static int progress_callback(void *opaque, curl_off_t dltotal, curl_off_t dlnow,
+                             curl_off_t ultotal, curl_off_t ulnow)
+{
+    (void)dltotal;
+    (void)dlnow;
+    (void)ultotal;
+    (void)ulnow;
+    const http_session_t *session = opaque;
+    if (!session) {
+        return 0;
+    }
+    if (session->request_cancel && atomic_load(session->request_cancel)) {
+        return 1;
+    }
+    const http_client_t *client = session->client;
+    return client && client->aborted && *client->aborted ? 1 : 0;
+}
+
+static int join_url(const char *base, const char *path, char *out, size_t out_len)
+{
+    size_t base_len = strlen(base);
+    bool base_slash = base_len > 0 && base[base_len - 1] == '/';
+    bool path_slash = path[0] == '/';
+    int written;
+    if (base_slash && path_slash) {
+        written = snprintf(out, out_len, "%.*s%s", (int)(base_len - 1), base, path);
+    } else if (!base_slash && !path_slash) {
+        written = snprintf(out, out_len, "%s/%s", base, path);
+    } else {
+        written = snprintf(out, out_len, "%s%s", base, path);
+    }
+    return written >= 0 && (size_t)written < out_len ? 0 : -1;
+}
+
+static struct curl_slist *request_headers(const http_client_t *client,
+                                          const char *content_type)
+{
+    struct curl_slist *headers = NULL;
+    headers = curl_slist_append(headers, "Accept: */*");
+    headers = curl_slist_append(headers, "Accept-Encoding: identity");
+    headers = curl_slist_append(headers, "Cache-Control: no-store, no-transform");
+    headers = curl_slist_append(headers, "Pragma: no-cache");
+    headers = curl_slist_append(headers, "Expect:");
+    if (content_type) {
+        char line[192];
+        snprintf(line, sizeof(line), "Content-Type: %s", content_type);
+        headers = curl_slist_append(headers, line);
+    }
+    if (client->access_token[0]) {
+        size_t needed = strlen(client->access_token) + 32;
+        char *line = malloc(needed);
+        if (!line) {
+            curl_slist_free_all(headers);
+            return NULL;
+        }
+        snprintf(line, needed, "Authorization: Bearer %s", client->access_token);
+        headers = curl_slist_append(headers, line);
+        free(line);
+    }
+    return headers;
+}
+
+static void configure_common(http_session_t *session, const char *url,
+                             write_state_t *write_state,
+                             header_state_t *header_state,
+                             struct curl_slist *headers)
+{
+    CURL *easy = session->easy;
+    curl_easy_reset(easy);
+    memset(session->error, 0, sizeof(session->error));
+    curl_easy_setopt(easy, CURLOPT_ERRORBUFFER, session->error);
+    curl_easy_setopt(easy, CURLOPT_URL, url);
+    curl_easy_setopt(easy, CURLOPT_HTTPHEADER, headers);
+    curl_easy_setopt(easy, CURLOPT_USERAGENT, USER_AGENT);
+    curl_easy_setopt(easy, CURLOPT_HTTP_VERSION, CURL_HTTP_VERSION_1_1);
+    curl_easy_setopt(easy, CURLOPT_FOLLOWLOCATION, 0L);
+    curl_easy_setopt(easy, CURLOPT_NOSIGNAL, 1L);
+    curl_easy_setopt(easy, CURLOPT_TCP_NODELAY, 1L);
+    curl_easy_setopt(easy, CURLOPT_TCP_KEEPALIVE, 1L);
+    curl_easy_setopt(easy, CURLOPT_CONNECTTIMEOUT_MS, 30000L);
+    curl_easy_setopt(easy, CURLOPT_TIMEOUT_MS, session->client->request_timeout_ms);
+    curl_easy_setopt(easy, CURLOPT_ACCEPT_ENCODING, "identity");
+    curl_easy_setopt(easy, CURLOPT_WRITEFUNCTION, write_callback);
+    curl_easy_setopt(easy, CURLOPT_WRITEDATA, write_state);
+    curl_easy_setopt(easy, CURLOPT_HEADERFUNCTION, header_callback);
+    curl_easy_setopt(easy, CURLOPT_HEADERDATA, header_state);
+    curl_easy_setopt(easy, CURLOPT_XFERINFOFUNCTION, progress_callback);
+    curl_easy_setopt(easy, CURLOPT_XFERINFODATA, session);
+    curl_easy_setopt(easy, CURLOPT_NOPROGRESS, 0L);
+#ifdef CURLOPT_BUFFERSIZE
+    curl_easy_setopt(easy, CURLOPT_BUFFERSIZE, 4L * 1024L * 1024L);
+#endif
+#ifdef CURLOPT_UPLOAD_BUFFERSIZE
+    curl_easy_setopt(easy, CURLOPT_UPLOAD_BUFFERSIZE, 4L * 1024L * 1024L);
+#endif
+}
+
+static int finish_request(http_session_t *session, http_response_t *response,
+                          write_state_t *write_state, CURLcode code)
+{
+    activity_end(write_state->activity, &write_state->activity_active);
+    if (write_state->first_body) {
+        response->body_duration_ms = timing_diff_ms(&write_state->first_body_at,
+                                                    &write_state->last_body_at);
+    }
+    if (code != CURLE_OK) {
+        if (session->error[0] == '\0') {
+            snprintf(session->error, sizeof(session->error), "%s", curl_easy_strerror(code));
+        }
+        return code == CURLE_OPERATION_TIMEDOUT ? ERR_TIMEOUT : ERR_NETWORK;
+    }
+    if (write_state->overflow) {
+        snprintf(session->error, sizeof(session->error), "%s", "response exceeded the verified size limit");
+        return ERR_PROTOCOL;
+    }
+
+    long status = 0;
+    curl_easy_getinfo(session->easy, CURLINFO_RESPONSE_CODE, &status);
+    response->status_code = (int)status;
+    if (response->content_type[0] == '\0') {
+        char *content_type = NULL;
+        if (curl_easy_getinfo(session->easy, CURLINFO_CONTENT_TYPE, &content_type) == CURLE_OK && content_type) {
+            snprintf(response->content_type, sizeof(response->content_type), "%s", content_type);
+        }
+    }
+    if (response->content_length < 0) {
+        curl_off_t content_length = -1;
+        if (curl_easy_getinfo(session->easy, CURLINFO_CONTENT_LENGTH_DOWNLOAD_T, &content_length) == CURLE_OK &&
+            content_length >= 0) {
+            response->content_length = (int64_t)content_length;
+        }
+    }
+    double pretransfer = 0;
+    double starttransfer = 0;
+    double total = 0;
+    curl_easy_getinfo(session->easy, CURLINFO_PRETRANSFER_TIME, &pretransfer);
+    curl_easy_getinfo(session->easy, CURLINFO_STARTTRANSFER_TIME, &starttransfer);
+    curl_easy_getinfo(session->easy, CURLINFO_TOTAL_TIME, &total);
+    response->request_to_first_byte_ms = (starttransfer - pretransfer) * 1000.0;
+    if (response->body_duration_ms <= 0 && total >= starttransfer) {
+        response->body_duration_ms = (total - starttransfer) * 1000.0;
+    }
     return ERR_OK;
 }
 
-int http_get(http_conn_t *conn, const char *path, http_response_t *response)
+static int perform(http_session_t *session, const char *path, const char *method,
+                   const char *content_type, body_mode_t body_mode, size_t max_body,
+                   int64_t expected_download, read_state_t *read_state,
+                   const http_activity_t *activity, http_response_t *response)
 {
-    timing_info_t timing;
-    timing_info_init(&timing);
+    response_init(response);
+    if (!session || !session->easy || !session->client) {
+        return ERR_ARGS;
+    }
+    char url[MAX_URL_LEN * 2];
+    if (join_url(session->client->base_url, path, url, sizeof(url)) != 0) {
+        snprintf(session->error, sizeof(session->error), "%s", "request URL is too long");
+        return ERR_ARGS;
+    }
+    struct curl_slist *headers = request_headers(session->client, content_type);
+    if (!headers) {
+        return ERR_MEMORY;
+    }
 
-    int err = send_request(conn, "GET", path, NULL, 0, &timing);
-    if (err != ERR_OK) return err;
+    write_state_t write_state = {
+        .response = response,
+        .mode = body_mode,
+        .max_body = max_body,
+        .expected_bytes = expected_download,
+        .activity = read_state ? NULL : activity,
+    };
+    header_state_t header_state = {
+        .response = response,
+        .upload = read_state,
+    };
+    configure_common(session, url, &write_state, &header_state, headers);
 
-    err = receive_response(conn, response, &timing);
-    response->timing = timing;
+    if (strcmp(method, "POST") == 0) {
+        curl_easy_setopt(session->easy, CURLOPT_POST, 1L);
+        if (read_state) {
+            curl_easy_setopt(session->easy, CURLOPT_READFUNCTION, read_callback);
+            curl_easy_setopt(session->easy, CURLOPT_READDATA, read_state);
+            curl_easy_setopt(session->easy, CURLOPT_POSTFIELDSIZE_LARGE,
+                             (curl_off_t)read_state->remaining);
+        }
+    }
 
-    return err;
+    CURLcode code = curl_easy_perform(session->easy);
+    if (read_state) {
+        activity_end(read_state->activity, &read_state->activity_active);
+    }
+    int result = finish_request(session, response, &write_state, code);
+    curl_slist_free_all(headers);
+    return result;
 }
 
-int http_post(http_conn_t *conn, const char *path,
-              const void *body, size_t body_len,
-              http_response_t *response)
+int http_global_init(void)
 {
-    timing_info_t timing;
-    timing_info_init(&timing);
+    return curl_global_init(CURL_GLOBAL_DEFAULT) == CURLE_OK ? ERR_OK : ERR_NETWORK;
+}
 
-    int err = send_request(conn, "POST", path, body, body_len, &timing);
-    if (err != ERR_OK) return err;
+void http_global_cleanup(void)
+{
+    curl_global_cleanup();
+}
 
-    err = receive_response(conn, response, &timing);
-    response->timing = timing;
+int http_client_init(http_client_t *client, const char *base_url,
+                     const char *access_token, long request_timeout_ms,
+                     volatile sig_atomic_t *aborted)
+{
+    if (!client || !base_url || !*base_url || request_timeout_ms <= 0) {
+        return ERR_ARGS;
+    }
+    memset(client, 0, sizeof(*client));
+    size_t len = strlen(base_url);
+    while (len > 0 && base_url[len - 1] == '/') {
+        len--;
+    }
+    if (len == 0 || len >= sizeof(client->base_url)) {
+        return ERR_ARGS;
+    }
+    memcpy(client->base_url, base_url, len);
+    client->base_url[len] = '\0';
+    if (access_token) {
+        if (strlen(access_token) >= sizeof(client->access_token)) {
+            return ERR_ARGS;
+        }
+        snprintf(client->access_token, sizeof(client->access_token), "%s", access_token);
+    }
+    client->request_timeout_ms = request_timeout_ms;
+    client->aborted = aborted;
+    return ERR_OK;
+}
 
-    return err;
+void http_session_init(http_session_t *session, const http_client_t *client)
+{
+    memset(session, 0, sizeof(*session));
+    session->client = client;
+    session->easy = curl_easy_init();
+}
+
+void http_session_set_cancel(http_session_t *session, atomic_bool *cancel)
+{
+    if (session) {
+        session->request_cancel = cancel;
+    }
+}
+
+void http_session_cleanup(http_session_t *session)
+{
+    if (!session) {
+        return;
+    }
+    if (session->easy) {
+        curl_easy_cleanup(session->easy);
+    }
+    memset(session, 0, sizeof(*session));
+}
+
+const char *http_session_error(const http_session_t *session)
+{
+    if (!session || !session->error[0]) {
+        return "HTTP transport error";
+    }
+    return session->error;
 }
 
 void http_response_free(http_response_t *response)
 {
-    if (response->body) {
-        free(response->body);
-        response->body = NULL;
+    if (!response) {
+        return;
     }
+    free(response->body);
+    response->body = NULL;
     response->body_len = 0;
-    response->body_cap = 0;
+    response->body_capacity = 0;
+}
+
+int http_get_json(http_session_t *session, const char *path,
+                  size_t max_body, http_response_t *response)
+{
+    return perform(session, path, "GET", NULL, BODY_BUFFER, max_body, -1, NULL, NULL, response);
+}
+
+int http_post_json(http_session_t *session, const char *path,
+                   const char *json_body, size_t max_response,
+                   http_response_t *response)
+{
+    response_init(response);
+    if (!json_body) {
+        return ERR_ARGS;
+    }
+    char url[MAX_URL_LEN * 2];
+    if (join_url(session->client->base_url, path, url, sizeof(url)) != 0) {
+        return ERR_ARGS;
+    }
+    struct curl_slist *headers = request_headers(session->client, "application/json");
+    if (!headers) {
+        return ERR_MEMORY;
+    }
+    write_state_t write_state = {
+        .response = response,
+        .mode = BODY_BUFFER,
+        .max_body = max_response,
+        .expected_bytes = -1,
+    };
+    header_state_t header_state = {.response = response};
+    configure_common(session, url, &write_state, &header_state, headers);
+    curl_easy_setopt(session->easy, CURLOPT_POST, 1L);
+    curl_easy_setopt(session->easy, CURLOPT_POSTFIELDS, json_body);
+    curl_easy_setopt(session->easy, CURLOPT_POSTFIELDSIZE_LARGE, (curl_off_t)strlen(json_body));
+    CURLcode code = curl_easy_perform(session->easy);
+    int result = finish_request(session, response, &write_state, code);
+    curl_slist_free_all(headers);
+    return result;
+}
+
+int http_measure_download(http_session_t *session, const char *path,
+                          int64_t expected_bytes, const http_activity_t *activity,
+                          http_response_t *response)
+{
+    if (expected_bytes < 0) {
+        return ERR_ARGS;
+    }
+    return perform(session, path, "GET", NULL, BODY_DISCARD, 0, expected_bytes,
+                   NULL, activity, response);
+}
+
+int http_measure_upload(http_session_t *session, const char *path,
+                        int64_t bytes, const http_activity_t *activity,
+                        size_t max_response, http_response_t *response)
+{
+    if (bytes < 0) {
+        return ERR_ARGS;
+    }
+    read_state_t read_state = {
+        .remaining = bytes,
+        .activity = activity,
+    };
+    int result = perform(session, path, "POST", "application/octet-stream",
+                         BODY_BUFFER, max_response, -1, &read_state, NULL, response);
+    if (result == ERR_OK && read_state.transferred != bytes) {
+        snprintf(session->error, sizeof(session->error),
+                 "HTTP transport consumed %" PRId64 " upload bytes; expected %" PRId64,
+                 read_state.transferred, bytes);
+        return ERR_PROTOCOL;
+    }
+    return result;
+}
+
+char *http_escape(http_session_t *session, const char *value)
+{
+    if (!session || !session->easy || !value) {
+        return NULL;
+    }
+    return curl_easy_escape(session->easy, value, 0);
 }

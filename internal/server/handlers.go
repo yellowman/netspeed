@@ -78,7 +78,7 @@ func (s *Server) handleDown(w http.ResponseWriter, r *http.Request) {
 	// Parse query parameters
 	bytesStr := r.URL.Query().Get("bytes")
 	measId := r.URL.Query().Get("measId")
-	phase := r.URL.Query().Get("during") // "download", "upload", or empty for standalone
+	condition := r.URL.Query().Get("during") // "download", "upload", or empty for standalone
 
 	var nBytes int64
 	if bytesStr != "" {
@@ -125,9 +125,9 @@ func (s *Server) handleDown(w http.ResponseWriter, r *http.Request) {
 	if nBytes == 0 {
 		w.WriteHeader(http.StatusOK)
 		latencyMs := float64(time.Since(start).Microseconds()) / 1000.0
-		if phase != "" {
-			log.Printf("Latency probe: client=%s measId=%s phase=%s latency=%.3fms",
-				clientIP, measId, phase, latencyMs)
+		if condition != "" {
+			log.Printf("Latency probe: client=%s measId=%s condition=%s latency=%.3fms",
+				clientIP, measId, condition, latencyMs)
 		} else {
 			log.Printf("Latency probe: client=%s measId=%s latency=%.3fms",
 				clientIP, measId, latencyMs)
@@ -255,7 +255,9 @@ func (s *Server) handleLocations(w http.ResponseWriter, r *http.Request) {
 	locs := s.locations.All()
 
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
-	w.Header().Set("Cache-Control", "public, max-age=86400")
+	w.Header().Set("Cache-Control", "private, no-store")
+	w.Header().Set("Pragma", "no-cache")
+	addVary(w.Header(), "Authorization")
 
 	if err := json.NewEncoder(w).Encode(locs); err != nil {
 		return

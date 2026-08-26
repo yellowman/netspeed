@@ -1,6 +1,6 @@
 # netspeed CLI - command line speed test client spec
 
-this document specifies the **command-line client behavior** for a Go-based speed test CLI
+this document specifies the **command-line client behavior** shared by the Go and native C speed test CLIs
 that talks to a backend exposing these endpoints:
 
 - `GET /meta`
@@ -22,11 +22,10 @@ etc.) are intentionally out of scope.
 > **Implemented authority:** the Go CLI requires measurement protocol version 2.
 > [`MEASUREMENT_PROTOCOL_V2.md`](MEASUREMENT_PROTOCOL_V2.md) is the canonical
 > measurement contract, and [`SERVICE_HARDENING.md`](SERVICE_HARDENING.md)
-> defines Phase 4 bearer authentication and server admission responses. The
-> configuration-file sections below are legacy design notes. The C-client
-> sections are retained for historical reference, but Phase 6 explicitly
-> classifies that pre-v2 client as unsupported and excludes it from binary
-> releases.
+> defines bearer authentication and server admission responses. The
+> configuration-file sections below are legacy design notes. The Go and C
+> clients are both protocol-v2 implementations; implementation-specific build
+> and qualification details are in [`C_CLIENT_PARITY.md`](C_CLIENT_PARITY.md).
 
 ## 1. command line interface
 
@@ -141,7 +140,7 @@ netspeed -v
   Client: 203.0.113.42 (Example ISP, Inc. AS13254)
   ```
 
-Phase 4 overload and authentication responses are not measurements. The CLI
+Overload and authentication responses are not measurements. The CLI
 rejects `401`, `429`, and `503` responses and does not time their bodies as
 throughput or latency samples.
 
@@ -280,7 +279,7 @@ A truncated, oversized, rejected, or unverifiable upload is not a sample.
 
 ## 3. measurement pipeline
 
-The Phase 2 CLI runs:
+The CLI runs:
 
 1. `GET /meta` and require measurement protocol 2;
 2. unloaded latency probes;
@@ -310,13 +309,15 @@ The CLI uses `net/http/httptrace`:
 
 - latency RTT: `GotFirstResponseByte - WroteRequest`;
 - download request body: first response byte through exact body completion;
-- upload request body: first body read through `WroteRequest`;
+- upload request lifecycle: first body read through verified receipt completion;
 - accepted upload throughput: daemon `serverDurationNs`, with client body timing
   as a diagnostic fallback;
 - aggregate window: worker-release time through completion of all in-flight
   verified requests after the stop signal.
 
-Connection setup and receipt waiting are not classified as transfer load.
+Connection setup is not classified as transfer load. Receipt completion remains
+inside the active upload request for overlap tracking; throughput still uses the
+daemon body-read duration.
 
 ### 3.3 continuous loaded-latency proof
 
@@ -327,9 +328,9 @@ probe spanning any gap is rejected and retried.
 
 Normal mode targets five probes in the middle window and requires at least three
 accepted probes per enabled direction. Quick mode targets three in its single
-window. Download load means response-body consumption; upload load means request-
-body transmission only. The window timer stops new transfers and further probe
-retries. Requests already in flight drain into the window aggregate. A timer
+window. Download load means response-body consumption; upload load begins with
+request-body transmission and ends after the verified receipt. The window timer
+stops new transfers and further probe retries. Requests already in flight drain into the window aggregate. A timer
 expiry is successful only when the accepted probe quorum has already been met;
 otherwise that direction fails rather than allowing retries to extend the test.
 
@@ -359,17 +360,17 @@ the median after configured warmup removal and filtering.
 ## 4. CLI data model
 
 ```go
-type LatencyPhase string
+type LatencyCondition string
 const (
-    PhaseUnloaded LatencyPhase = "unloaded"
-    PhaseDownload LatencyPhase = "download"
-    PhaseUpload   LatencyPhase = "upload"
+    ConditionUnloaded LatencyCondition = "unloaded"
+    ConditionDownload LatencyCondition = "download"
+    ConditionUpload   LatencyCondition = "upload"
 )
 
 type LatencySample struct {
     Timestamp time.Time
     RTT       time.Duration
-    Phase     LatencyPhase
+    Condition LatencyCondition
 }
 
 type ThroughputDirection string
@@ -655,7 +656,7 @@ with `--json` flag, output matches the web client format exactly:
     {
       "ts": 1705315420456,
       "rttMs": 6.2,
-      "phase": "unloaded"
+      "condition": "unloaded"
     }
   ],
   "packetLoss": {
@@ -746,13 +747,13 @@ const (
 
 ```go
 type TestError struct {
-    Phase   string // "meta", "download", "upload", "latency", "packet-loss"
-    Message string
-    Err     error
+    Operation string // "meta", "download", "upload", "latency", "packet-loss"
+    Message   string
+    Err       error
 }
 
 func (e *TestError) Error() string {
-    return fmt.Sprintf("%s: %s", e.Phase, e.Message)
+    return fmt.Sprintf("%s: %s", e.Operation, e.Message)
 }
 ```
 
@@ -898,7 +899,7 @@ func gradeForVideoChat(s Summary) Grade {
 ## 9. configuration contract
 
 The Go CLI intentionally has no YAML loader and no `--config` flag. Server URL,
-mode, output, timeout, and phase-selection behavior are controlled by the
+mode, output, timeout, and operation-selection behavior are controlled by the
 command-line flags in section 1. The bearer token may also be supplied through
 `NETSPEED_TOKEN`; an explicit `--token` takes precedence.
 
@@ -1172,641 +1173,78 @@ Note: Quick mode uses fewer samples. Run without
 ---
 
 ## 14. TURN protocol specification
-
-this section specifies the TURN protocol implementation for CLI clients. Go clients
-should use `pion/turn` or `pion/webrtc`. C clients must implement TURN from first
-principles following RFC 5766 and RFC 8656.
-
-### 14.1 TURN overview
-
-TURN (Traversal Using Relays around NAT) relays UDP packets through a server when
-direct peer-to-peer communication isn't possible. for packet loss testing:
-
-```
-┌────────┐         ┌─────────────┐         ┌────────────┐
-│  CLI   │◄───────►│ TURN Server │◄───────►│ Test Peer  │
-│ Client │  UDP    │   (relay)   │  UDP    │  (server)  │
-└────────┘         └─────────────┘         └────────────┘
-```
-
-### 14.2 TURN message format (RFC 5766)
-
-all TURN messages use the STUN message format:
-
-```
- 0                   1                   2                   3
- 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1
-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-|0 0|     STUN Message Type     |         Message Length        |
-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-|                         Magic Cookie                          |
-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-|                                                               |
-|                     Transaction ID (96 bits)                  |
-|                                                               |
-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-|                         Attributes...                         |
-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-```
-
-**constants:**
-
-```c
-#define STUN_MAGIC_COOKIE   0x2112A442
-
-/* Message types (method | class) */
-#define STUN_BINDING_REQUEST     0x0001
-#define STUN_BINDING_RESPONSE    0x0101
-#define TURN_ALLOCATE_REQUEST    0x0003
-#define TURN_ALLOCATE_RESPONSE   0x0103
-#define TURN_ALLOCATE_ERROR      0x0113
-#define TURN_REFRESH_REQUEST     0x0004
-#define TURN_REFRESH_RESPONSE    0x0104
-#define TURN_SEND_INDICATION     0x0016
-#define TURN_DATA_INDICATION     0x0017
-#define TURN_CREATE_PERM_REQUEST 0x0008
-#define TURN_CREATE_PERM_RESPONSE 0x0108
-#define TURN_CHANNEL_BIND_REQUEST  0x0009
-#define TURN_CHANNEL_BIND_RESPONSE 0x0109
-
-/* Attribute types */
-#define ATTR_MAPPED_ADDRESS      0x0001
-#define ATTR_USERNAME            0x0006
-#define ATTR_MESSAGE_INTEGRITY   0x0008
-#define ATTR_ERROR_CODE          0x0009
-#define ATTR_REALM               0x0014
-#define ATTR_NONCE               0x0015
-#define ATTR_XOR_RELAYED_ADDRESS 0x0016
-#define ATTR_REQUESTED_TRANSPORT 0x0019
-#define ATTR_XOR_PEER_ADDRESS    0x0012
-#define ATTR_DATA                0x0013
-#define ATTR_CHANNEL_NUMBER      0x000C
-#define ATTR_LIFETIME            0x000D
-#define ATTR_XOR_MAPPED_ADDRESS  0x0020
-#define ATTR_SOFTWARE            0x8022
-#define ATTR_FINGERPRINT         0x8028
-```
-
-### 14.3 TURN authentication
-
-TURN uses long-term credentials with HMAC-SHA1:
-
-```c
-/*
- * Generate MESSAGE-INTEGRITY attribute.
- * key = MD5(username ":" realm ":" password)
- * HMAC = HMAC-SHA1(key, message_up_to_but_not_including_integrity)
- */
-
-void turn_compute_key(const char *username, const char *realm,
-                      const char *password, uint8_t key[16])
-{
-    char concat[512];
-    snprintf(concat, sizeof(concat), "%s:%s:%s", username, realm, password);
-
-    MD5_CTX ctx;
-    MD5_Init(&ctx);
-    MD5_Update(&ctx, concat, strlen(concat));
-    MD5_Final(key, &ctx);
-}
-
-void turn_add_message_integrity(uint8_t *msg, size_t *len, const uint8_t key[16])
-{
-    /* Update message length to include MESSAGE-INTEGRITY */
-    uint16_t new_len = (*len - 20) + 24; /* +24 for the attribute */
-    msg[2] = (new_len >> 8) & 0xFF;
-    msg[3] = new_len & 0xFF;
-
-    /* Compute HMAC-SHA1 over message (header + attributes so far) */
-    uint8_t hmac[20];
-    HMAC(EVP_sha1(), key, 16, msg, *len, hmac, NULL);
-
-    /* Append MESSAGE-INTEGRITY attribute */
-    msg[*len]     = 0x00;
-    msg[*len + 1] = 0x08; /* MESSAGE-INTEGRITY type */
-    msg[*len + 2] = 0x00;
-    msg[*len + 3] = 0x14; /* length = 20 */
-    memcpy(msg + *len + 4, hmac, 20);
-    *len += 24;
-}
-```
-
-### 14.4 TURN allocation sequence
-
-**step 1: initial allocate request (unauthenticated)**
-
-```c
-/* Build Allocate Request */
-uint8_t req[256];
-size_t len = 0;
-
-/* Header */
-req[0] = 0x00; req[1] = 0x03; /* Allocate Request */
-req[2] = 0x00; req[3] = 0x08; /* Length (1 attribute) */
-/* Magic cookie */
-req[4] = 0x21; req[5] = 0x12; req[6] = 0xA4; req[7] = 0x42;
-/* Transaction ID (12 random bytes) */
-generate_random_bytes(req + 8, 12);
-len = 20;
-
-/* REQUESTED-TRANSPORT attribute (UDP = 17) */
-req[len++] = 0x00; req[len++] = 0x19; /* type */
-req[len++] = 0x00; req[len++] = 0x04; /* length */
-req[len++] = 17;   /* UDP */
-req[len++] = 0x00; req[len++] = 0x00; req[len++] = 0x00;
-
-send(sock, req, len, 0);
-```
-
-**step 2: receive 401 with nonce/realm**
-
-```c
-/* Parse error response for REALM and NONCE */
-char realm[128], nonce[256];
-parse_allocate_error(response, realm, sizeof(realm), nonce, sizeof(nonce));
-```
-
-**step 3: authenticated allocate request**
-
-```c
-/* Build authenticated request */
-uint8_t req[512];
-size_t len = build_allocate_request(req);
-
-/* Add USERNAME */
-add_string_attr(req, &len, ATTR_USERNAME, username);
-
-/* Add REALM */
-add_string_attr(req, &len, ATTR_REALM, realm);
-
-/* Add NONCE */
-add_string_attr(req, &len, ATTR_NONCE, nonce);
-
-/* Add REQUESTED-TRANSPORT */
-add_requested_transport(req, &len, 17); /* UDP */
-
-/* Compute key and add MESSAGE-INTEGRITY */
-uint8_t key[16];
-turn_compute_key(username, realm, password, key);
-turn_add_message_integrity(req, &len, key);
-
-/* Update header length */
-update_header_length(req, len);
-
-send(sock, req, len, 0);
-```
-
-**step 4: parse allocate success response**
-
-```c
-/* Extract XOR-RELAYED-ADDRESS */
-typedef struct {
-    uint16_t port;
-    uint32_t addr;  /* IPv4 */
-} relay_addr_t;
-
-relay_addr_t relay;
-parse_xor_relayed_address(response, &relay);
-
-/* XOR decoding */
-relay.port ^= (STUN_MAGIC_COOKIE >> 16);
-relay.addr ^= STUN_MAGIC_COOKIE;
-```
-
-### 14.5 channel binding (for efficient data transfer)
-
-channels provide a compact 4-byte header instead of full STUN messages:
-
-```c
-/* Channel number range: 0x4000 - 0x7FFF */
-uint16_t channel_number = 0x4000;
-
-/* Build ChannelBind request */
-uint8_t req[256];
-size_t len = build_channel_bind_request(req, channel_number, peer_addr, peer_port);
-
-/* Add authentication */
-add_string_attr(req, &len, ATTR_USERNAME, username);
-add_string_attr(req, &len, ATTR_REALM, realm);
-add_string_attr(req, &len, ATTR_NONCE, nonce);
-turn_add_message_integrity(req, &len, key);
-
-send(sock, req, len, 0);
-```
-
-**channel data format:**
-
-```
- 0                   1                   2                   3
- 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1
-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-|         Channel Number        |            Length             |
-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-|                                                               |
-/                       Application Data                        /
-|                                                               |
-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-```
-
-```c
-/* Send data via channel */
-void turn_send_channel_data(int sock, uint16_t channel,
-                            const void *data, size_t data_len)
-{
-    uint8_t buf[4 + data_len];
-
-    buf[0] = (channel >> 8) & 0xFF;
-    buf[1] = channel & 0xFF;
-    buf[2] = (data_len >> 8) & 0xFF;
-    buf[3] = data_len & 0xFF;
-    memcpy(buf + 4, data, data_len);
-
-    /* Pad to 4-byte boundary if needed */
-    size_t padded_len = (4 + data_len + 3) & ~3;
-    send(sock, buf, padded_len, 0);
-}
-
-/* Receive data via channel */
-ssize_t turn_recv_channel_data(int sock, uint16_t *channel,
-                               void *data, size_t max_len)
-{
-    uint8_t buf[4 + max_len];
-    ssize_t n = recv(sock, buf, sizeof(buf), 0);
-    if (n < 4) return -1;
-
-    *channel = (buf[0] << 8) | buf[1];
-    uint16_t len = (buf[2] << 8) | buf[3];
-
-    if (len > max_len) return -1;
-    memcpy(data, buf + 4, len);
-    return len;
-}
-```
-
-### 14.6 TURN allocation refresh
-
-allocations expire (default 600s). refresh before expiry:
-
-```c
-/* Build Refresh request */
-uint8_t req[256];
-size_t len = build_refresh_request(req, transaction_id);
-
-/* Request specific lifetime (optional) */
-add_lifetime_attr(req, &len, 600); /* 600 seconds */
-
-/* Add authentication */
-add_string_attr(req, &len, ATTR_USERNAME, username);
-add_string_attr(req, &len, ATTR_REALM, realm);
-add_string_attr(req, &len, ATTR_NONCE, nonce);
-turn_add_message_integrity(req, &len, key);
-
-send(sock, req, len, 0);
-```
-
-### 14.7 WebRTC signaling for packet loss test
-
-**step 1: get TURN credentials**
-
-```c
-/* GET /api/turn/credentials */
-typedef struct {
-    char username[128];
-    char credential[256];
-    int ttl_sec;
-    char servers[8][256];
-    int server_count;
-} turn_creds_t;
-
-int fetch_turn_credentials(const char *base_url, turn_creds_t *creds);
-```
-
-**step 2: create WebRTC offer (simplified SDP)**
-
-for CLI packet loss testing, use a minimal SDP:
-
-```c
-const char *create_offer_sdp(uint16_t ice_ufrag, const char *ice_pwd,
-                             const char *fingerprint, const relay_addr_t *relay)
-{
-    static char sdp[4096];
-    snprintf(sdp, sizeof(sdp),
-        "v=0\r\n"
-        "o=- %llu 2 IN IP4 127.0.0.1\r\n"
-        "s=-\r\n"
-        "t=0 0\r\n"
-        "a=group:BUNDLE 0\r\n"
-        "a=ice-options:ice2\r\n"
-        "m=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\n"
-        "c=IN IP4 0.0.0.0\r\n"
-        "a=ice-ufrag:%04x\r\n"
-        "a=ice-pwd:%s\r\n"
-        "a=fingerprint:sha-256 %s\r\n"
-        "a=setup:actpass\r\n"
-        "a=mid:0\r\n"
-        "a=sctp-port:5000\r\n"
-        "a=candidate:1 1 UDP 2130706431 %s %d typ relay\r\n",
-        time(NULL), ice_ufrag, ice_pwd, fingerprint,
-        inet_ntoa(*(struct in_addr*)&relay->addr), relay->port);
-    return sdp;
-}
-```
-
-**step 3: exchange offer/answer**
-
-```c
-/* POST /api/packet-test/offer */
-typedef struct {
-    char sdp[4096];
-    char type[16];      /* "answer" */
-    char test_id[64];
-} signaling_answer_t;
-
-int exchange_offer(const char *base_url, const char *offer_sdp,
-                   signaling_answer_t *answer);
-```
-
-**step 4: DTLS handshake (optional for C - can use server-side DTLS)**
-
-for simplicity, the C client can rely on the server to perform DTLS and use
-the raw channel data. alternatively, implement DTLS using OpenSSL's DTLS API.
-
-### 14.8 packet loss protocol over TURN
-
-The supported Go client uses the exact 1,200-byte `NSPL` binary frame defined in
-`MEASUREMENT_PROTOCOL_V2.md`, not the historical packed C structs or JSON packet.
-Frames include a version, type, sequence, send/receive timestamps, declared
-length, and deterministic padding. The client reconciles acknowledgements with
-the daemon report to distinguish transaction, forward, and reverse-ack loss.
-
-The C client is not protocol-v2 compatible and is not a supported alternative
-client. Phase 6 repairs its GCC/Clang source-health build but deliberately
-excludes it from binary releases; compiler cleanliness does not qualify its
-historical TURN/SCTP measurement method.
-
-### 14.9 Go implementation (using pion)
-
-the Go client should use `pion/webrtc` for full WebRTC support:
-
-```go
-import (
-    "github.com/pion/webrtc/v3"
-    "github.com/pion/datachannel"
-)
-
-func runPacketLossTest(ctx context.Context, baseURL string) (*PacketLossResult, error) {
-    // 1. Fetch TURN credentials
-    creds, err := fetchTURNCredentials(baseURL)
-    if err != nil {
-        return &PacketLossResult{Unavailable: true, Reason: "TURN unavailable"}, nil
-    }
-
-    // 2. Create peer connection with TURN
-    config := webrtc.Configuration{
-        ICEServers: []webrtc.ICEServer{{
-            URLs:       creds.Servers,
-            Username:   creds.Username,
-            Credential: creds.Credential,
-        }},
-        ICETransportPolicy: webrtc.ICETransportPolicyRelay,
-    }
-
-    pc, err := webrtc.NewPeerConnection(config)
-    if err != nil {
-        return nil, fmt.Errorf("failed to create peer connection: %w", err)
-    }
-    defer pc.Close()
-
-    // 3. Create data channel
-    dc, err := pc.CreateDataChannel("packet-loss", &webrtc.DataChannelInit{
-        Ordered:        boolPtr(false),
-        MaxRetransmits: uint16Ptr(0),
-    })
-    if err != nil {
-        return nil, fmt.Errorf("failed to create data channel: %w", err)
-    }
-
-    // 4. Set up result collection
-    result := &PacketLossResult{}
-    acks := make(map[int]time.Time)
-    var ackMu sync.Mutex
-
-    dc.OnMessage(func(msg webrtc.DataChannelMessage) {
-        var ack struct {
-            Seq      int   `json:"seq"`
-            SentAt   int64 `json:"sentAt"`
-            RecvAt   int64 `json:"recvAt"`
-        }
-        if err := json.Unmarshal(msg.Data, &ack); err == nil {
-            ackMu.Lock()
-            acks[ack.Seq] = time.Now()
-            ackMu.Unlock()
-        }
-    })
-
-    // 5. Create and exchange offer
-    offer, err := pc.CreateOffer(nil)
-    if err != nil {
-        return nil, err
-    }
-    pc.SetLocalDescription(offer)
-
-    // Wait for ICE gathering
-    <-webrtc.GatheringCompletePromise(pc)
-
-    answer, testID, err := exchangeOffer(baseURL, pc.LocalDescription().SDP)
-    if err != nil {
-        return nil, err
-    }
-
-    pc.SetRemoteDescription(webrtc.SessionDescription{
-        Type: webrtc.SDPTypeAnswer,
-        SDP:  answer,
-    })
-    result.TestID = testID
-
-    // 6. Wait for data channel to open
-    openCh := make(chan struct{})
-    dc.OnOpen(func() { close(openCh) })
-
-    select {
-    case <-openCh:
-    case <-time.After(10 * time.Second):
-        return &PacketLossResult{Unavailable: true, Reason: "ICE timeout"}, nil
-    }
-
-    // 7. Send packets
-    const numPackets = 1000
-    const interval = 10 * time.Millisecond
-
-    sendTimes := make(map[int]time.Time)
-    for seq := 0; seq < numPackets; seq++ {
-        msg, _ := json.Marshal(map[string]interface{}{
-            "seq":    seq,
-            "sentAt": time.Now().UnixMilli(),
-        })
-        dc.Send(msg)
-        sendTimes[seq] = time.Now()
-        time.Sleep(interval)
-    }
-
-    // 8. Wait for late acks
-    time.Sleep(3 * time.Second)
-
-    // 9. Calculate results
-    ackMu.Lock()
-    result.Sent = numPackets
-    result.Received = len(acks)
-    result.LossPercent = float64(numPackets-len(acks)) / float64(numPackets) * 100
-
-    var rtts []float64
-    for seq, ackTime := range acks {
-        if sendTime, ok := sendTimes[seq]; ok {
-            rtts = append(rtts, float64(ackTime.Sub(sendTime).Milliseconds()))
-        }
-    }
-    ackMu.Unlock()
-
-    if len(rtts) > 0 {
-        sort.Float64s(rtts)
-        result.RTTStatsMs.Min = rtts[0]
-        result.RTTStatsMs.Median = percentile(rtts, 50)
-        result.RTTStatsMs.P90 = percentile(rtts, 90)
-        result.JitterMs = result.RTTStatsMs.P90 - result.RTTStatsMs.Median
-    }
-
-    return result, nil
-}
-```
-
-### 14.10 C implementation structure
-
-for the C client, implement TURN from first principles:
-
-```c
-/* turn.h - TURN client interface */
-
-#ifndef NETSPEED_TURN_H
-#define NETSPEED_TURN_H
-
-#include "types.h"
-
-/* TURN connection state */
-typedef struct {
-    int sock;                   /* UDP socket */
-    char server_host[256];      /* TURN server hostname */
-    uint16_t server_port;       /* TURN server port */
-
-    /* Authentication */
-    char username[128];
-    char credential[256];
-    char realm[128];
-    char nonce[256];
-    uint8_t key[16];            /* MD5(user:realm:pass) */
-
-    /* Allocation state */
-    bool allocated;
-    uint32_t relay_addr;        /* Allocated relay IPv4 */
-    uint16_t relay_port;
-    uint32_t lifetime_sec;
-    time_t alloc_time;
-
-    /* Channel binding */
-    uint16_t channel;           /* 0x4000+ */
-    uint32_t peer_addr;
-    uint16_t peer_port;
-    bool channel_bound;
-
-    /* Transaction tracking */
-    uint8_t txn_id[12];
-} turn_conn_t;
-
-/* Initialize TURN connection */
-int turn_init(turn_conn_t *conn, const char *server, uint16_t port,
-              const char *username, const char *credential);
-
-/* Allocate relay address */
-int turn_allocate(turn_conn_t *conn);
-
-/* Bind channel to peer */
-int turn_bind_channel(turn_conn_t *conn, uint32_t peer_addr, uint16_t peer_port);
-
-/* Send data via channel */
-int turn_send(turn_conn_t *conn, const void *data, size_t len);
-
-/* Receive data via channel (non-blocking) */
-ssize_t turn_recv(turn_conn_t *conn, void *data, size_t max_len, int timeout_ms);
-
-/* Refresh allocation */
-int turn_refresh(turn_conn_t *conn);
-
-/* Close and cleanup */
-void turn_close(turn_conn_t *conn);
-
-/* Run packet loss test */
-int turn_packet_loss_test(turn_conn_t *conn, const char *base_url,
-                          packet_loss_result_t *result);
-
-#endif /* NETSPEED_TURN_H */
-```
-
-### 14.11 XOR address encoding
-
-TURN uses XOR-encoded addresses to traverse NATs:
-
-```c
-/* XOR-MAPPED-ADDRESS / XOR-RELAYED-ADDRESS encoding */
-
-void xor_encode_address(uint8_t *buf, uint32_t addr, uint16_t port,
-                        const uint8_t txn_id[12])
-{
-    /* Port XOR'd with top 16 bits of magic cookie */
-    uint16_t xport = port ^ (STUN_MAGIC_COOKIE >> 16);
-    buf[0] = (xport >> 8) & 0xFF;
-    buf[1] = xport & 0xFF;
-
-    /* IPv4 address XOR'd with magic cookie */
-    uint32_t xaddr = addr ^ STUN_MAGIC_COOKIE;
-    buf[2] = (xaddr >> 24) & 0xFF;
-    buf[3] = (xaddr >> 16) & 0xFF;
-    buf[4] = (xaddr >> 8) & 0xFF;
-    buf[5] = xaddr & 0xFF;
-}
-
-void xor_decode_address(const uint8_t *buf, uint32_t *addr, uint16_t *port,
-                        const uint8_t txn_id[12])
-{
-    uint16_t xport = (buf[0] << 8) | buf[1];
-    *port = xport ^ (STUN_MAGIC_COOKIE >> 16);
-
-    uint32_t xaddr = (buf[2] << 24) | (buf[3] << 16) | (buf[4] << 8) | buf[5];
-    *addr = xaddr ^ STUN_MAGIC_COOKIE;
-}
-```
-
-### 14.12 error handling
-
-TURN-specific error codes:
-
-| Code | Meaning | Action |
-|------|---------|--------|
-| 401 | Unauthorized | Re-authenticate with nonce/realm |
-| 438 | Stale Nonce | Refresh nonce and retry |
-| 442 | Unsupported Transport | Server doesn't support UDP |
-| 486 | Allocation Quota Reached | Server at capacity |
-| 508 | Insufficient Capacity | Try different server |
-
-```c
-typedef enum {
-    TURN_OK = 0,
-    TURN_ERR_NETWORK = -1,
-    TURN_ERR_AUTH = -2,
-    TURN_ERR_STALE_NONCE = -3,
-    TURN_ERR_QUOTA = -4,
-    TURN_ERR_CAPACITY = -5,
-    TURN_ERR_TIMEOUT = -6,
-    TURN_ERR_PROTOCOL = -7,
-} turn_error_t;
-
-const char *turn_error_string(turn_error_t err);
-```
+## 14. packet-loss transport specification
+
+The packet test is a WebRTC data-channel transaction carried over a TURN relay.
+Clients do not implement a second measurement protocol at the raw TURN layer.
+The daemon owns the answering peer and authoritative forward-path counters.
+
+### 14.1 common client sequence
+
+Both command-line clients:
+
+1. fetch short-lived ICE/TURN configuration from `GET /api/turn/credentials`;
+2. require at least one `turn:` or `turns:` URL;
+3. create a relay-only peer connection;
+4. create an unordered, unreliable data channel named `packet-loss` with zero
+   retransmissions;
+5. exchange a complete SDP offer/answer through
+   `POST /api/packet-test/offer` using `testProfile: loss-exact-v1`;
+6. send 1,000 exact 1,200-byte `NSPL` version-1 probes at 10 ms spacing;
+7. wait three seconds for late acknowledgements;
+8. submit transaction counts and RTT statistics to
+   `POST /api/packet-test/report`;
+9. validate the daemon's authoritative forward-receive,
+   acknowledgement-send, duplicate, invalid, and send-failure counters;
+10. report transaction, forward, and reverse-acknowledgement loss separately.
+
+Every frame is validated against the binary layout and deterministic padding in
+[`MEASUREMENT_PROTOCOL_V2.md`](MEASUREMENT_PROTOCOL_V2.md). Missing credentials,
+TURN, WebRTC support, signaling, or authoritative counters makes packet loss
+unavailable; it never becomes a measured zero.
+
+### 14.2 Go implementation
+
+The Go client uses Pion WebRTC. It supplies the daemon-issued ICE server URLs,
+username, and credential through `webrtc.Configuration`, forces
+`ICETransportPolicyRelay`, waits for ICE gathering before signaling, and uses
+Pion's unordered data channel with `MaxRetransmits: 0`.
+
+Its implementation is in `cmd/netspeed/client/webrtc.go` and the shared binary
+frame implementation is in `internal/protocol`.
+
+### 14.3 native C implementation
+
+The C client uses libdatachannel's C API. It embeds the URL-escaped username and
+credential in each TURN URL, forces `RTC_TRANSPORT_POLICY_RELAY`, disables
+libdatachannel auto-negotiation so the HTTP signaling exchange owns the offer,
+and creates the same unordered unreliable channel.
+
+Its implementation is in `netspeed.c/src/packet_loss.c`. The build modes are:
+
+- `WEBRTC=yes`: libdatachannel is required; this is mandatory for an official C
+  release binary;
+- `WEBRTC=auto`: use libdatachannel when discoverable and otherwise retain
+  protocol-v2 throughput/latency with packet loss explicitly unavailable;
+- `WEBRTC=no`: intentional HTTP-only platform bring-up and testing mode.
+
+The C and Go clients use the same report validation constraints and JSON field
+names. The complete parity and release gate is documented in
+[`C_CLIENT_PARITY.md`](C_CLIENT_PARITY.md).
+
+### 14.4 failure handling
+
+The packet test returns an unavailable result, with a reason, when any of the
+following occurs:
+
+- the server advertises an older packet-frame version;
+- no TURN relay URL is present;
+- the client build lacks its WebRTC dependency;
+- ICE gathering, signaling, connection, or data-channel opening fails;
+- no exact-size probes can be sent;
+- the report request fails;
+- the daemon's directional counters are impossible or inconsistent.
+
+Packet unavailability lowers test confidence and prevents a complete packet
+quality claim, but it does not invalidate otherwise verified throughput and
+latency measurements.

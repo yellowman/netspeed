@@ -20,13 +20,13 @@ it covers:
 > **Implemented authority:** [`MEASUREMENT_PROTOCOL_V2.md`](MEASUREMENT_PROTOCOL_V2.md)
 > is the canonical measurement contract,
 > [`WEBRTC_LIFECYCLE.md`](WEBRTC_LIFECYCLE.md) is the canonical session contract,
-> [`SERVICE_HARDENING.md`](SERVICE_HARDENING.md) is the canonical Phase 4
+> [`SERVICE_HARDENING.md`](SERVICE_HARDENING.md) is the canonical
 > deployment-safety contract, and [`HTTP_DEPLOYMENT.md`](HTTP_DEPLOYMENT.md) is
-> the canonical Phase 5 HTTP/deployment contract. Those documents supersede
-> incompatible legacy examples in this combined design note.
+> the canonical HTTP/deployment contract. Those documents supersede incompatible
+> legacy examples in this combined design note.
 
-Phase 4 normative addendum
---------------------------
+Service hardening normative addendum
+------------------------------------
 
 The implemented daemon applies bounded defaults even without authentication:
 256 active transfers globally, 24 per resolved client, a 1 TiB/client/hour byte
@@ -44,8 +44,8 @@ non-loopback listener requires an explicit advertised IP and a positive UDP rate
 ceiling. See `SERVICE_HARDENING.md` for the complete status and configuration
 contract.
 
-Phase 5 normative addendum
---------------------------
+HTTP and deployment normative addendum
+--------------------------------------
 
 The implemented daemon uses a header-only server timeout plus endpoint-specific
 control and transfer deadlines; it does not use whole-request `ReadTimeout` or
@@ -370,7 +370,7 @@ type Config struct {
 }
 ```
 
-The Phase 4 service controls are normative in `SERVICE_HARDENING.md`. Timeout,
+The service controls are normative in `SERVICE_HARDENING.md`. Timeout,
 CORS, TLS, configuration, GeoIP, and shutdown behavior are normative in
 `HTTP_DEPLOYMENT.md`. Flags explicitly supplied on the command line override
 strictly parsed `NETSPEEDD_*` environment values.
@@ -1024,7 +1024,7 @@ Missing packet loss remains null and grades that require it are incomplete.
 
 ## 3. frontend data model
 
-The detailed browser model lives in `netspeed-ui-spec.md`. The Phase 2 additions
+The detailed browser model lives in `netspeed-ui-spec.md`. The current fields
 that the daemon must preserve on the wire are:
 
 ```ts
@@ -1260,7 +1260,7 @@ simple row:
 3. **complete** — calculate shared summary, grades, diagnostics, and the five
    confidence gates; expose JSON/share actions.
 4. **error/partial** — transfer-contract failures stop the affected required
-   phase; packet-test failure remains explicitly unavailable and does not become
+   operation; packet-test failure remains explicitly unavailable and does not become
    zero loss.
 
 ## 6. backend summary (net new endpoints)

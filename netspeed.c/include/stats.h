@@ -1,89 +1,23 @@
-/*
- * stats.h - Statistical functions
- */
-
+/* stats.h - Shared R-7/IQR statistics and grading rules. */
 #ifndef NETSPEED_STATS_H
 #define NETSPEED_STATS_H
 
 #include "types.h"
 
-/*
- * Sort array of doubles in-place.
- */
-void stats_sort(double *arr, size_t n);
+#include <stddef.h>
 
-/*
- * Calculate percentile of sorted array.
- * Array must be sorted.
- */
-double stats_percentile(const double *sorted, size_t n, double p);
-
-/*
- * Calculate median of sorted array.
- */
-double stats_median(const double *sorted, size_t n);
-
-/*
- * Calculate minimum of array.
- */
-double stats_min(const double *arr, size_t n);
-
-/*
- * Calculate maximum of array.
- */
-double stats_max(const double *arr, size_t n);
-
-/*
- * Calculate mean of array.
- */
-double stats_mean(const double *arr, size_t n);
-
-/*
- * Calculate jitter (p90 - p50).
- * Array must be sorted.
- */
-double stats_jitter(const double *sorted, size_t n);
-
-/*
- * Calculate interquartile range (p75 - p25).
- * Sorts array in-place.
- */
-double stats_iqr(double *arr, size_t n);
-
-/*
- * Calculate p90 (90th percentile).
- * Sorts array in-place.
- */
-double stats_p90(double *arr, size_t n);
-
-/*
- * Convert bytes and duration to Mbps.
- */
+void stats_sort(double *values, size_t count);
+size_t stats_clean(const double *values, size_t count, double *out, size_t out_capacity);
+double stats_percentile(const double *values, size_t count, double percentile);
+size_t stats_filter_iqr(const double *values, size_t count, double *out, size_t out_capacity);
+size_t stats_prepare_latency(const double *values, size_t count, size_t warmup,
+                             double *out, size_t out_capacity);
+double stats_jitter(const double *values, size_t count);
+double stats_coefficient_of_variation(const double *values, size_t count);
 double bytes_to_mbps(int64_t bytes, double duration_ms);
 
-/*
- * Calculate summary statistics from results.
- */
-void calculate_summary(results_t *r);
+void calculate_summary(results_t *results);
+void calculate_quality(results_t *results);
+void assess_test_confidence(results_t *results, const config_t *config);
 
-/*
- * Calculate network quality grades.
- */
-void calculate_quality(results_t *r);
-
-/*
- * Grade video streaming quality.
- */
-const char *grade_streaming(const summary_t *s);
-
-/*
- * Grade gaming quality.
- */
-const char *grade_gaming(const summary_t *s);
-
-/*
- * Grade video chatting quality.
- */
-const char *grade_video_chat(const summary_t *s);
-
-#endif /* NETSPEED_STATS_H */
+#endif

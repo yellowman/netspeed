@@ -1,9 +1,6 @@
-/*
- * timing.c - Precise timing functions
- */
-
 #include "timing.h"
-#include <string.h>
+
+#include <stdio.h>
 
 void timing_now(struct timespec *ts)
 {
@@ -17,64 +14,67 @@ int64_t timing_now_ms(void)
     return (int64_t)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
 }
 
+int64_t timing_monotonic_ms(void)
+{
+    struct timespec ts;
+    timing_now(&ts);
+    return (int64_t)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
+}
+
 double timing_diff_ms(const struct timespec *start, const struct timespec *end)
 {
-    double sec = (double)(end->tv_sec - start->tv_sec);
-    double nsec = (double)(end->tv_nsec - start->tv_nsec);
-    return sec * 1000.0 + nsec / 1000000.0;
+    return (double)(end->tv_sec - start->tv_sec) * 1000.0 +
+           (double)(end->tv_nsec - start->tv_nsec) / 1000000.0;
 }
 
 double timing_diff_sec(const struct timespec *start, const struct timespec *end)
 {
-    double sec = (double)(end->tv_sec - start->tv_sec);
-    double nsec = (double)(end->tv_nsec - start->tv_nsec);
-    return sec + nsec / 1000000000.0;
-}
-
-void timing_info_init(timing_info_t *t)
-{
-    memset(t, 0, sizeof(*t));
-    t->wrote_request_set = false;
-    t->got_first_byte_set = false;
-}
-
-void timing_mark_wrote_request(timing_info_t *t)
-{
-    timing_now(&t->wrote_request);
-    t->wrote_request_set = true;
-}
-
-void timing_mark_got_first_byte(timing_info_t *t)
-{
-    timing_now(&t->got_first_byte);
-    t->got_first_byte_set = true;
-}
-
-void timing_mark_body_done(timing_info_t *t)
-{
-    timing_now(&t->body_done);
-}
-
-double timing_get_rtt_ms(const timing_info_t *t)
-{
-    if (!t->wrote_request_set || !t->got_first_byte_set) {
-        return -1.0;
-    }
-    return timing_diff_ms(&t->wrote_request, &t->got_first_byte);
-}
-
-double timing_get_body_time_ms(const timing_info_t *t)
-{
-    if (!t->got_first_byte_set) {
-        return -1.0;
-    }
-    return timing_diff_ms(&t->got_first_byte, &t->body_done);
+    return timing_diff_ms(start, end) / 1000.0;
 }
 
 void timing_sleep_ms(int ms)
 {
-    struct timespec ts;
-    ts.tv_sec = ms / 1000;
-    ts.tv_nsec = (ms % 1000) * 1000000;
-    nanosleep(&ts, NULL);
+    if (ms <= 0) {
+        return;
+    }
+    struct timespec requested = {.tv_sec = ms / 1000, .tv_nsec = (long)(ms % 1000) * 1000000L};
+    while (nanosleep(&requested, &requested) != 0) {
+        continue;
+    }
+}
+
+void timing_format_rfc3339_ms(int64_t unix_ms, char *buffer, size_t buffer_len)
+{
+    time_t seconds = (time_t)(unix_ms / 1000);
+    int millis = (int)(unix_ms % 1000);
+    if (millis < 0) {
+        millis += 1000;
+        seconds--;
+    }
+    struct tm tm_value;
+    if (gmtime_r(&seconds, &tm_value) == NULL) {
+        if (buffer_len > 0) {
+            buffer[0] = '\0';
+        }
+        return;
+    }
+    char prefix[32];
+    strftime(prefix, sizeof(prefix), "%Y-%m-%dT%H:%M:%S", &tm_value);
+    snprintf(buffer, buffer_len, "%s.%03dZ", prefix, millis);
+}
+
+bool timing_before_deadline(const struct timespec *deadline)
+{
+    struct timespec now;
+    timing_now(&now);
+    return now.tv_sec < deadline->tv_sec ||
+           (now.tv_sec == deadline->tv_sec && now.tv_nsec < deadline->tv_nsec);
+}
+
+int64_t timing_remaining_ms(const struct timespec *deadline)
+{
+    struct timespec now;
+    timing_now(&now);
+    double remaining = timing_diff_ms(&now, deadline);
+    return remaining > 0 ? (int64_t)remaining : 0;
 }

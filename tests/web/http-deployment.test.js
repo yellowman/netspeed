@@ -65,7 +65,7 @@ async function main() {
     await testAbsoluteAPIBaseAndCredentialMode();
     testRelativeBaseAndSafeDefaults();
     testInvalidBaseIsRejected();
-    console.log('browser phase 5 deployment tests passed');
+    console.log('browser HTTP deployment tests passed');
 }
 
 main().catch(error => {

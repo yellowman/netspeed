@@ -1,8 +1,8 @@
 # Netspeed HTTP and deployment contract
 
-This document is the canonical Phase 5 contract for HTTP deadlines, browser
-routing, CORS, TLS, configuration, GeoIP, middleware behavior, and shutdown.
-It supersedes older design examples in the combined daemon, CLI, and UI notes.
+This document is the canonical contract for HTTP deadlines, browser routing,
+CORS, TLS, configuration, GeoIP, middleware behavior, and shutdown. It
+supersedes older design examples in the combined daemon, CLI, and UI notes.
 
 ## 1. HTTP timeout model
 
@@ -33,6 +33,13 @@ request at the slowest link rate the deployment intends to support.
 When the UI and daemon share an origin, no browser configuration is required.
 The browser uses `/meta`, `/__down`, `/__up`, `/locations`, and `/api/*` on the
 page origin.
+
+When bearer authentication is enabled, `/locations` is protected and successful
+responses are `Cache-Control: private, no-store` with `Pragma: no-cache` and
+`Vary: Authorization`.
+Reverse proxies and CDNs must preserve that policy. Marking the response
+`public` would allow a shared cache to answer a later unauthenticated request
+before the daemon's authentication middleware runs.
 
 The simplest configuration is:
 
@@ -158,8 +165,8 @@ explicitly supplied on the command line override environment values. Invalid
 booleans, integers, durations, CIDRs, origins, TLS combinations, and other
 unsafe combinations cause startup failure.
 
-There is no YAML loader and no `--config` flag. The unsupported YAML example was
-removed in Phase 5. A complete shell-compatible example is provided at:
+There is no YAML loader and no `--config` flag. A complete
+shell-compatible example is provided at:
 
 ```text
 configs/netspeedd.env.example
@@ -189,8 +196,8 @@ NETSPEEDD_GEOIP_CITY_DB=/var/lib/GeoIP/GeoLite2-City.mmdb \
 
 The ASN database supplies autonomous-system number and organization. The City
 database supplies country, subdivision, city, postal code, coordinates, and
-timezone. Either may be configured alone. The Phase 4
-`NETSPEEDD_GEOIP_DB` name remains a compatibility alias for the ASN database.
+timezone. Either may be configured alone. `NETSPEEDD_GEOIP_DB` remains a
+compatibility alias for the ASN database.
 
 A configured database that cannot be opened is a startup error. With no City
 database, location fields remain unknown; the daemon no longer labels every
@@ -234,5 +241,5 @@ failure paths or process termination.
 - Configure trusted proxy CIDRs before relying on forwarded client identity.
 - Configure both TLS files or neither.
 - Treat configured GeoIP database failures as deployment failures.
-- Use the Phase 4 admission, quota, authentication, and TURN controls described
+- Use the admission, quota, authentication, and TURN controls described
   in [`SERVICE_HARDENING.md`](SERVICE_HARDENING.md).

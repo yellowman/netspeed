@@ -118,8 +118,8 @@ func main() {
 		UploadOnly:     uploadOnly,
 		SkipPacketLoss: noPacketLoss,
 		AccessToken:    accessToken,
-		OnProgress: func(phase string, current, total int, value float64) {
-			out.Progress(phase, current, total, value)
+		OnProgress: func(stage string, current, total int, value float64) {
+			out.Progress(stage, current, total, value)
 		},
 	}
 

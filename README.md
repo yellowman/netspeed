@@ -4,19 +4,95 @@ netspeed
 A self-hosted network speed test that measures download, upload, unloaded and
 loaded latency, jitter, and directional packet loss.
 
-It has three parts:
+It has four parts:
 
 1. **netspeedd** — Go measurement daemon, WebRTC peer, and optional TURN relay;
-2. **netspeed** — command-line client with human, quiet, CSV, and JSON output;
-3. **web UI** — browser client with fixed-duration measurements and quality views.
+2. **netspeed** — Go command-line client with human, quiet, CSV, and JSON output;
+3. **netspeed-c** — independent native C client implementing the same protocol-v2
+   methodology and result model;
+4. **web UI** — browser client with fixed-duration measurements and quality views.
 
 The module requires Go 1.21.3 or newer. Release CI keeps that minimum-
 version test while pinning the release compiler to Go 1.27.0.
 
-This archive includes the completed Phase 1 measurement-integrity, Phase 2
-measurement-methodology, Phase 3 WebRTC-lifecycle, Phase 4 service-hardening,
-Phase 5 HTTP/deployment, and Phase 6 release-qualification work. The canonical
-contracts are:
+capabilities
+------------
+
+### measurement integrity
+
+- Measurement protocol v2 publishes explicit server capabilities and prevents
+  clients from combining incompatible measurement methods with older servers.
+- Downloads must return the expected status, content type, and exact byte count.
+  Uploads must return a bounded receipt confirming the exact accepted byte count
+  and server body-read duration.
+- Transfer planning obeys the daemon's advertised byte and concurrency ceilings.
+  Go and C uploads are generated as streams, and browser transfer fallbacks are
+  memory-bounded.
+- Failed or incomplete measurements cannot satisfy sample requirements.
+  Unavailable values remain `null` or `N/A` instead of becoming valid-looking
+  zeroes.
+
+### throughput, latency, and packet loss
+
+- Small verified baselines select bounded chunks and reusable concurrent flows
+  for fixed-duration throughput windows; high-rate tests do not depend on giant
+  requests or allocations.
+- Loaded-latency probes are accepted only when continuous directional traffic
+  spans the complete probe interval without a zero-load gap.
+- Packet testing uses exact 1,200-byte binary frames and reports transaction,
+  forward, and reverse-acknowledgement loss separately.
+- Go, C, and browser clients use the same percentile, filtering, jitter,
+  variability, confidence, and unavailable-value definitions.
+
+### clients and user interfaces
+
+- The Go CLI and native C CLI support human, quiet, CSV, and JSON output plus
+  quick, download-only, upload-only, and packet-test controls.
+- The C client is a supported peer of the Go client. A complete build uses
+  libdatachannel for relay-only packet testing and daemon-counter
+  reconciliation.
+- The browser UI supports streamed downloads, streamed uploads where available,
+  bounded fallbacks, quality views, a configurable API base URL, and explicit
+  credential handling.
+
+### daemon, WebRTC, and operational safety
+
+- WebRTC sessions have synchronized lifecycle ownership, cancellable offer
+  negotiation, disconnect recovery, concurrency-safe teardown, and shutdown
+  that waits for detached resource closure.
+- Global and per-client transfer limits, byte quotas, session ceilings, and
+  signaling rates reject overload before timed measurement work is queued.
+- Optional bearer authentication protects measurement and control routes.
+  Authenticated `/locations` responses use `private, no-store` and vary on
+  `Authorization`, preventing shared-cache reuse across the access boundary.
+- Forwarded client addresses are trusted only through configured proxy CIDRs.
+  JSON control bodies are type-checked, size-bounded, and restricted to one
+  value without trailing data.
+- Embedded TURN is opt-in, loopback-only by default, startup-validated, and
+  bandwidth-limited. Prometheus metrics are opt-in and separately protectable.
+
+### HTTP and deployment
+
+- Header, control-request, transfer, and idle deadlines are independent, so
+  slow measurement bodies are not truncated by a whole-request timeout.
+- CORS, Resource Timing, credentialed browser access, direct TLS, reverse-proxy
+  identity, and graceful shutdown have explicit validated behavior.
+- Configuration uses command-line flags and strictly parsed `NETSPEEDD_*`
+  environment variables. ASN and City MaxMind databases can be configured
+  independently.
+
+### builds and release qualification
+
+- Root and C Makefiles use the common GNU make and BSD pmake subset and build
+  `netspeed`, `netspeedd`, and `netspeed-c` through the same public targets.
+- CI covers the real dependency graph, Go 1.21.3 compatibility, race detection,
+  vet, static and vulnerability analysis, browser automation, strict GCC/Clang
+  C builds, real WebRTC/TURN interoperability, Windows, and OpenBSD.
+- Release archives are deterministic, checksummed, reconstructed twice for
+  byte-for-byte comparison, and protected by source-hygiene checks that reject
+  stale binaries, oversized files, module replacements, and broken local links.
+
+The repository is defined by the following canonical contracts:
 
 - [`MEASUREMENT_PROTOCOL_V2.md`](MEASUREMENT_PROTOCOL_V2.md) — verified transfers,
   fixed-duration windows, loaded-latency overlap, and packet frames;
@@ -28,24 +104,26 @@ contracts are:
   routing, CORS/Resource Timing, TLS, configuration, GeoIP, and shutdown;
 - [`RELEASE_QUALIFICATION.md`](RELEASE_QUALIFICATION.md) — CI, end-to-end,
   supported-platform, source-hygiene, and deterministic-release gates;
-- [`IMPROVEMENT_PHASES.md`](IMPROVEMENT_PHASES.md) — completed phased work.
+- [`C_CLIENT_PARITY.md`](C_CLIENT_PARITY.md) — Go/C measurement, output, build,
+  packet-test, and qualification parity.
 
 quick start
 -----------
 
 ```bash
-# build the daemon and CLI
-go build -o netspeedd ./cmd/netspeedd
-go build -o netspeed ./cmd/netspeed
+# build the daemon, Go CLI, and native C CLI
+make
 
 # serve the included web UI on HTTP localhost
-./netspeedd -web-dir ./web
+./bin/netspeedd -web-dir ./web
 
 # open http://localhost:8080 or run the CLI
-./netspeed http://localhost:8080
+./bin/netspeed http://localhost:8080
+# equivalent native client
+./bin/netspeed-c http://localhost:8080
 ```
 
-A normal Phase 2 client requires a Netspeed measurement-protocol-v2 server.
+A normal client requires a Netspeed measurement-protocol-v2 server.
 Legacy endpoints without verified upload receipts can only be used for an
 explicit download-only test.
 
@@ -58,12 +136,15 @@ The common local checks are exposed through the top-level Makefile:
 make fmt-check
 make hygiene
 make docs-check
+make make-portability-check
 make release-tools
 make test
+make test-parity
 make race
 make vet
 make web-test
 make c-check
+make c-sanitize
 make integration
 ```
 
@@ -72,43 +153,49 @@ Chromium automation, vulnerability/static analysis, native Windows and OpenBSD
 jobs, and a double-build reproducibility comparison in GitHub Actions. See
 [`RELEASE_QUALIFICATION.md`](RELEASE_QUALIFICATION.md).
 
-Both Go binaries use the same linker-injected build metadata:
+All command-line programs use injected version, commit, and source-date
+metadata:
 
 ```bash
-./netspeed --version
-./netspeedd --version
+./bin/netspeed --version
+./bin/netspeedd --version
+./bin/netspeed-c --version
 ```
 
 Official binary archives are generated for Linux, OpenBSD, and Windows on amd64
 and arm64. `scripts/release.py` also emits a deterministic source ZIP,
-`SHA256SUMS`, and `release-manifest.json`.
+`SHA256SUMS`, and `release-manifest.json`. A qualified C executable is included
+in each platform archive for which the release workflow supplies one; the
+current publishing workflow requires the complete `WEBRTC=yes` Linux/amd64 C
+client rather than silently shipping an HTTP-only build.
 
-The C implementation in `netspeed.c/` is retained only as unsupported legacy
-source. CI keeps it warning-clean under GCC and Clang, but official binary
-archives contain only the protocol-v2 Go client and daemon.
+The C implementation is a supported protocol-v2 client. Its release gate adds
+strict GCC/Clang builds, sanitizers, negative transfer-contract tests, and real
+libdatachannel-to-Pion/TURN interoperability. See
+[`C_CLIENT_PARITY.md`](C_CLIENT_PARITY.md).
 
 running the daemon
 ------------------
 
 ```bash
 # basic local service
-./netspeedd
+./bin/netspeedd
 
 # public HTTP service behind an existing TLS reverse proxy
-./netspeedd \
+./bin/netspeedd \
   -listen 127.0.0.1:8080 \
   -hostname speed.example.com \
   -colo PDX \
   -web-dir ./web
 
 # direct TLS mode
-./netspeedd \
+./bin/netspeedd \
   -listen :443 \
   -tls-cert /path/to/cert.pem \
   -tls-key /path/to/key.pem
 ```
 
-Flags override environment values. Run `./netspeedd -h` for the complete flag
+Flags override environment values. Run `./bin/netspeedd -h` for the complete flag
 list. The daemon uses a 10-second header timeout, 30-second control-request
 timeout, five-minute per-transfer timeout, and two-minute keep-alive idle
 timeout by default. It does not apply a whole-request `ReadTimeout` or
@@ -128,15 +215,15 @@ export NETSPEEDD_MAX_CONCURRENT_TRANSFERS=128
 export NETSPEEDD_MAX_CONCURRENT_TRANSFERS_PER_CLIENT=12
 export NETSPEEDD_CLIENT_BANDWIDTH_QUOTA_BYTES=$((250 * 1024 * 1024 * 1024))
 export NETSPEEDD_CLIENT_BANDWIDTH_QUOTA_WINDOW=1h
-./netspeedd -web-dir ./web
+./bin/netspeedd -web-dir ./web
 ```
 
 The CLI sends the token with every service request:
 
 ```bash
-NETSPEED_TOKEN="$NETSPEEDD_ACCESS_TOKEN" ./netspeed https://speed.example.com
+NETSPEED_TOKEN="$NETSPEEDD_ACCESS_TOKEN" ./bin/netspeed https://speed.example.com
 # equivalent:
-./netspeed --token "$NETSPEEDD_ACCESS_TOKEN" https://speed.example.com
+./bin/netspeed --token "$NETSPEEDD_ACCESS_TOKEN" https://speed.example.com
 ```
 
 The browser engine reads a configuration object defined before `speedtest.js`:
@@ -165,7 +252,7 @@ Forwarding headers are ignored by default. Configure every trusted proxy hop as
 a CIDR:
 
 ```bash
-./netspeedd \
+./bin/netspeedd \
   -listen 127.0.0.1:8080 \
   -trusted-proxies '127.0.0.0/8,10.0.0.0/8'
 ```
@@ -177,7 +264,7 @@ rate limits, WebRTC ownership, metadata, and logs.
 service limits
 --------------
 
-Phase 4 applies immediate admission controls rather than queueing timed
+The daemon applies immediate admission controls rather than queueing timed
 measurement work.
 
 | control | default |
@@ -204,7 +291,7 @@ ICE, STUN, and TURN
 A STUN-only server list does not require a shared secret:
 
 ```bash
-NETSPEEDD_TURN_SERVERS='stun:stun.example.com:3478' ./netspeedd
+NETSPEEDD_TURN_SERVERS='stun:stun.example.com:3478' ./bin/netspeedd
 ```
 
 The bundled packet-test clients force TURN relay and report packet loss as
@@ -216,7 +303,7 @@ short-lived, and capped at 600 seconds by default.
 Embedded TURN is opt-in and loopback-only by default:
 
 ```bash
-./netspeedd -embedded-turn -embedded-turn-addr 127.0.0.1:3478
+./bin/netspeedd -embedded-turn -embedded-turn-addr 127.0.0.1:3478
 ```
 
 A non-loopback relay listener requires an explicit advertised IP and has a
@@ -224,7 +311,7 @@ combined inbound/outbound UDP rate ceiling:
 
 ```bash
 NETSPEEDD_TURN_SECRET='replace-with-at-least-16-random-bytes' \
-  ./netspeedd \
+  ./bin/netspeedd \
   -embedded-turn \
   -embedded-turn-addr 0.0.0.0:3478 \
   -embedded-turn-ip 198.51.100.20 \
@@ -242,7 +329,7 @@ the service access token:
 ```bash
 NETSPEEDD_ENABLE_METRICS=true \
 NETSPEEDD_METRICS_TOKEN='replace-with-a-separate-metrics-token' \
-  ./netspeedd
+  ./bin/netspeedd
 
 curl -H 'Authorization: Bearer replace-with-a-separate-metrics-token' \
   http://127.0.0.1:8080/metrics
@@ -257,24 +344,24 @@ using the CLI
 
 ```bash
 # local daemon
-./netspeed
+./bin/netspeed
 
 # another protocol-v2 daemon
-./netspeed https://speed.example.com
+./bin/netspeed https://speed.example.com
 
 # quick test
-./netspeed --quick
+./bin/netspeed --quick
 
 # scriptable output
-./netspeed --json
-./netspeed --csv
+./bin/netspeed --json
+./bin/netspeed --csv
 
 # detailed or compact terminal output
-./netspeed --verbose
-./netspeed --quiet
+./bin/netspeed --verbose
+./bin/netspeed --quiet
 
 # explicit legacy download-only mode
-./netspeed --download-only --no-packet-loss https://legacy.example.com
+./bin/netspeed --download-only --no-packet-loss https://legacy.example.com
 ```
 
 Important CLI flags:
@@ -331,14 +418,15 @@ netspeed/
 │   ├── telemetry/       # cross-package operational snapshots
 │   ├── turn/            # optional bounded embedded TURN relay
 │   └── webrtc/          # packet-test session manager
-├── scripts/             # source hygiene and deterministic release tooling
+├── scripts/             # source hygiene, portable-make, dependency, and release tooling
 ├── tests/
 │   ├── browser/         # real Chromium smoke test
-│   ├── integration/     # daemon/CLI and embedded-TURN process fixtures
+│   ├── integration/     # Go/C daemon and embedded-TURN process fixtures
 │   ├── release/         # deterministic packager tests
 │   └── web/             # dependency-free browser-engine tests
 ├── web/                 # browser UI
-├── netspeed.c/          # unsupported legacy C compatibility source
+├── netspeed.c/          # first-class native C protocol-v2 client
+├── C_CLIENT_PARITY.md   # Go/C feature and qualification contract
 └── configs/             # locations and shell-compatible daemon env examples
 ```
 

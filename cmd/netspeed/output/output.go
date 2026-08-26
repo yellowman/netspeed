@@ -93,7 +93,7 @@ func displayVersion(version string) string {
 }
 
 // Progress updates the progress display.
-func (o *Output) Progress(phase string, current, total int, value float64) {
+func (o *Output) Progress(stage string, current, total int, value float64) {
 	if o.cfg.JSON || o.cfg.CSV || o.cfg.Quiet {
 		return
 	}
@@ -104,7 +104,7 @@ func (o *Output) Progress(phase string, current, total int, value float64) {
 	if !o.cfg.Interactive {
 		// Non-interactive: just print progress
 		if o.cfg.Verbose {
-			fmt.Printf("%s: %d/%d (%.1f)\n", phase, current, total, value)
+			fmt.Printf("%s: %d/%d (%.1f)\n", stage, current, total, value)
 		}
 		return
 	}
@@ -123,7 +123,7 @@ func (o *Output) Progress(phase string, current, total int, value float64) {
 	bar += strings.Repeat(" ", max(0, empty))
 
 	var valueStr string
-	switch phase {
+	switch stage {
 	case "download", "upload":
 		valueStr = fmt.Sprintf("%.1f Mbps", value)
 	case "latency":
@@ -132,7 +132,7 @@ func (o *Output) Progress(phase string, current, total int, value float64) {
 		valueStr = fmt.Sprintf("%.1f", value)
 	}
 
-	label := strings.Title(phase)
+	label := strings.Title(stage)
 	fmt.Printf("\r%-12s [%s] %3.0f%% %s\033[K", label+":", bar, percent*100, valueStr)
 }
 
@@ -174,7 +174,7 @@ func (o *Output) Results(r *client.Results) {
 	fmt.Printf("  Latency:      %s\n", o.color(ColorBlue, latStr))
 
 	// Packet loss. The compatibility summary is round-trip transaction loss;
-	// Phase 2 also exposes forward probes and reverse acknowledgements.
+	// The current result model also exposes forward probes and reverse acknowledgements.
 	if r.PacketLoss != nil && r.PacketLoss.Unavailable {
 		fmt.Printf("  Packet Loss:  %s\n", o.color(ColorYellow, "N/A ("+r.PacketLoss.Reason+")"))
 	} else if r.PacketLoss != nil {
@@ -254,10 +254,10 @@ func (o *Output) verboseDetails(r *client.Results) {
 	fmt.Println(o.color(ColorBold, "LATENCY BREAKDOWN"))
 	fmt.Println(strings.Repeat("─", 48))
 
-	// Group latency samples by phase
+	// Group latency samples by load condition.
 	unloaded := make([]float64, 0)
 	for _, s := range r.LatencySamples {
-		if s.Phase == "unloaded" {
+		if s.Condition == "unloaded" {
 			unloaded = append(unloaded, float64(s.RTT.Microseconds())/1000)
 		}
 	}

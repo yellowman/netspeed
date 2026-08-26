@@ -22,13 +22,13 @@ etc.) are intentionally out of scope.
 > **Implemented authority:** the browser requires measurement protocol version 2.
 > [`MEASUREMENT_PROTOCOL_V2.md`](MEASUREMENT_PROTOCOL_V2.md) is the canonical
 > measurement contract. [`SERVICE_HARDENING.md`](SERVICE_HARDENING.md) defines
-> Phase 4 bearer authentication, admission responses, and trusted deployment
-> boundaries. [`HTTP_DEPLOYMENT.md`](HTTP_DEPLOYMENT.md) defines the completed
-> Phase 5 API-base, credentials, CORS, and Resource Timing contract. Older
+> bearer authentication, admission responses, and trusted deployment boundaries.
+> [`HTTP_DEPLOYMENT.md`](HTTP_DEPLOYMENT.md) defines the API-base, credentials,
+> CORS, and Resource Timing contract. Older
 > incompatible cross-origin and cookie/session examples in this design document
 > are non-normative.
 
-## Phase 5 browser deployment contract
+## Browser deployment contract
 
 When `globalThis.NETSPEED_CONFIG.apiBaseUrl` is blank, every request uses the
 page origin and root API paths. A configured base may be absolute or relative,
@@ -100,7 +100,7 @@ receive `403`. See `HTTP_DEPLOYMENT.md`.
   - “Your IP address: `<clientIp>`”
 - use `latitude` / `longitude` and `colo` to place markers and draw lines on the map.
 
-Phase 4 `401`, `429`, and `503` responses are control responses, never samples.
+`401`, `429`, and `503` responses are control responses, never samples.
 The browser rejects them before timing or byte accounting. A browser token must
 be supplied before `speedtest.js` loads; a token shipped in public static files
 is visible to clients and is not a secret-storage mechanism.
@@ -136,8 +136,8 @@ The browser sends an exact-length binary body with unique `measId` and diagnosti
 The sample is retained only when status and JSON type are correct and
 `acceptedBytes` equals the intended body length. The daemon duration is
 canonical. A streaming-capable browser emits 64 KiB request chunks. Other
-browsers reuse a payload no larger than 8 MiB and use XHR upload lifecycle events
-to identify actual outbound load; receipt wait is not upload load.
+browsers reuse a payload no larger than 8 MiB and use XHR request lifecycle events.
+Upload activity remains active through verified receipt completion.
 
 #### 1.1.4 `GET /locations` — test locations
 
@@ -367,9 +367,10 @@ The window owns an aggregate active-transfer tracker. A probe is retained only
 when at least one transfer is active before and after the probe and no zero-load
 gap occurs between those observations. A rejected probe is retried.
 
-Download activity spans response-body reads. Streaming upload activity spans
-request-stream production. XHR fallback activity spans browser upload start/end
-events. Buffered fetch fallback is marked imprecise for confidence purposes.
+Download activity spans response-body reads. Upload activity begins with request
+body production and remains active through verified receipt completion. XHR tracks
+the complete request lifecycle; buffered fetch fallback is marked imprecise for
+confidence purposes.
 Normal mode targets five probes and requires at least three accepted probes for
 each enabled direction. The window timer stops new requests and further probe
 retries, then drains requests already in flight. When the timer expires, a
@@ -401,7 +402,7 @@ jitter, and population coefficient of variation.
 type LatencySample = {
   ts: number;
   rttMs: number;
-  phase: 'unloaded' | 'download' | 'upload';
+  condition: 'unloaded' | 'download' | 'upload';
   probeStartedAt?: number;
   probeFinishedAt?: number;
   loadOverlapped?: boolean;
@@ -626,14 +627,14 @@ three accordion-style cards:
 
    - collapsed header: title and quick summary (min/median/max).
    - expanded:
-     - small chart of all `phase='unloaded'` samples.
+     - small chart of all `condition='unloaded'` samples.
      - explicit list of min/median/max.
 
 2. **Latency during download (5)**
 
    - header shows number of samples.
    - expanded:
-     - chart for `phase='download'` samples.
+     - chart for `condition='download'` samples.
      - table:
 
        | # | Ping |
@@ -644,7 +645,7 @@ three accordion-style cards:
 
 3. **Latency during upload (N)**
 
-   - identical layout using `phase='upload'` samples.
+   - identical layout using `condition='upload'` samples.
 
 ---
 
@@ -829,9 +830,9 @@ Request Timing Breakdown
 ```
 
 aggregate across all requests to show:
-- average timing per phase
-- min/max timing per phase
-- percentage of total time spent in each phase
+- average timing per operation
+- min/max timing per operation
+- percentage of total time spent in each operation
 
 ---
 
@@ -1491,18 +1492,18 @@ type ProgressCallback = (
 **latency progress:**
 ```ts
 type LatencyProgressCallback = (
-  phase: 'unloaded' | 'download' | 'upload',
+  condition: 'unloaded' | 'download' | 'upload',
   current: number,      // current probe count (1-indexed)
-  total: number,        // total probes for this phase
+  total: number,        // total probes for this condition
   sample: LatencySample
 ) => void;
 ```
 
-### 17.2 progress phases
+### 17.2 progress accounting
 
-progress uses different denominators based on test phase:
+progress uses different denominators based on the active operation:
 
-| Phase | Denominator | Description |
+| Operation | Denominator | Description |
 |-------|-------------|-------------|
 | Baseline (100kB + 1MB) | baselineRuns (18) | Fixed count: 10 + 8 runs |
 | Larger profiles | expectedTotal | Baseline + selected profile runs, minus skipped batches |

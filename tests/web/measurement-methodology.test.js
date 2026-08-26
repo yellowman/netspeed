@@ -86,6 +86,8 @@ async function testStreamingUploadBodyIsExactAndBounded() {
     }
     assert.equal(received, (64 * 1024) + 17);
     assert.ok(maximumChunk <= 64 * 1024);
+    assert.equal(activity.snapshot().active, 1, 'request remains active until receipt completion');
+    descriptor.finish();
     assert.equal(activity.snapshot().active, 0);
 }
 
@@ -93,7 +95,7 @@ async function testLoadedProbeRejectsGapSpanningSample() {
     const activity = hooks.createLoadActivity();
     let token = activity.begin(true);
     let calls = 0;
-    const probe = async phase => {
+    const probe = async condition => {
         calls++;
         if (calls === 1) {
             activity.end(token);
@@ -104,7 +106,7 @@ async function testLoadedProbeRejectsGapSpanningSample() {
             startedAt: Date.now() - 1,
             endedAt: Date.now(),
             rttMs: 10 + calls,
-            phase,
+            condition,
             timingSource: 'resource-timing',
             loadOverlapped: false
         };
@@ -126,7 +128,7 @@ async function testLoadedProbeAcceptsQuorumWhenWindowStops() {
     const token = activity.begin(true);
     let calls = 0;
     let stopped = false;
-    const probe = async phase => {
+    const probe = async condition => {
         calls++;
         if (calls === 3) stopped = true;
         return {
@@ -134,7 +136,7 @@ async function testLoadedProbeAcceptsQuorumWhenWindowStops() {
             startedAt: Date.now() - 1,
             endedAt: Date.now(),
             rttMs: 10 + calls,
-            phase,
+            condition,
             timingSource: 'resource-timing',
             loadOverlapped: false
         };
@@ -228,11 +230,11 @@ async function testPacketReportConsistencyAndDirectionalConfidence() {
     }));
     const latency = [];
     for (let index = 0; index < 12; index++) {
-        latency.push({ phase: 'unloaded', rttMs: 10 + (index % 2), timingSource: 'resource-timing' });
+        latency.push({ condition: 'unloaded', rttMs: 10 + (index % 2), timingSource: 'resource-timing' });
     }
     for (let index = 0; index < 3; index++) {
         latency.push({
-            phase: 'download', rttMs: 15 + index, loadOverlapped: true,
+            condition: 'download', rttMs: 15 + index, loadOverlapped: true,
             loadTrackingAccurate: true, timingSource: 'resource-timing'
         });
     }
@@ -260,18 +262,18 @@ async function testSummaryAndConfidenceParity() {
         { direction: 'upload', mbps: 70, durationMs: 1000, sampleKind: 'window', profile: 'window', timingSource: 'aggregate-wall-clock' }
     ];
     const latencySamples = [
-        { phase: 'unloaded', rttMs: 100, timingSource: 'resource-timing' },
-        { phase: 'unloaded', rttMs: 200, timingSource: 'resource-timing' },
-        { phase: 'unloaded', rttMs: 10, timingSource: 'resource-timing' },
-        { phase: 'unloaded', rttMs: 20, timingSource: 'resource-timing' },
-        { phase: 'unloaded', rttMs: 30, timingSource: 'resource-timing' },
-        { phase: 'download', rttMs: 10, loadOverlapped: true, loadTrackingAccurate: true, timingSource: 'resource-timing' },
-        { phase: 'download', rttMs: 20, loadOverlapped: true, loadTrackingAccurate: true, timingSource: 'resource-timing' },
-        { phase: 'download', rttMs: 30, loadOverlapped: true, loadTrackingAccurate: true, timingSource: 'resource-timing' },
-        { phase: 'download', rttMs: 10000, loadOverlapped: false, timingSource: 'resource-timing' },
-        { phase: 'upload', rttMs: 20, loadOverlapped: true, loadTrackingAccurate: true, timingSource: 'resource-timing' },
-        { phase: 'upload', rttMs: 30, loadOverlapped: true, loadTrackingAccurate: true, timingSource: 'resource-timing' },
-        { phase: 'upload', rttMs: 40, loadOverlapped: true, loadTrackingAccurate: true, timingSource: 'resource-timing' }
+        { condition: 'unloaded', rttMs: 100, timingSource: 'resource-timing' },
+        { condition: 'unloaded', rttMs: 200, timingSource: 'resource-timing' },
+        { condition: 'unloaded', rttMs: 10, timingSource: 'resource-timing' },
+        { condition: 'unloaded', rttMs: 20, timingSource: 'resource-timing' },
+        { condition: 'unloaded', rttMs: 30, timingSource: 'resource-timing' },
+        { condition: 'download', rttMs: 10, loadOverlapped: true, loadTrackingAccurate: true, timingSource: 'resource-timing' },
+        { condition: 'download', rttMs: 20, loadOverlapped: true, loadTrackingAccurate: true, timingSource: 'resource-timing' },
+        { condition: 'download', rttMs: 30, loadOverlapped: true, loadTrackingAccurate: true, timingSource: 'resource-timing' },
+        { condition: 'download', rttMs: 10000, loadOverlapped: false, timingSource: 'resource-timing' },
+        { condition: 'upload', rttMs: 20, loadOverlapped: true, loadTrackingAccurate: true, timingSource: 'resource-timing' },
+        { condition: 'upload', rttMs: 30, loadOverlapped: true, loadTrackingAccurate: true, timingSource: 'resource-timing' },
+        { condition: 'upload', rttMs: 40, loadOverlapped: true, loadTrackingAccurate: true, timingSource: 'resource-timing' }
     ];
     const packetLoss = {
         unavailable: false,
@@ -299,12 +301,12 @@ async function testSummaryAndConfidenceParity() {
     // Add enough low-variance unloaded samples for all five confidence gates.
     const highLatency = [];
     for (let index = 0; index < 12; index++) {
-        highLatency.push({ phase: 'unloaded', rttMs: 10 + (index % 2), timingSource: 'resource-timing' });
+        highLatency.push({ condition: 'unloaded', rttMs: 10 + (index % 2), timingSource: 'resource-timing' });
     }
     for (let index = 0; index < 3; index++) {
         highLatency.push(
-            { phase: 'download', rttMs: 15 + index, loadOverlapped: true, loadTrackingAccurate: true, timingSource: 'resource-timing' },
-            { phase: 'upload', rttMs: 16 + index, loadOverlapped: true, loadTrackingAccurate: true, timingSource: 'resource-timing' }
+            { condition: 'download', rttMs: 15 + index, loadOverlapped: true, loadTrackingAccurate: true, timingSource: 'resource-timing' },
+            { condition: 'upload', rttMs: 16 + index, loadOverlapped: true, loadTrackingAccurate: true, timingSource: 'resource-timing' }
         );
     }
     const confidence = hooks.assessTestConfidence(throughputSamples.filter(sample => sample.sampleKind === 'window'), highLatency, packetLoss);
@@ -326,7 +328,7 @@ async function main() {
     await testWindowRepeatsOnlyBoundedRequests();
     await testPacketReportConsistencyAndDirectionalConfidence();
     await testSummaryAndConfidenceParity();
-    console.log('browser phase 2 methodology tests passed');
+    console.log('browser measurement methodology tests passed');
 }
 
 main().catch(error => {

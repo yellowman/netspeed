@@ -25,7 +25,6 @@ MAGICS = (
 )
 MAX_TRACKED_BYTES = 5 * 1024 * 1024
 
-
 def git_files(root: Path) -> list[Path]:
     result = subprocess.run(
         ["git", "ls-files", "-z"], cwd=root, check=True, capture_output=True
@@ -51,8 +50,8 @@ def inspect(root: Path) -> list[str]:
             problems.append(f"tracked build artifact suffix: {rel}")
         if path.name in BINARY_NAMES and "/" not in rel:
             problems.append(f"tracked top-level executable name: {rel}")
-        with path.open("rb") as handle:
-            head = handle.read(4)
+        contents = path.read_bytes()
+        head = contents[:4]
         if any(head.startswith(magic) for magic in MAGICS):
             problems.append(f"tracked native executable/object: {rel}")
 

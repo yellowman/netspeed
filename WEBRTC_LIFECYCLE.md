@@ -1,13 +1,12 @@
 # WebRTC session lifecycle
 
-This document is the canonical lifecycle contract for the Phase 3 packet-test
-server. The packet frame and measurement formulas remain defined by
+This document is the canonical lifecycle contract for the packet-test server.
+The packet frame and measurement formulas are defined by
 [`MEASUREMENT_PROTOCOL_V2.md`](MEASUREMENT_PROTOCOL_V2.md).
 
-Phase 3 established correctness of session ownership, concurrency,
-cancellation, and teardown. Phase 4 extends that lifecycle with bounded offer
-admission and client-bound report completion. Authentication, trusted client
-identity, rates, and TURN exposure are defined by
+The lifecycle includes bounded offer admission, client-bound report completion,
+session ownership, concurrency, cancellation, and teardown. Authentication,
+trusted client identity, rates, and TURN exposure are defined by
 [`SERVICE_HARDENING.md`](SERVICE_HARDENING.md).
 
 ## 1. ownership invariants
@@ -114,8 +113,8 @@ The daemon accepts one channel named `packet-loss` per session.
 - valid frames update activity and cancel a stale disconnect grace period;
 - packet counters are changed only through synchronized methods.
 
-The exact 1,200-byte frame validation and acknowledgement accounting remain
-unchanged from Phase 2.
+The exact 1,200-byte frame validation and acknowledgement accounting follow
+the current measurement protocol contract.
 
 ## 6. idle cleanup and shutdown
 
@@ -173,5 +172,5 @@ interfaces. Tests use adversarial fakes to verify:
 - pending offers cannot exceed global or per-client capacity;
 - packet reports cannot complete a session created by another client identity.
 
-The external Pion/TURN interoperability test is part of the Phase 6 release
+The external Pion/TURN interoperability test is part of release
 qualification when the real modules and a relay environment are available.

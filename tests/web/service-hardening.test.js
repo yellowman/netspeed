@@ -36,7 +36,7 @@ function testServerConcurrencyNegotiation() {
 async function main() {
     await testAuthenticationHeaders();
     testServerConcurrencyNegotiation();
-    console.log('browser phase 4 hardening tests passed');
+    console.log('browser service hardening tests passed');
 }
 
 main().catch(error => {

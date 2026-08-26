@@ -83,6 +83,83 @@ func TestEmbeddedTURNPacketLoss(t *testing.T) {
 	}
 }
 
+func TestCClientEmbeddedTURNPacketLoss(t *testing.T) {
+	if os.Getenv("NETSPEED_E2E_TURN") != "1" {
+		t.Skip("set NETSPEED_E2E_TURN=1 to run the real C/libdatachannel TURN test")
+	}
+	cClient := os.Getenv("NETSPEED_C_CLIENT")
+	if cClient == "" {
+		t.Fatal("NETSPEED_C_CLIENT must point to a WEBRTC=yes C client build")
+	}
+	if _, err := os.Stat(cClient); err != nil {
+		t.Fatalf("C client is unavailable: %v", err)
+	}
+
+	root := repositoryRoot(t)
+	binaries := buildBinaries(t, root)
+	daemon := startDaemon(t, root, binaries.daemon, true)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 55*time.Second)
+	defer cancel()
+	command := exec.CommandContext(ctx, cClient,
+		"--server", daemon.baseURL,
+		"--quick",
+		"--download-only",
+		"--json",
+		"--timeout", "50s",
+	)
+	command.Env = cleanEnvironment()
+	output, err := command.Output()
+	if err != nil {
+		var exitErr *exec.ExitError
+		if errorAs(err, &exitErr) {
+			t.Fatalf("C packet-loss client failed: %v\nstderr:\n%s\ndaemon log:\n%s", err, exitErr.Stderr, readLog(daemon.logPath))
+		}
+		t.Fatalf("C packet-loss client failed: %v\ndaemon log:\n%s", err, readLog(daemon.logPath))
+	}
+	var result struct {
+		Meta struct {
+			MeasurementProtocolVersion int `json:"measurementProtocolVersion"`
+			PacketLossFrameVersion     int `json:"packetLossFrameVersion"`
+		} `json:"meta"`
+		PacketLoss *struct {
+			Sent                              int      `json:"sent"`
+			Received                          int      `json:"received"`
+			ForwardSent                       int      `json:"forwardSent"`
+			ForwardReceived                   int      `json:"forwardReceived"`
+			ForwardLossPercent                *float64 `json:"forwardLossPercent"`
+			AcknowledgementsSent              int      `json:"acknowledgementsSent"`
+			AcknowledgementsReceived          int      `json:"acknowledgementsReceived"`
+			ReverseAcknowledgementLossPercent *float64 `json:"reverseAcknowledgementLossPercent"`
+			FrameSizeBytes                    int      `json:"frameSizeBytes"`
+			Unavailable                       bool     `json:"unavailable"`
+		} `json:"packetLoss"`
+	}
+	if err := json.Unmarshal(output, &result); err != nil {
+		t.Fatalf("decode C packet-loss JSON: %v\noutput:\n%s", err, output)
+	}
+	if result.Meta.MeasurementProtocolVersion != 2 || result.Meta.PacketLossFrameVersion != 1 {
+		t.Fatalf("C client negotiated the wrong protocol: %s", output)
+	}
+	packet := result.PacketLoss
+	if packet == nil || packet.Unavailable {
+		t.Fatalf("C packet-loss result is unavailable: %s", output)
+	}
+	if packet.Sent <= 0 || packet.ForwardSent != packet.Sent || packet.FrameSizeBytes != 1200 {
+		t.Fatalf("unexpected C packet counters: %s", output)
+	}
+	if packet.Received > packet.AcknowledgementsSent ||
+		packet.AcknowledgementsReceived != packet.Received ||
+		packet.ForwardReceived > packet.ForwardSent ||
+		packet.AcknowledgementsSent > packet.ForwardReceived ||
+		packet.ForwardLossPercent == nil {
+		t.Fatalf("inconsistent directional C packet counters: %s", output)
+	}
+	if packet.AcknowledgementsSent > 0 && packet.ReverseAcknowledgementLossPercent == nil {
+		t.Fatalf("missing reverse acknowledgement loss: %s", output)
+	}
+}
+
 type builtBinaries struct {
 	client string
 	daemon string

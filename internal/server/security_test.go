@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/yellowman/netspeed/internal/limits"
+	"github.com/yellowman/netspeed/internal/locations"
 )
 
 func TestAuthenticationMiddlewareProtectsServiceButNotHealth(t *testing.T) {
@@ -37,6 +38,41 @@ func TestAuthenticationMiddlewareProtectsServiceButNotHealth(t *testing.T) {
 	handler.ServeHTTP(health, httptest.NewRequest(http.MethodGet, "/health", nil))
 	if health.Code != http.StatusNoContent {
 		t.Fatalf("health status=%d; want 204", health.Code)
+	}
+}
+
+func TestAuthenticatedLocationsCannotBeStoredBySharedCaches(t *testing.T) {
+	server := measurementTestServer(1024)
+	server.cfg.AccessToken = "0123456789abcdef"
+	server.locations = locations.NewMemoryStore(nil)
+
+	handler := server.authenticationMiddleware(http.HandlerFunc(server.handleLocations))
+
+	unauthorized := httptest.NewRecorder()
+	handler.ServeHTTP(unauthorized, httptest.NewRequest(http.MethodGet, "/locations", nil))
+	if unauthorized.Code != http.StatusUnauthorized {
+		t.Fatalf("unauthorized status=%d; want 401", unauthorized.Code)
+	}
+
+	request := httptest.NewRequest(http.MethodGet, "/locations", nil)
+	request.Header.Set("Authorization", "Bearer "+server.cfg.AccessToken)
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("authorized status=%d; want 200", recorder.Code)
+	}
+	cacheControl := recorder.Header().Get("Cache-Control")
+	if cacheControl != "private, no-store" {
+		t.Fatalf("Cache-Control=%q; want private, no-store", cacheControl)
+	}
+	if strings.Contains(strings.ToLower(cacheControl), "public") {
+		t.Fatalf("protected locations response is publicly cacheable: %q", cacheControl)
+	}
+	if got := recorder.Header().Get("Pragma"); got != "no-cache" {
+		t.Fatalf("Pragma=%q; want no-cache", got)
+	}
+	if got := strings.Join(recorder.Header().Values("Vary"), ","); !strings.Contains(got, "Authorization") {
+		t.Fatalf("Vary=%q; want Authorization", got)
 	}
 }
 

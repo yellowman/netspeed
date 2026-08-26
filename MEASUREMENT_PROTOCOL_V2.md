@@ -1,18 +1,17 @@
 # netspeed measurement protocol v2
 
-This document is the canonical measurement contract for the Phase 2 Go daemon,
-Go CLI, and browser client. It supersedes the giant-profile, post-transfer loaded
-latency, and short JSON packet examples retained in older design notes.
+This document is the canonical measurement contract for the Go daemon and the
+Go, native C, and browser clients. It supersedes giant-profile, post-transfer
+loaded-latency, and short JSON packet examples retained in older design notes.
 
-Phase 4 adds admission capabilities without changing measurement protocol version
-2. Service authentication, quotas, trusted client identity, and overload status
-codes are defined by [`SERVICE_HARDENING.md`](SERVICE_HARDENING.md). WebRTC
-ownership and teardown remain defined by
-[`WEBRTC_LIFECYCLE.md`](WEBRTC_LIFECYCLE.md).
+Service admission capabilities do not change measurement protocol version 2.
+Authentication, quotas, trusted client identity, and overload status codes are
+defined by [`SERVICE_HARDENING.md`](SERVICE_HARDENING.md). WebRTC ownership and
+teardown are defined by [`WEBRTC_LIFECYCLE.md`](WEBRTC_LIFECYCLE.md).
 
 ## 1. capability negotiation
 
-A Phase 2 client starts with `GET /meta` and requires these fields:
+A version-2 client starts with `GET /meta` and requires these fields:
 
 ```json
 {
@@ -174,8 +173,8 @@ increasing gap generation. A loaded probe is accepted only when:
 3. the gap generation did not change during the probe.
 
 Any probe that crosses even a brief zero-active interval is rejected and retried.
-Download activity spans response-body consumption. Upload activity spans request
-body transmission only; waiting for the receipt is not counted as upload load.
+Download activity spans response-body consumption. Upload activity begins with
+request-body transmission and remains active through verified receipt completion.
 
 Normal mode targets five loaded probes during each direction's selected window
 and requires at least three accepted overlap-proven probes. Quick mode targets
@@ -213,8 +212,8 @@ valid probe once. Duplicate probes are counted but not acknowledged again.
 
 The packet test uses TURN relay candidates in the current implementation.
 Session ownership, disconnect recovery, and teardown are defined by
-[`WEBRTC_LIFECYCLE.md`](WEBRTC_LIFECYCLE.md). Phase 4 public-service limits
-and TURN hardening are defined by
+[`WEBRTC_LIFECYCLE.md`](WEBRTC_LIFECYCLE.md). Public-service limits and TURN
+hardening are defined by
 [`SERVICE_HARDENING.md`](SERVICE_HARDENING.md).
 
 ### 6.2 frame layout
@@ -293,7 +292,7 @@ causes application grades that depend on loss to be `Incomplete`.
 
 ## 8. service-admission responses
 
-Phase 4 servers may reject a transfer before measurement work begins:
+Servers may reject a transfer before measurement work begins:
 
 - `429 Too Many Requests` for a per-client transfer ceiling or byte quota;
 - `503 Service Unavailable` for the global transfer ceiling;
@@ -305,16 +304,21 @@ also not samples and return `401` as defined by `SERVICE_HARDENING.md`.
 
 ## 9. implementation and compatibility boundaries
 
-- The Go CLI and browser are the supported v2 clients in this archive.
-- The C client has not been migrated to protocol v2. Phase 6 explicitly removed
-  it from the supported binary release while retaining warning-clean legacy
-  source for reference.
-- Phase 3 completed WebRTC session ownership, cancellation, disconnect recovery, and race-safe teardown.
-- Phase 4 completed public-service concurrency, rate, quota, authentication,
-  trusted-proxy, metrics, and TURN controls.
-- Phase 5 completed endpoint deadlines, configurable browser API routing,
-  CORS/Resource Timing, HTTP wrapper/recovery behavior, shutdown ordering, TLS,
-  configuration, and GeoIP contracts as documented in `HTTP_DEPLOYMENT.md`.
-- Phase 6 adds the real dependency-integrated CI/release matrix, process and
-  browser fixtures, embedded-TURN interoperability, and deterministic release
-  construction defined in `RELEASE_QUALIFICATION.md`.
+- The Go CLI, native C CLI, and browser are supported v2 clients in this
+  archive. All three use the same verified-transfer, fixed-window,
+  loaded-overlap, statistics, and directional packet-result contract.
+- The C implementation and its libdatachannel release boundary are documented
+  in [`C_CLIENT_PARITY.md`](C_CLIENT_PARITY.md).
+- [`WEBRTC_LIFECYCLE.md`](WEBRTC_LIFECYCLE.md) defines session ownership,
+  cancellation, disconnect recovery, and race-safe teardown.
+- [`SERVICE_HARDENING.md`](SERVICE_HARDENING.md) defines public-service
+  concurrency, rate, quota, authentication, trusted-proxy, metrics, and TURN
+  controls.
+- [`HTTP_DEPLOYMENT.md`](HTTP_DEPLOYMENT.md) defines endpoint deadlines, browser
+  API routing, CORS and Resource Timing, middleware recovery, shutdown ordering,
+  TLS, configuration, and GeoIP behavior.
+- [`RELEASE_QUALIFICATION.md`](RELEASE_QUALIFICATION.md) defines the real
+  dependency CI matrix, process and browser fixtures, embedded-TURN
+  interoperability, and deterministic release construction.
+- [`C_CLIENT_PARITY.md`](C_CLIENT_PARITY.md) defines native C protocol parity,
+  C-to-Pion/TURN interoperability, portable pmake builds, and release treatment.

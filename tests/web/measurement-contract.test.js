@@ -110,6 +110,38 @@ async function main() {
     assert.equal(upload.durationMs, 2);
     assert.equal(upload.timingSource, 'server-receipt');
 
+    const uploadActivity = hooks.createLoadActivity();
+    let activeAfterRequestBody = -1;
+    global.fetch = async (_url, options) => {
+        const reader = options.body.getReader();
+        let received = 0;
+        while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            received += value.byteLength;
+        }
+        activeAfterRequestBody = uploadActivity.snapshot().active;
+        return new Response(JSON.stringify({
+            ok: true,
+            acceptedBytes: received,
+            serverDurationNs: 2_000_000
+        }), {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' }
+        });
+    };
+    const trackedUpload = await hooks.runUpload(
+        8,
+        'tracked',
+        0,
+        'upload',
+        uploadActivity,
+        activity => hooks.createStreamingUploadBody(8, activity)
+    );
+    assert.equal(trackedUpload.sizeBytes, 8);
+    assert.equal(activeAfterRequestBody, 1, 'upload stays active while awaiting its verified receipt');
+    assert.equal(uploadActivity.snapshot().active, 0, 'upload activity ends after receipt completion');
+
     global.fetch = async () => new Response(JSON.stringify({
         ok: true,
         acceptedBytes: 7,

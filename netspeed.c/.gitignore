@@ -6,3 +6,6 @@ netspeed
 *.swp
 *~
 .vscode/
+
+# Test artifacts
+tests/test_protocol

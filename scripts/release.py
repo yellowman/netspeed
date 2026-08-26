@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build deterministic Netspeed source and Go binary release archives."""
+"""Build deterministic Netspeed source and supported-client release archives."""
 
 from __future__ import annotations
 
@@ -32,6 +32,7 @@ VERSION_RE = re.compile(r"^v[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A
 BINARY_PAYLOAD = (
     "README.md",
     "LICENSE",
+    "C_CLIENT_PARITY.md",
     "RELEASE_QUALIFICATION.md",
     "HTTP_DEPLOYMENT.md",
     "SERVICE_HARDENING.md",
@@ -188,7 +189,15 @@ def build_program(root: Path, destination: Path, program: str, goos: str, goarch
     ], env=env)
 
 
-def write_binary_archive(root: Path, output: Path, stage: Path, goos: str, goarch: str, meta: ReleaseMetadata) -> None:
+def write_binary_archive(
+    root: Path,
+    output: Path,
+    stage: Path,
+    goos: str,
+    goarch: str,
+    meta: ReleaseMetadata,
+    c_binary: Path | None = None,
+) -> None:
     prefix = f"netspeed-{meta.version.removeprefix('v')}-{goos}-{goarch}"
     build_text = (
         f"version={meta.version}\n"
@@ -198,12 +207,21 @@ def write_binary_archive(root: Path, output: Path, stage: Path, goos: str, goarc
         f"goos={goos}\n"
         f"goarch={goarch}\n"
         f"go_version={meta.go_version}\n"
-        "c_client=unsupported-not-included\n"
+        f"c_client={'included' if c_binary else 'not-published-for-platform'}\n"
     ).encode()
     with zipfile.ZipFile(output, "w") as archive:
         for program in PROGRAMS:
             suffix = ".exe" if goos == "windows" else ""
             add_path(archive, stage / f"{program}{suffix}", f"{prefix}/{program}{suffix}", meta.source_date_epoch, 0o755)
+        if c_binary is not None:
+            c_suffix = ".exe" if goos == "windows" else ""
+            add_path(
+                archive,
+                c_binary,
+                f"{prefix}/netspeed-c{c_suffix}",
+                meta.source_date_epoch,
+                0o755,
+            )
         for rel in BINARY_PAYLOAD:
             source = root / rel
             if not source.exists():
@@ -229,6 +247,28 @@ def parse_platform(value: str) -> tuple[str, str]:
     if len(parts) != 2 or not all(parts):
         raise argparse.ArgumentTypeError("platform must be GOOS/GOARCH")
     return parts[0], parts[1]
+
+
+def parse_c_binary(value: str) -> tuple[tuple[str, str], Path]:
+    platform_text, separator, path_text = value.partition("=")
+    if not separator or not path_text:
+        raise argparse.ArgumentTypeError("C binary must be GOOS/GOARCH=PATH")
+    return parse_platform(platform_text), Path(path_text)
+
+
+def resolve_c_binaries(
+    root: Path,
+    values: list[tuple[tuple[str, str], Path]] | None,
+) -> dict[tuple[str, str], Path]:
+    result: dict[tuple[str, str], Path] = {}
+    for platform, supplied_path in values or []:
+        if platform in result:
+            raise SystemExit(f"duplicate C binary for {platform[0]}/{platform[1]}")
+        path = supplied_path if supplied_path.is_absolute() else root / supplied_path
+        if path.is_symlink() or not path.is_file():
+            raise SystemExit(f"C binary is not a regular file: {path}")
+        result[platform] = path.resolve()
+    return result
 
 
 def prepare_output(root: Path, output: Path) -> None:
@@ -266,6 +306,20 @@ def main() -> int:
     parser.add_argument("--source-only", action="store_true")
     parser.add_argument("--allow-dirty", action="store_true", help="developer-only; official releases must be clean")
     parser.add_argument("--platform", action="append", type=parse_platform, metavar="GOOS/GOARCH")
+    parser.add_argument(
+        "--c-binary",
+        action="append",
+        type=parse_c_binary,
+        metavar="GOOS/GOARCH=PATH",
+        help="include a prequalified native C client in the matching platform archive",
+    )
+    parser.add_argument(
+        "--require-c-platform",
+        action="append",
+        type=parse_platform,
+        metavar="GOOS/GOARCH",
+        help="fail unless --c-binary supplies this platform",
+    )
     args = parser.parse_args()
 
     root = Path(__file__).resolve().parents[1]
@@ -273,6 +327,16 @@ def main() -> int:
     meta = metadata(root, args.version, args.allow_dirty)
     validate_source_tree(root)
     platforms = tuple(args.platform or (parse_platform(value) for value in DEFAULT_PLATFORMS))
+    c_binaries = resolve_c_binaries(root, args.c_binary)
+    requested_platforms = set(platforms)
+    unknown_c_platforms = set(c_binaries) - requested_platforms
+    if unknown_c_platforms:
+        formatted = ", ".join(f"{goos}/{goarch}" for goos, goarch in sorted(unknown_c_platforms))
+        raise SystemExit(f"C binaries supplied for platforms not being released: {formatted}")
+    missing_required = set(args.require_c_platform or []) - set(c_binaries)
+    if missing_required:
+        formatted = ", ".join(f"{goos}/{goarch}" for goos, goarch in sorted(missing_required))
+        raise SystemExit(f"required C binaries were not supplied: {formatted}")
 
     prepare_output(root, output)
 
@@ -289,7 +353,15 @@ def main() -> int:
                 for program in PROGRAMS:
                     build_program(root, stage, program, goos, goarch, meta)
                 archive = output / f"netspeed-{meta.version.removeprefix('v')}-{goos}-{goarch}.zip"
-                write_binary_archive(root, archive, stage, goos, goarch, meta)
+                write_binary_archive(
+                    root,
+                    archive,
+                    stage,
+                    goos,
+                    goarch,
+                    meta,
+                    c_binaries.get((goos, goarch)),
+                )
                 artifacts.append(archive)
 
     artifact_records = [
@@ -303,6 +375,9 @@ def main() -> int:
         "sourceDateEpoch": meta.source_date_epoch,
         "date": meta.date,
         "goVersion": meta.go_version,
+        "cClientPlatforms": [
+            f"{goos}/{goarch}" for goos, goarch in sorted(c_binaries)
+        ],
         "artifacts": artifact_records,
     }
     manifest_path = output / "release-manifest.json"

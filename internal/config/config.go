@@ -195,8 +195,8 @@ func ApplyEnv(cfg *Config) error {
 	setStringEnv(&cfg.LocationsFile, "NETSPEEDD_LOCATIONS_FILE")
 	setStringEnv(&cfg.GeoIPASNDatabasePath, "NETSPEEDD_GEOIP_ASN_DB")
 	setStringEnv(&cfg.GeoIPCityDatabasePath, "NETSPEEDD_GEOIP_CITY_DB")
-	// NETSPEEDD_GEOIP_DB was the Phase 4 ASN-only name. Keep it as a strict
-	// compatibility alias only when the explicit Phase 5 ASN path is unset.
+	// NETSPEEDD_GEOIP_DB is retained as an ASN-only compatibility alias.
+	// Use it only when the explicit ASN database path is unset.
 	if cfg.GeoIPASNDatabasePath == "" {
 		setStringEnv(&cfg.GeoIPASNDatabasePath, "NETSPEEDD_GEOIP_DB")
 	}

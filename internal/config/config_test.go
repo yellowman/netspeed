@@ -5,7 +5,7 @@ import (
 	"testing"
 )
 
-func TestDefaultPhase4ConfigurationIsValidAndTURNIsOptIn(t *testing.T) {
+func TestDefaultConfigurationIsValidAndTURNIsOptIn(t *testing.T) {
 	cfg := Default()
 	if cfg.EmbeddedTurn {
 		t.Fatal("embedded TURN must be opt-in")
@@ -121,7 +121,7 @@ func TestValidateRejectsOrphanTURNSecret(t *testing.T) {
 	}
 }
 
-func TestDefaultPhase5TimeoutPolicy(t *testing.T) {
+func TestDefaultTimeoutPolicy(t *testing.T) {
 	cfg := Default()
 	if cfg.ReadHeaderTimeout <= 0 || cfg.ControlTimeout <= 0 || cfg.TransferTimeout <= 0 || cfg.IdleTimeout <= 0 {
 		t.Fatalf("invalid default timeout policy: %+v", cfg)
@@ -165,7 +165,7 @@ func TestFromEnvRejectsMalformedValues(t *testing.T) {
 	}
 }
 
-func TestFromEnvLoadsPhase5DeploymentFields(t *testing.T) {
+func TestFromEnvLoadsDeploymentFields(t *testing.T) {
 	t.Setenv("NETSPEEDD_READ_HEADER_TIMEOUT", "7s")
 	t.Setenv("NETSPEEDD_CONTROL_TIMEOUT", "20s")
 	t.Setenv("NETSPEEDD_TRANSFER_TIMEOUT", "4m")

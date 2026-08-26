@@ -197,8 +197,8 @@ func TestRunLoadedLatencyProbesAcceptsQuorumAtWindowDeadline(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	c := testClient(server)
-	c.cfg.OnProgress = func(phase string, current, total int, value float64) {
-		if phase == "loaded-latency" && current == requiredSuccessfulRuns(total) {
+	c.cfg.OnProgress = func(stage string, current, total int, value float64) {
+		if stage == "loaded-latency" && current == requiredSuccessfulRuns(total) {
 			cancel()
 		}
 	}
@@ -337,6 +337,57 @@ func TestMeasureUploadRequiresMatchingReceipt(t *testing.T) {
 	}
 }
 
+func TestMeasureUploadTracksActivityThroughReceipt(t *testing.T) {
+	const size = int64(64 * 1024)
+	bodyRead := make(chan struct{})
+	releaseReceipt := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		n, err := io.Copy(io.Discard, r.Body)
+		if err != nil {
+			t.Errorf("read upload: %v", err)
+			return
+		}
+		close(bodyRead)
+		<-releaseReceipt
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(protocol.UploadReceipt{
+			OK:               true,
+			AcceptedBytes:    n,
+			ServerDurationNS: int64(5 * time.Millisecond),
+		})
+	}))
+	defer server.Close()
+
+	activity := &loadActivity{}
+	done := make(chan error, 1)
+	go func() {
+		_, err := testClient(server).measureUploadTracked(context.Background(), "test", size, 0, activity)
+		done <- err
+	}()
+
+	select {
+	case <-bodyRead:
+	case <-time.After(time.Second):
+		t.Fatal("server did not receive upload body")
+	}
+	if snapshot := activity.snapshot(); snapshot.active != 1 {
+		t.Fatalf("activity after body write = %#v; want request active through receipt", snapshot)
+	}
+	close(releaseReceipt)
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("measureUploadTracked: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("upload did not complete after receipt release")
+	}
+	if snapshot := activity.snapshot(); snapshot.active != 0 || snapshot.gapGeneration != 1 {
+		t.Fatalf("activity after receipt = %#v; want one completed load interval", snapshot)
+	}
+}
+
 func TestMeasureUploadRejectsMismatchedReceipt(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = io.Copy(io.Discard, r.Body)
@@ -438,7 +489,7 @@ func TestDecodeLimitedJSONRejectsTrailingAndOversizedBodies(t *testing.T) {
 	}
 }
 
-func TestMeasurementURLQuotesProfileAndPhase(t *testing.T) {
+func TestMeasurementURLQuotesProfileAndCondition(t *testing.T) {
 	got := buildMeasurementURL("http://example.test/", "/__down", map[string][]string{
 		"profile": {"a profile&more"},
 		"during":  {"download/load"},
@@ -511,18 +562,18 @@ func TestCalculateSummaryUsesWindowSamplesAndSharedStatistics(t *testing.T) {
 			{Direction: "upload", Mbps: 70, Duration: time.Second, SampleKind: "window", Profile: "window"},
 		},
 		LatencySamples: []LatencySample{
-			{Phase: "unloaded", RTT: 100 * time.Millisecond},
-			{Phase: "unloaded", RTT: 200 * time.Millisecond},
-			{Phase: "unloaded", RTT: 10 * time.Millisecond},
-			{Phase: "unloaded", RTT: 20 * time.Millisecond},
-			{Phase: "unloaded", RTT: 30 * time.Millisecond},
-			{Phase: "download", RTT: 10 * time.Millisecond, LoadOverlapped: true},
-			{Phase: "download", RTT: 20 * time.Millisecond, LoadOverlapped: true},
-			{Phase: "download", RTT: 30 * time.Millisecond, LoadOverlapped: true},
-			{Phase: "download", RTT: 10 * time.Second, LoadOverlapped: false},
-			{Phase: "upload", RTT: 20 * time.Millisecond, LoadOverlapped: true},
-			{Phase: "upload", RTT: 30 * time.Millisecond, LoadOverlapped: true},
-			{Phase: "upload", RTT: 40 * time.Millisecond, LoadOverlapped: true},
+			{Condition: "unloaded", RTT: 100 * time.Millisecond},
+			{Condition: "unloaded", RTT: 200 * time.Millisecond},
+			{Condition: "unloaded", RTT: 10 * time.Millisecond},
+			{Condition: "unloaded", RTT: 20 * time.Millisecond},
+			{Condition: "unloaded", RTT: 30 * time.Millisecond},
+			{Condition: "download", RTT: 10 * time.Millisecond, LoadOverlapped: true},
+			{Condition: "download", RTT: 20 * time.Millisecond, LoadOverlapped: true},
+			{Condition: "download", RTT: 30 * time.Millisecond, LoadOverlapped: true},
+			{Condition: "download", RTT: 10 * time.Second, LoadOverlapped: false},
+			{Condition: "upload", RTT: 20 * time.Millisecond, LoadOverlapped: true},
+			{Condition: "upload", RTT: 30 * time.Millisecond, LoadOverlapped: true},
+			{Condition: "upload", RTT: 40 * time.Millisecond, LoadOverlapped: true},
 		},
 		PacketLoss: &PacketLossResult{
 			LossPercent:            packetLoss,
@@ -569,13 +620,13 @@ func TestAssessTestConfidenceHighFixture(t *testing.T) {
 	}
 	for index := 0; index < 12; index++ {
 		results.LatencySamples = append(results.LatencySamples, LatencySample{
-			Phase: "unloaded", RTT: time.Duration(10+index%2) * time.Millisecond, TimingSource: "httptrace",
+			Condition: "unloaded", RTT: time.Duration(10+index%2) * time.Millisecond, TimingSource: "httptrace",
 		})
 	}
 	for index := 0; index < 3; index++ {
 		results.LatencySamples = append(results.LatencySamples,
-			LatencySample{Phase: "download", RTT: time.Duration(15+index) * time.Millisecond, LoadOverlapped: true, LoadTrackingAccurate: true, TimingSource: "httptrace"},
-			LatencySample{Phase: "upload", RTT: time.Duration(16+index) * time.Millisecond, LoadOverlapped: true, LoadTrackingAccurate: true, TimingSource: "httptrace"},
+			LatencySample{Condition: "download", RTT: time.Duration(15+index) * time.Millisecond, LoadOverlapped: true, LoadTrackingAccurate: true, TimingSource: "httptrace"},
+			LatencySample{Condition: "upload", RTT: time.Duration(16+index) * time.Millisecond, LoadOverlapped: true, LoadTrackingAccurate: true, TimingSource: "httptrace"},
 		)
 	}
 
@@ -607,12 +658,12 @@ func TestAssessTestConfidenceRequiresBothPacketDirections(t *testing.T) {
 	}
 	for index := 0; index < 12; index++ {
 		results.LatencySamples = append(results.LatencySamples, LatencySample{
-			Phase: "unloaded", RTT: time.Duration(10+index%2) * time.Millisecond, TimingSource: "httptrace",
+			Condition: "unloaded", RTT: time.Duration(10+index%2) * time.Millisecond, TimingSource: "httptrace",
 		})
 	}
 	for index := 0; index < 3; index++ {
 		results.LatencySamples = append(results.LatencySamples, LatencySample{
-			Phase: "download", RTT: time.Duration(15+index) * time.Millisecond,
+			Condition: "download", RTT: time.Duration(15+index) * time.Millisecond,
 			LoadOverlapped: true, LoadTrackingAccurate: true, TimingSource: "httptrace",
 		})
 	}
@@ -672,7 +723,7 @@ func TestPacketLossJSONIncludesDirectionalNullsWhenUnavailable(t *testing.T) {
 	}
 }
 
-func TestRunRequiresPhaseTwoMeasurementProtocol(t *testing.T) {
+func TestRunRequiresMeasurementProtocolVersionTwo(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/meta" {
 			t.Fatalf("unexpected request after metadata negotiation: %s", r.URL.Path)
@@ -727,7 +778,7 @@ func TestJSONPreservesFirstWindowAndPreciseLoadTracking(t *testing.T) {
 
 	latency := LatencySample{
 		Timestamp:            time.Unix(0, 0),
-		Phase:                "download",
+		Condition:            "download",
 		LoadOverlapped:       true,
 		LoadTrackingAccurate: true,
 	}.ToJSON()
