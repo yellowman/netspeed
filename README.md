@@ -453,3 +453,8 @@ links
 -----
 
 - [GitHub repository](https://github.com/yellowman/netspeed)
+
+
+### Cloudflare compatibility
+
+The native clients support `--provider auto`, `--provider netspeed`, and `--provider cloudflare`. Auto mode keeps the verified Netspeed protocol whenever the server identifies itself as Netspeed and permits Cloudflare fallback only after a positive Cloudflare compatibility fingerprint. WebRTC packet testing retains the authoritative Netspeed server-peer topology and also supports Cloudflare-compatible relay-only TURN loopback with two local peers. Results identify the selected provider, measurement contract, and packet topology.

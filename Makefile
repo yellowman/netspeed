@@ -1,3 +1,8 @@
+# OpenBSD sys.mk reserves DEBUG and expands it into CFLAGS/LDFLAGS.
+# Keep it empty; NETSPEED_DEBUG is the project switch.
+DEBUG=
+NETSPEED_DEBUG?=no
+
 # Portable project build. This file intentionally uses the common GNU make / BSD pmake subset.
 
 GO?=go

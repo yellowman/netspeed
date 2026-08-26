@@ -85,7 +85,7 @@ if [ "$have_webrtc" = yes ]; then
     platform_cppflags="$platform_cppflags -DNETSPEED_HAVE_LIBDATACHANNEL=1"
 fi
 
-if [ "$DEBUG" = yes ]; then
+if [ "$NETSPEED_DEBUG" = yes ]; then
     CFLAGS="$CFLAGS -O0 -g -DDEBUG"
 fi
 
