@@ -15,15 +15,10 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/yellowman/netspeed/internal/buildinfo"
 	"github.com/yellowman/netspeed/internal/config"
 	"github.com/yellowman/netspeed/internal/server"
 	turnserver "github.com/yellowman/netspeed/internal/turn"
-)
-
-var (
-	version = "dev"
-	commit  = "unknown"
-	date    = "unknown"
 )
 
 func main() {
@@ -82,7 +77,7 @@ func main() {
 	flag.Parse()
 
 	if *showVersion {
-		fmt.Printf("netspeedd version %s (commit: %s, built: %s)\n", version, commit, date)
+		fmt.Println(buildinfo.Line("netspeedd"))
 		return
 	}
 

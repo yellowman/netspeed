@@ -511,10 +511,10 @@ int turn_allocate(turn_conn_t *conn)
         /* Check error code */
         attr = stun_find_attr(resp, n, ATTR_ERROR_CODE, &attr_len);
         if (attr) {
-            int code;
+            int code = 0;
             char reason[256];
-            stun_parse_error_code(attr, attr_len, &code, reason, sizeof(reason));
-            if (code != 401) {
+            if (stun_parse_error_code(attr, attr_len, &code, reason,
+                                      sizeof(reason)) < 0 || code != 401) {
                 return TURN_ERR_AUTH;
             }
         }
@@ -575,11 +575,12 @@ int turn_allocate(turn_conn_t *conn)
         uint16_t attr_len;
         const uint8_t *attr = stun_find_attr(resp, n, ATTR_ERROR_CODE, &attr_len);
         if (attr) {
-            int code;
-            stun_parse_error_code(attr, attr_len, &code, NULL, 0);
-            if (code == 438) return TURN_ERR_STALE_NONCE;
-            if (code == 486) return TURN_ERR_QUOTA;
-            if (code == 508) return TURN_ERR_CAPACITY;
+            int code = 0;
+            if (stun_parse_error_code(attr, attr_len, &code, NULL, 0) == 0) {
+                if (code == 438) return TURN_ERR_STALE_NONCE;
+                if (code == 486) return TURN_ERR_QUOTA;
+                if (code == 508) return TURN_ERR_CAPACITY;
+            }
         }
         return TURN_ERR_AUTH;
     }

@@ -10,11 +10,13 @@ It has three parts:
 2. **netspeed** — command-line client with human, quiet, CSV, and JSON output;
 3. **web UI** — browser client with fixed-duration measurements and quality views.
 
-The module requires Go 1.21.3 or newer.
+The module requires Go 1.21.3 or newer. Release CI keeps that minimum-
+version test while pinning the release compiler to Go 1.27.0.
 
 This archive includes the completed Phase 1 measurement-integrity, Phase 2
 measurement-methodology, Phase 3 WebRTC-lifecycle, Phase 4 service-hardening,
-and Phase 5 HTTP/deployment work. The canonical contracts are:
+Phase 5 HTTP/deployment, and Phase 6 release-qualification work. The canonical
+contracts are:
 
 - [`MEASUREMENT_PROTOCOL_V2.md`](MEASUREMENT_PROTOCOL_V2.md) — verified transfers,
   fixed-duration windows, loaded-latency overlap, and packet frames;
@@ -24,7 +26,9 @@ and Phase 5 HTTP/deployment work. The canonical contracts are:
   authentication, trusted proxies, TURN defaults, quotas, and metrics;
 - [`HTTP_DEPLOYMENT.md`](HTTP_DEPLOYMENT.md) — endpoint deadlines, browser API
   routing, CORS/Resource Timing, TLS, configuration, GeoIP, and shutdown;
-- [`IMPROVEMENT_PHASES.md`](IMPROVEMENT_PHASES.md) — completed and remaining work.
+- [`RELEASE_QUALIFICATION.md`](RELEASE_QUALIFICATION.md) — CI, end-to-end,
+  supported-platform, source-hygiene, and deterministic-release gates;
+- [`IMPROVEMENT_PHASES.md`](IMPROVEMENT_PHASES.md) — completed phased work.
 
 quick start
 -----------
@@ -44,6 +48,44 @@ go build -o netspeed ./cmd/netspeed
 A normal Phase 2 client requires a Netspeed measurement-protocol-v2 server.
 Legacy endpoints without verified upload receipts can only be used for an
 explicit download-only test.
+
+development and release qualification
+-------------------------------------
+
+The common local checks are exposed through the top-level Makefile:
+
+```bash
+make fmt-check
+make hygiene
+make docs-check
+make release-tools
+make test
+make race
+make vet
+make web-test
+make c-check
+make integration
+```
+
+The full release gate additionally runs real embedded-TURN interoperability,
+Chromium automation, vulnerability/static analysis, native Windows and OpenBSD
+jobs, and a double-build reproducibility comparison in GitHub Actions. See
+[`RELEASE_QUALIFICATION.md`](RELEASE_QUALIFICATION.md).
+
+Both Go binaries use the same linker-injected build metadata:
+
+```bash
+./netspeed --version
+./netspeedd --version
+```
+
+Official binary archives are generated for Linux, OpenBSD, and Windows on amd64
+and arm64. `scripts/release.py` also emits a deterministic source ZIP,
+`SHA256SUMS`, and `release-manifest.json`.
+
+The C implementation in `netspeed.c/` is retained only as unsupported legacy
+source. CI keeps it warning-clean under GCC and Clang, but official binary
+archives contain only the protocol-v2 Go client and daemon.
 
 running the daemon
 ------------------
@@ -277,6 +319,7 @@ netspeed/
 ├── cmd/netspeed/        # Go CLI
 ├── cmd/netspeedd/       # daemon entry point
 ├── internal/
+│   ├── buildinfo/       # shared linker-injected release identity
 │   ├── clientaddr/      # trusted-proxy client identity
 │   ├── config/          # configuration and validation
 │   ├── limits/          # concurrency, byte quota, and token buckets
@@ -288,8 +331,14 @@ netspeed/
 │   ├── telemetry/       # cross-package operational snapshots
 │   ├── turn/            # optional bounded embedded TURN relay
 │   └── webrtc/          # packet-test session manager
-├── tests/web/           # dependency-free browser-engine tests
+├── scripts/             # source hygiene and deterministic release tooling
+├── tests/
+│   ├── browser/         # real Chromium smoke test
+│   ├── integration/     # daemon/CLI and embedded-TURN process fixtures
+│   ├── release/         # deterministic packager tests
+│   └── web/             # dependency-free browser-engine tests
 ├── web/                 # browser UI
+├── netspeed.c/          # unsupported legacy C compatibility source
 └── configs/             # locations and shell-compatible daemon env examples
 ```
 

@@ -14,10 +14,7 @@ import (
 
 	"github.com/yellowman/netspeed/cmd/netspeed/client"
 	"github.com/yellowman/netspeed/cmd/netspeed/output"
-)
-
-var (
-	version = "dev"
+	"github.com/yellowman/netspeed/internal/buildinfo"
 )
 
 func main() {
@@ -76,7 +73,7 @@ func main() {
 	flag.Parse()
 
 	if showVersion {
-		fmt.Printf("netspeed %s\n", version)
+		fmt.Println(buildinfo.Line("netspeed"))
 		os.Exit(0)
 	}
 
@@ -143,7 +140,7 @@ func main() {
 	}()
 
 	// Print header
-	out.Header(serverURL, version)
+	out.Header(serverURL, buildinfo.Version)
 
 	// Run the speed test
 	results, err := c.Run(ctx)

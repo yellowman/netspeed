@@ -76,9 +76,20 @@ func (o *Output) Header(serverURL, version string) {
 		return
 	}
 
-	fmt.Printf("%s v%s\n", o.color(ColorBold, "netspeed"), version)
+	fmt.Printf("%s %s\n", o.color(ColorBold, "netspeed"), displayVersion(version))
 	fmt.Printf("Server: %s\n", o.color(ColorCyan, serverURL))
 	fmt.Println(strings.Repeat("─", 48))
+}
+
+func displayVersion(version string) string {
+	version = strings.TrimSpace(version)
+	if version == "" {
+		return "dev"
+	}
+	if version == "dev" || strings.HasPrefix(version, "v") {
+		return version
+	}
+	return "v" + version
 }
 
 // Progress updates the progress display.

@@ -173,5 +173,5 @@ interfaces. Tests use adversarial fakes to verify:
 - pending offers cannot exceed global or per-client capacity;
 - packet reports cannot complete a session created by another client identity.
 
-The external Pion/TURN interoperability test remains part of Phase 6 release
+The external Pion/TURN interoperability test is part of the Phase 6 release
 qualification when the real modules and a relay environment are available.

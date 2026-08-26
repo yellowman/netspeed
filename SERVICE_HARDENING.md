@@ -317,6 +317,6 @@ exposure, response-writer/recovery semantics, HTTP-first shutdown, TLS
 validation, the configuration-format decision, and independent ASN/City GeoIP
 wiring. Those details are canonical in [`HTTP_DEPLOYMENT.md`](HTTP_DEPLOYMENT.md).
 
-The remaining Phase 6 work is genuine Pion WebRTC/TURN interoperability,
+Phase 6 adds genuine Pion WebRTC/TURN interoperability,
 supported-OS CI, vulnerability scanning, end-to-end release qualification, and
 reproducible release artifacts.

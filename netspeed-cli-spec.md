@@ -23,8 +23,10 @@ etc.) are intentionally out of scope.
 > [`MEASUREMENT_PROTOCOL_V2.md`](MEASUREMENT_PROTOCOL_V2.md) is the canonical
 > measurement contract, and [`SERVICE_HARDENING.md`](SERVICE_HARDENING.md)
 > defines Phase 4 bearer authentication and server admission responses. The
-> configuration-file and C-client sections below remain legacy design notes
-> until Phase 5 and Phase 6 respectively.
+> configuration-file sections below are legacy design notes. The C-client
+> sections are retained for historical reference, but Phase 6 explicitly
+> classifies that pre-v2 client as unsupported and excludes it from binary
+> releases.
 
 ## 1. command line interface
 
@@ -1537,9 +1539,10 @@ Frames include a version, type, sequence, send/receive timestamps, declared
 length, and deterministic padding. The client reconciles acknowledgements with
 the daemon report to distinguish transaction, forward, and reverse-ack loss.
 
-The C client is not protocol-v2 compatible or release-qualified in this archive.
-Its TURN/SCTP implementation remains Phase 6 work and must not be treated as a
-supported alternative client.
+The C client is not protocol-v2 compatible and is not a supported alternative
+client. Phase 6 repairs its GCC/Clang source-health build but deliberately
+excludes it from binary releases; compiler cleanliness does not qualify its
+historical TURN/SCTP measurement method.
 
 ### 14.9 Go implementation (using pion)
 

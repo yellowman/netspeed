@@ -306,13 +306,15 @@ also not samples and return `401` as defined by `SERVICE_HARDENING.md`.
 ## 9. implementation and compatibility boundaries
 
 - The Go CLI and browser are the supported v2 clients in this archive.
-- The C client has not been migrated or qualified for protocol v2; that remains
-  Phase 6 work.
+- The C client has not been migrated to protocol v2. Phase 6 explicitly removed
+  it from the supported binary release while retaining warning-clean legacy
+  source for reference.
 - Phase 3 completed WebRTC session ownership, cancellation, disconnect recovery, and race-safe teardown.
 - Phase 4 completed public-service concurrency, rate, quota, authentication,
   trusted-proxy, metrics, and TURN controls.
 - Phase 5 completed endpoint deadlines, configurable browser API routing,
   CORS/Resource Timing, HTTP wrapper/recovery behavior, shutdown ordering, TLS,
   configuration, and GeoIP contracts as documented in `HTTP_DEPLOYMENT.md`.
-- Phase 6 will run the real dependency-integrated release matrix and qualify or
-  remove the C client.
+- Phase 6 adds the real dependency-integrated CI/release matrix, process and
+  browser fixtures, embedded-TURN interoperability, and deterministic release
+  construction defined in `RELEASE_QUALIFICATION.md`.
