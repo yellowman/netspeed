@@ -965,8 +965,11 @@
         map.fitBounds(bounds, { padding: [30, 30], maxZoom: 8 });
 
         // Draw a line between them
+        const mapLinkColor = getComputedStyle(document.body)
+            .getPropertyValue('--color-map-link')
+            .trim() || '#8b5cf6';
         L.polyline([[clientLat, clientLon], [serverLat, serverLon]], {
-            color: '#8b5cf6',
+            color: mapLinkColor,
             weight: 2,
             opacity: 0.6,
             dashArray: '5, 10'

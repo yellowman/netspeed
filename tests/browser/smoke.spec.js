@@ -55,3 +55,31 @@ test('real browser loads the UI and verifies transfer receipts', async ({ page }
     expect(receipt.serverDurationNs).toBeGreaterThan(0);
     expect(pageErrors).toEqual([]);
 });
+
+for (const variant of [
+    {
+        path: '/alternate.html',
+        title: 'NetSpeed Observatory - Progressive Network Analysis',
+        bodyClass: 'alternate-ui'
+    },
+    {
+        path: '/phosphor.html',
+        title: 'NETSPEED.SYSTEM - Phosphor Link Monitor',
+        bodyClass: 'phosphor-ui'
+    }
+]) {
+    test(`${variant.bodyClass} browser interface loads the complete measurement surface`, async ({ page }) => {
+        const pageErrors = [];
+        page.on('pageerror', error => pageErrors.push(String(error)));
+
+        await page.goto(variant.path);
+        await expect(page).toHaveTitle(variant.title);
+        await expect(page.locator('body')).toHaveClass(new RegExp(variant.bodyClass));
+        await expect(page.locator('#startTestBtn')).toBeVisible();
+        await expect(page.locator('.progress-rail [data-progress-stage]')).toHaveCount(7);
+        await expect(page.locator('.measurement-ledger')).toBeVisible();
+        await expect(page.locator('#packetsReceived')).toBeVisible();
+        await expect(page.locator('details.extras-details')).toHaveAttribute('open', '');
+        expect(pageErrors).toEqual([]);
+    });
+}

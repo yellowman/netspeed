@@ -1,18 +1,16 @@
 <!DOCTYPE html>
-<html lang="en" data-theme="dark">
+<html lang="en" data-theme="dark" class="phosphor-root">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <meta name="description" content="Network Speed Test - Measure your download, upload, latency, and packet loss">
-    <title>NetSpeed - Network Speed Test</title>
+    <meta name="description" content="Green phosphor network quality monitor for throughput, latency, jitter, packet loss, and WebRTC diagnostics">
+    <title>NETSPEED.SYSTEM - Phosphor Link Monitor</title>
     <link rel="icon" type="image/svg+xml" href="favicon.svg">
     <link rel="stylesheet" href="css/styles.css">
+    <link rel="stylesheet" href="css/phosphor.css">
     <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" crossorigin="">
-    <link rel="preconnect" href="https://fonts.googleapis.com">
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
 </head>
-<body>
+<body class="phosphor-ui" data-interface="phosphor">
     <!-- Top Navigation Bar -->
     <header class="top-bar">
         <div class="top-bar-content">
@@ -20,9 +18,9 @@
                 <svg class="logo-icon" viewBox="0 0 48 48" fill="none">
                     <defs>
                         <linearGradient id="logoGradient" x1="0%" y1="50%" x2="100%" y2="50%">
-                            <stop offset="0%" stop-color="#3b82f6"/>
-                            <stop offset="50%" stop-color="#8b5cf6"/>
-                            <stop offset="100%" stop-color="#06b6d4"/>
+                            <stop offset="0%" stop-color="#188533"/>
+                            <stop offset="50%" stop-color="#69ff63"/>
+                            <stop offset="100%" stop-color="#b3ff9f"/>
                         </linearGradient>
                     </defs>
                     <!-- Outer gauge arc (semicircle from left to right) -->
@@ -45,9 +43,14 @@
                     </g>
                     <circle cx="24" cy="28" r="3" fill="currentColor"/>
                 </svg>
-                <span class="logo-text">NetSpeed</span>
+                <span class="logo-text">NETSPEED.SYSTEM</span>
             </div>
             <div class="top-bar-right">
+                <nav class="interface-switcher" aria-label="Interface style">
+                    <a href="index.html">Standard</a>
+                    <a href="alternate.html" data-interface-link="alternate">Observatory</a>
+                    <a href="phosphor.html" data-interface-link="phosphor">Phosphor</a>
+                </nav>
                 <a href="https://github.com/yellowman/netspeed" target="_blank" rel="noopener" class="github-link">
                     <svg viewBox="0 0 24 24" fill="currentColor" width="20" height="20">
                         <path d="M12 0C5.37 0 0 5.37 0 12c0 5.31 3.435 9.795 8.205 11.385.6.105.825-.255.825-.57 0-.285-.015-1.23-.015-2.235-3.015.555-3.795-.735-4.035-1.41-.135-.345-.72-1.41-1.23-1.695-.42-.225-1.02-.78-.015-.795.945-.015 1.62.87 1.845 1.23 1.08 1.815 2.805 1.305 3.495.99.105-.78.42-1.305.765-1.605-2.67-.3-5.46-1.335-5.46-5.925 0-1.305.465-2.385 1.23-3.225-.12-.3-.54-1.53.12-3.18 0 0 1.005-.315 3.3 1.23.96-.27 1.98-.405 3-.405s2.04.135 3 .405c2.295-1.56 3.3-1.23 3.3-1.23.66 1.65.24 2.88.12 3.18.765.84 1.23 1.905 1.23 3.225 0 4.605-2.805 5.625-5.475 5.925.435.375.81 1.095.81 2.22 0 1.605-.015 2.895-.015 3.3 0 .315.225.69.825.57A12.02 12.02 0 0024 12c0-6.63-5.37-12-12-12z"/>
@@ -67,7 +70,42 @@
         </div>
     </header>
 
+    <aside class="interface-chrome" aria-label="Test sequence">
+        <div class="interface-chrome-inner">
+            <div class="sequence-heading">
+                <span class="sequence-kicker">Live test sequence</span>
+                <strong data-stage-label>Ready</strong>
+            </div>
+            <ol class="progress-rail">
+                <li data-progress-stage="meta"><span>01</span><b>Handshake</b></li>
+                <li data-progress-stage="latency"><span>02</span><b>Idle latency</b></li>
+                <li data-progress-stage="download"><span>03</span><b>Download</b></li>
+                <li data-progress-stage="upload"><span>04</span><b>Upload</b></li>
+                <li data-progress-stage="loaded-latency"><span>05</span><b>Load response</b></li>
+                <li data-progress-stage="packet-loss"><span>06</span><b>Packet path</b></li>
+                <li data-progress-stage="complete"><span>07</span><b>Analysis</b></li>
+            </ol>
+            <div class="sequence-percent"><span data-progress-percent>0%</span></div>
+        </div>
+    </aside>
+
     <main class="main-content">
+
+        <section class="terminal-banner" aria-labelledby="terminalTitle">
+            <div class="terminal-titlebar">NETSPEED.SYSTEM / LINK ANALYZER</div>
+            <div class="terminal-copy">
+                <p class="terminal-ready">NETSPEED LINK DIAGNOSTICS LOADED</p>
+                <h1 id="terminalTitle">NETWORK QUALITY MONITOR</h1>
+                <p>PRESS RUN TEST TO SAMPLE THROUGHPUT, LATENCY, JITTER, PACKET DELIVERY, WEBRTC RELAY PATH, QUALITY, AND CONFIDENCE.</p>
+            </div>
+            <div class="terminal-registers" aria-label="System registers">
+                <div><span>NODE........</span><strong data-mirror="serverLocation">WAITING</strong></div>
+                <div><span>NETWORK.....</span><strong data-mirror="networkInfo">WAITING</strong></div>
+                <div><span>RTC PATH....</span><strong data-mirror="connectionPath">UNTESTED</strong></div>
+                <div><span>CLOCK.......</span><strong data-live-clock>--:--:--</strong></div>
+            </div>
+        </section>
+
         <!-- Hero Section with Main Metrics -->
         <section class="hero-section hero-compact">
             <div class="hero-metrics-row">
@@ -123,14 +161,14 @@
                     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                         <polygon points="5 3 19 12 5 21 5 3"/>
                     </svg>
-                    <span>Start Test</span>
+                    <span>RUN TEST</span>
                 </button>
                 <button class="btn btn-secondary btn-sm" id="pauseTestBtn" disabled>
                     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                         <rect x="6" y="4" width="4" height="16"/>
                         <rect x="14" y="4" width="4" height="16"/>
                     </svg>
-                    <span>Pause</span>
+                    <span>PAUSE</span>
                 </button>
                 <div class="progress-inline" id="progressContainer">
                     <div class="progress-bar-inline">
@@ -377,9 +415,9 @@
 
         <!-- Additional details (collapsed by default) -->
         <section class="section extras-section">
-            <details class="extras-details">
+            <details class="extras-details" open>
                 <summary class="extras-summary">
-                    <span>More Details</span>
+                    <span>CATALOG / EXTENDED DIAGNOSTICS</span>
                     <svg class="accordion-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                         <polyline points="6 9 12 15 18 9"/>
                     </svg>
@@ -453,32 +491,41 @@
                 </div>
             </details>
         </section>
+        <section class="measurement-ledger" aria-labelledby="ledgerTitle">
+            <div class="ledger-heading">
+                <span class="ledger-index">08</span>
+                <div>
+                    <span class="ledger-kicker">Complete evidence ledger</span>
+                    <h2 id="ledgerTitle">Derived and diagnostic measurements</h2>
+                </div>
+            </div>
+            <div class="ledger-grid">
+                <div class="ledger-item"><span>Packets received</span><strong id="packetsReceived"><span class="placeholder"></span></strong></div>
+                <div class="ledger-item"><span>RTT minimum</span><strong id="rttMin"><span class="placeholder"></span></strong></div>
+                <div class="ledger-item"><span>RTT p90</span><strong id="rttP90"><span class="placeholder"></span></strong></div>
+                <div class="ledger-item"><span>Maximum loss burst</span><strong id="maxBurst"><span class="placeholder"></span></strong></div>
+                <div class="ledger-item"><span>Average loss burst</span><strong id="avgBurst"><span class="placeholder"></span></strong></div>
+                <div class="ledger-item"><span>Download variability</span><strong id="downloadVariability"><span class="placeholder"></span></strong></div>
+                <div class="ledger-item"><span>Upload variability</span><strong id="uploadVariability"><span class="placeholder"></span></strong></div>
+                <div class="ledger-item ledger-item-wide"><span>Score interpretation</span><strong id="scoreDescription"><span class="placeholder"></span></strong></div>
+            </div>
+        </section>
+
     </main>
 
-    <!-- Hidden duplicate data elements -->
-    <div style="display:none;">
-        <span id="packetsReceived"></span>
-        <span id="rttMin"></span>
-        <span id="rttP90"></span>
-        <span id="maxBurst"></span>
-        <span id="avgBurst"></span>
-        <span id="downloadVariability"></span>
-        <span id="uploadVariability"></span>
-        <span id="scoreDescription"></span>
-    </div>
 
     <!-- Footer -->
     <footer class="footer">
         <div class="footer-content">
             <div class="footer-links">
-                <a href="index.html" aria-current="page">Standard</a>
+                <a href="index.html">Standard</a>
                 <a href="alternate.html">Observatory</a>
                 <a href="phosphor.html">Phosphor</a>
                 <a href="https://github.com/yellowman/netspeed" target="_blank" rel="noopener">Source</a>
             </div>
             <div class="footer-brand">
-                <span>Powered by</span>
-                <span class="footer-logo">NetSpeed</span>
+                <span>NETSPEED.SYSTEM</span>
+                <span class="footer-logo">READY.</span>
             </div>
         </div>
     </footer>
@@ -551,5 +598,6 @@
     <script src="js/charts.js"></script>
     <script src="js/speedtest.js"></script>
     <script src="js/app.js"></script>
+    <script src="js/interface.js"></script>
 </body>
 </html>

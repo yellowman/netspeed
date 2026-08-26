@@ -54,6 +54,12 @@ capabilities
 - The browser UI supports streamed downloads, streamed uploads where available,
   bounded fallbacks, quality views, a configurable API base URL, and explicit
   credential handling.
+- Three browser presentations share the same measurement engine and result
+  contract: [`web/index.html`](web/index.html) is the standard interface,
+  [`web/alternate.html`](web/alternate.html) is a progressive observatory with
+  a live test-sequence rail and visible evidence ledger, and
+  [`web/phosphor.html`](web/phosphor.html) is a monochrome green-phosphor
+  terminal interface.
 
 ### daemon, WebRTC, and operational safety
 
@@ -91,6 +97,26 @@ capabilities
 - Release archives are deterministic, checksummed, reconstructed twice for
   byte-for-byte comparison, and protected by source-hygiene checks that reject
   stale binaries, oversized files, module replacements, and broken local links.
+
+web interfaces
+--------------
+
+All three browser presentations use the same production measurement engine and
+result contract. The screenshots below use one representative completed result
+so the interface designs can be compared directly. Each image links to its
+corresponding HTML file.
+
+### standard
+
+[![Standard Netspeed interface showing throughput, latency, jitter, and packet-loss results](web/screenshots/standard.png)](web/index.html)
+
+### observatory
+
+[![Netspeed Observatory interface with progressive test sequence and evidence-first layout](web/screenshots/observatory.png)](web/alternate.html)
+
+### phosphor
+
+[![Netspeed green-phosphor terminal interface inspired by an Apple II system monitor](web/screenshots/phosphor.png)](web/phosphor.html)
 
 The repository is defined by the following canonical contracts:
 
