@@ -54,3 +54,35 @@ assert.match(fs.readFileSync(path.join(root, 'web/css/phosphor.css'), 'utf8'), /
     'phosphor interface must include scanline/terminal rendering');
 
 console.log('alternate browser interfaces validated');
+
+{
+    const standard = fs.readFileSync(path.join(root, 'web/index.html'), 'utf8');
+    assert.match(standard, /<body[^>]*data-interface="standard"/,
+        'standard page must identify its presentation');
+    assert.match(standard, /js\/interface\.js/,
+        'standard page must load the shared presentation-link helper');
+}
+
+for (const pageName of ['index.html', 'alternate.html', 'phosphor.html']) {
+    const html = fs.readFileSync(path.join(root, 'web', pageName), 'utf8');
+    for (const name of ['standard', 'alternate', 'phosphor']) {
+        assert.match(html, new RegExp(`data-interface-link="${name}"`),
+            `${pageName} must expose the ${name} presentation link`);
+    }
+}
+
+{
+    const helper = fs.readFileSync(path.join(root, 'web/js/interface.js'), 'utf8');
+    assert.doesNotMatch(helper, /stageFromStatus|progressStatus.*MutationObserver/s,
+        'presentation outcomes must not be inferred from human-readable status text');
+    assert.match(helper, /netspeed:stagechange/,
+        'presentation rail must consume structured stage changes');
+    for (const outcome of ['pending', 'running', 'succeeded', 'unavailable', 'failed']) {
+        assert.match(helper, new RegExp(`['"]${outcome}['"]`),
+            `presentation rail must support ${outcome}`);
+    }
+    assert.match(helper, /params\.get\('r'\)/,
+        'presentation links must preserve the supported shared-result parameter');
+    assert.match(helper, /target\.search = ''/,
+        'presentation links must not blindly carry arbitrary query parameters');
+}

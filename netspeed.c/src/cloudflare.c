@@ -68,7 +68,145 @@ static bool has_netspeed_marker(const char*s){return s&&(strstr(s,"measurementPr
 static bool contains_ci(const char *hay, const char *needle){size_t n=strlen(needle);if(!n)return true;for(;*hay;hay++){size_t i=0;while(i<n&&hay[i]&&tolower((unsigned char)hay[i])==tolower((unsigned char)needle[i]))i++;if(i==n)return true;}return false;}
 static bool cf_header(const char*s){if(!s)return false;for(const char*p=s;*p;p++){if((p[0]=='c'||p[0]=='C')&&(p[1]=='f'||p[1]=='F')&&(p[2]=='-'||p[2]=='R'||p[2]=='r'||p[2]=='S'||p[2]=='s'))return true;}return contains_ci(s,"cloudflare");}
 static bool host_is_cf(const char*s){return s&&(strstr(s,"speed.cloudflare.com")||strstr(s,".cloudflare.com")||strstr(s,".cloudflare.net"));}
-static int parse_provider(cf_options*o,int*argc,char***argv){o->provider="auto";o->server="http://localhost:8080";char**av=*argv;int out=1;for(int i=1;i<*argc;i++){char*a=av[i],*v=NULL;if(!strncmp(a,"--provider=",11)){v=a+11;o->provider_explicit=true;}else if(!strcmp(a,"--provider")){if(i+1>=*argc)return-1;v=av[++i];o->provider_explicit=true;}if(v){o->provider=v;continue;}if(!strncmp(a,"--server=",9))o->server=a+9;else if((!strcmp(a,"--server")||!strcmp(a,"-s"))&&i+1<*argc){o->server=av[i+1];av[out++]=av[i];av[out++]=av[++i];continue;}else if(!strncmp(a,"--token=",8))o->token=a+8;else if(!strcmp(a,"--token")&&i+1<*argc){o->token=av[i+1];av[out++]=av[i];av[out++]=av[++i];continue;}else if(!strcmp(a,"--json"))o->json=true;else if(!strcmp(a,"--quiet")||!strcmp(a,"-q"))o->quiet=true;else if(!strcmp(a,"--csv"))o->csv=true;else if(!strcmp(a,"--quick"))o->quick=true;else if(!strcmp(a,"--download-only"))o->download_only=true;else if(!strcmp(a,"--upload-only"))o->upload_only=true;else if(!strcmp(a,"--skip-packet-loss"))o->skip_packet=true;else if(!strcmp(a,"--insecure")||!strcmp(a,"-k"))o->insecure=true;else if(!strncmp(a,"--turn-credentials-url=",23)){o->turn_credentials_url=a+23;continue;}else if(!strcmp(a,"--turn-credentials-url")&&i+1<*argc){o->turn_credentials_url=av[++i];continue;}else if(!strncmp(a,"--turn-url=",11)){o->turn_url=a+11;continue;}else if(!strcmp(a,"--turn-url")&&i+1<*argc){o->turn_url=av[++i];continue;}else if(!strncmp(a,"--turn-username=",16)){o->turn_username=a+16;continue;}else if(!strcmp(a,"--turn-username")&&i+1<*argc){o->turn_username=av[++i];continue;}else if(!strncmp(a,"--turn-credential=",18)){o->turn_credential=a+18;continue;}else if((!strcmp(a,"--turn-credential")||!strcmp(a,"--turn-password"))&&i+1<*argc){o->turn_credential=av[++i];continue;}av[out++]=a;}av[out]=NULL;*argc=out;if(!o->token)o->token=getenv("NETSPEED_TOKEN");if(!o->turn_credentials_url)o->turn_credentials_url=getenv("NETSPEED_TURN_CREDENTIALS_URL");if(!o->turn_url)o->turn_url=getenv("NETSPEED_TURN_URL");if(!o->turn_username)o->turn_username=getenv("NETSPEED_TURN_USERNAME");if(!o->turn_credential)o->turn_credential=getenv("NETSPEED_TURN_CREDENTIAL");return 0;}
+static int
+parse_provider(cf_options *o, int *argc, char ***argv)
+{
+    char **av = *argv;
+    int out = 1;
+    bool server_explicit = false;
+    bool positional_server = false;
+
+    o->provider = "auto";
+    o->server = "http://localhost:8080";
+
+    for (int i = 1; i < *argc; i++) {
+        char *arg = av[i];
+        char *value = NULL;
+        bool keep = true;
+
+        if (strncmp(arg, "--provider=", 11) == 0) {
+            value = arg + 11;
+            o->provider_explicit = true;
+            keep = false;
+        } else if (strcmp(arg, "--provider") == 0) {
+            if (i + 1 >= *argc) return -1;
+            value = av[++i];
+            o->provider_explicit = true;
+            keep = false;
+        }
+        if (value != NULL) {
+            if (*value == '\0') return -1;
+            o->provider = value;
+            continue;
+        }
+
+        if (strncmp(arg, "--server=", 9) == 0) {
+            o->server = arg + 9;
+            server_explicit = true;
+        } else if (strcmp(arg, "--server") == 0 || strcmp(arg, "-s") == 0) {
+            if (i + 1 >= *argc) return -1;
+            o->server = av[i + 1];
+            server_explicit = true;
+            av[out++] = av[i++];
+            av[out++] = av[i];
+            continue;
+        } else if (strncmp(arg, "--token=", 8) == 0) {
+            o->token = arg + 8;
+        } else if (strcmp(arg, "--token") == 0) {
+            if (i + 1 >= *argc) return -1;
+            o->token = av[i + 1];
+            av[out++] = av[i++];
+            av[out++] = av[i];
+            continue;
+        } else if (strcmp(arg, "--json") == 0 || strcmp(arg, "-j") == 0) {
+            o->json = true;
+        } else if (strcmp(arg, "--quiet") == 0) {
+            o->quiet = true;
+        } else if (strcmp(arg, "--csv") == 0 || strcmp(arg, "-c") == 0) {
+            o->csv = true;
+        } else if (strcmp(arg, "--quick") == 0 || strcmp(arg, "-q") == 0) {
+            o->quick = true;
+        } else if (strcmp(arg, "--download-only") == 0 || strcmp(arg, "-d") == 0) {
+            o->download_only = true;
+        } else if (strcmp(arg, "--upload-only") == 0 || strcmp(arg, "-u") == 0) {
+            o->upload_only = true;
+        } else if (strncmp(arg, "--timeout=", 10) == 0) {
+            /* The strict client parses the value. Cloudflare mode currently
+             * uses the same bounded 30-second per-request ceiling. */
+        } else if (strcmp(arg, "--timeout") == 0 || strcmp(arg, "-t") == 0) {
+            if (i + 1 >= *argc) return -1;
+            av[out++] = av[i++];
+            av[out++] = av[i];
+            continue;
+        } else if (strcmp(arg, "--no-packet-loss") == 0 ||
+                   strcmp(arg, "--skip-packet-loss") == 0) {
+            o->skip_packet = true;
+            if (strcmp(arg, "--skip-packet-loss") == 0)
+                arg = "--no-packet-loss";
+        } else if (strcmp(arg, "--insecure") == 0 || strcmp(arg, "-k") == 0) {
+            o->insecure = true;
+            keep = false;
+        } else if (strncmp(arg, "--turn-credentials-url=", 23) == 0) {
+            o->turn_credentials_url = arg + 23;
+            keep = false;
+        } else if (strcmp(arg, "--turn-credentials-url") == 0) {
+            if (i + 1 >= *argc) return -1;
+            o->turn_credentials_url = av[++i];
+            keep = false;
+        } else if (strncmp(arg, "--turn-url=", 11) == 0) {
+            o->turn_url = arg + 11;
+            keep = false;
+        } else if (strcmp(arg, "--turn-url") == 0) {
+            if (i + 1 >= *argc) return -1;
+            o->turn_url = av[++i];
+            keep = false;
+        } else if (strncmp(arg, "--turn-username=", 16) == 0) {
+            o->turn_username = arg + 16;
+            keep = false;
+        } else if (strcmp(arg, "--turn-username") == 0) {
+            if (i + 1 >= *argc) return -1;
+            o->turn_username = av[++i];
+            keep = false;
+        } else if (strncmp(arg, "--turn-credential=", 18) == 0) {
+            o->turn_credential = arg + 18;
+            keep = false;
+        } else if (strcmp(arg, "--turn-credential") == 0 ||
+                   strcmp(arg, "--turn-password") == 0) {
+            if (i + 1 >= *argc) return -1;
+            o->turn_credential = av[++i];
+            keep = false;
+        } else if (arg[0] != '-') {
+            if (server_explicit || positional_server) return -1;
+            o->server = arg;
+            positional_server = true;
+        }
+
+        if (keep) av[out++] = arg;
+    }
+
+    av[out] = NULL;
+    *argc = out;
+
+    if (!o->provider_explicit) {
+        const char *provider = getenv("NETSPEED_PROVIDER");
+        if (provider && *provider) o->provider = provider;
+    }
+    if (!o->token) o->token = getenv("NETSPEED_TOKEN");
+    if (!o->turn_credentials_url)
+        o->turn_credentials_url = getenv("NETSPEED_TURN_CREDENTIALS_URL");
+    if (!o->turn_url) o->turn_url = getenv("NETSPEED_TURN_URL");
+    if (!o->turn_username) o->turn_username = getenv("NETSPEED_TURN_USERNAME");
+    if (!o->turn_credential) o->turn_credential = getenv("NETSPEED_TURN_CREDENTIAL");
+
+    if (o->download_only && o->upload_only) return -1;
+    if ((o->json ? 1 : 0) + (o->csv ? 1 : 0) + (o->quiet ? 1 : 0) > 1)
+        return -1;
+    if (!o->server || (strncmp(o->server, "http://", 7) != 0 &&
+                       strncmp(o->server, "https://", 8) != 0))
+        return -1;
+    return 0;
+}
+
 static int probe(const cf_options*o,bool*netspeed,bool*incompat,bool*cloudflare){*netspeed=*incompat=*cloudflare=false;char*u=join_url(o->server,"/meta",NULL);buffer b={0};long st=0;char*h=NULL;if(u&&http_get_buffer(o,u,&b,&st,&h)==0&&has_netspeed_marker(b.data)){*netspeed=strstr(b.data,"\"measurementProtocolVersion\":2")||strstr(b.data,"\"measurementApiVersion\":2");*incompat=!*netspeed;free(u);free(b.data);free(h);return 0;}free(u);free(b.data);free(h);u=join_url(o->server,"/__down","?bytes=0&compat=1");memset(&b,0,sizeof(b));if(!u||http_get_buffer(o,u,&b,&st,&h)!=0){free(u);free(b.data);free(h);return-1;}*cloudflare=host_is_cf(o->server)||cf_header(h);free(u);free(b.data);free(h);return 0;}
 static int transfer(const cf_options*o,bool upload,size_t bytes,double*mbps){char q[96];snprintf(q,sizeof(q),"?bytes=%zu&id=%ld",bytes,(long)time(NULL));char*u=join_url(o->server,upload?"/__up":"/__down",q);if(!u)return-1;CURL*c=curl_easy_init();if(!c){free(u);return-1;}common_curl(c,o,u);uint64_t got=0;upload_src src={bytes,0};if(upload){curl_easy_setopt(c,CURLOPT_UPLOAD,1L);curl_easy_setopt(c,CURLOPT_CUSTOMREQUEST,"POST");curl_easy_setopt(c,CURLOPT_READFUNCTION,read_zero);curl_easy_setopt(c,CURLOPT_READDATA,&src);curl_easy_setopt(c,CURLOPT_INFILESIZE_LARGE,(curl_off_t)bytes);curl_easy_setopt(c,CURLOPT_WRITEFUNCTION,discard_write);}else{curl_easy_setopt(c,CURLOPT_WRITEFUNCTION,discard_write);}double start=mono();CURLcode rc=curl_easy_perform(c);double dur=mono()-start;long status=0;curl_easy_getinfo(c,CURLINFO_RESPONSE_CODE,&status);curl_off_t dl=0;curl_easy_getinfo(c,CURLINFO_SIZE_DOWNLOAD_T,&dl);if(!upload)got=(uint64_t)dl;else got=src.read;cleanup_curl(c);free(u);if(rc!=CURLE_OK||status/100!=2||got!=bytes||dur<=0)return-1;*mbps=(double)bytes*8.0/dur/1e6;return 0;}
 static int latency_probe(const cf_options*o,double*out){char*u=join_url(o->server,"/__down","?bytes=0&during=idle");if(!u)return-1;CURL*c=curl_easy_init();if(!c){free(u);return-1;}common_curl(c,o,u);curl_easy_setopt(c,CURLOPT_WRITEFUNCTION,discard_write);double s=mono();CURLcode rc=curl_easy_perform(c);double d=(mono()-s)*1000;long status=0;curl_easy_getinfo(c,CURLINFO_RESPONSE_CODE,&status);cleanup_curl(c);free(u);if(rc!=CURLE_OK||status/100!=2||d<=0)return-1;*out=d;return 0;}
@@ -98,4 +236,83 @@ static packet_result loopback(const cf_options*o){(void)o;packet_result r={0};sn
 static const char*num(bool ok,double v,char*b,size_t n){if(!ok){snprintf(b,n,"N/A");return b;}snprintf(b,n,"%.2f",v);return b;}
 static void print_result(const cf_options*o,latency_result lat,speed_result down,speed_result up,latency_result dl,latency_result ul,packet_result p){char a[32],b[32],c[32],d[32],e[32],f[32];if(o->json){printf("{\"provider\":\"cloudflare\",\"measurementContract\":\"cloudflare-http-v1\",\"uploadEvidence\":\"client-observed-complete-body\",\"packetTopology\":\"turn-loopback\",\"server\":\"%s\",",o->server);printf("\"latency\":{\"available\":%s,\"medianMs\":%s},",lat.available?"true":"false",lat.available?num(true,lat.median,a,sizeof(a)):"null");printf("\"download\":{\"available\":%s,\"mbps\":%s,\"evidence\":\"exact-response-byte-count\"},",down.available?"true":"false",down.available?num(true,down.mbps,b,sizeof(b)):"null");printf("\"upload\":{\"available\":%s,\"mbps\":%s,\"evidence\":\"client-observed-complete-body\"},",up.available?"true":"false",up.available?num(true,up.mbps,c,sizeof(c)):"null");printf("\"downloadLoadedLatency\":{\"available\":%s,\"p90Ms\":%s},",dl.available?"true":"false",dl.available?num(true,dl.p90,d,sizeof(d)):"null");printf("\"uploadLoadedLatency\":{\"available\":%s,\"p90Ms\":%s},",ul.available?"true":"false",ul.available?num(true,ul.p90,e,sizeof(e)):"null");printf("\"packetLoss\":{\"available\":%s,\"transport\":\"webrtc-datachannel-turn-udp\",\"topology\":\"turn-loopback\",\"protocol\":\"cloudflare-loopback-v1\",\"sent\":%d,\"received\":%d,\"transactionLossPercent\":%s,\"forwardLossPercent\":null,\"reverseAcknowledgementLossPercent\":null",p.available?"true":"false",p.sent,p.received,p.available?num(true,p.loss,f,sizeof(f)):"null");if(!p.available)printf(",\"reason\":\"%s\"",p.reason);printf("}}\n");return;}if(o->csv){printf("provider,contract,server,latency_ms,download_mbps,upload_mbps,download_loaded_ms,upload_loaded_ms,packet_loss_percent,packet_topology\n");printf("cloudflare,cloudflare-http-v1,%s,%s,%s,%s,%s,%s,%s,turn-loopback\n",o->server,num(lat.available,lat.median,a,sizeof(a)),num(down.available,down.mbps,b,sizeof(b)),num(up.available,up.mbps,c,sizeof(c)),num(dl.available,dl.p90,d,sizeof(d)),num(ul.available,ul.p90,e,sizeof(e)),num(p.available,p.loss,f,sizeof(f)));return;}if(o->quiet){printf("%s %s %s %s cloudflare\n",num(down.available,down.mbps,a,sizeof(a)),num(up.available,up.mbps,b,sizeof(b)),num(lat.available,lat.median,c,sizeof(c)),num(p.available,p.loss,d,sizeof(d)));return;}printf("Provider:             cloudflare\nMeasurement contract: cloudflare-http-v1\nPacket topology:      turn-loopback\nLatency:              %s ms\nDownload:             %s Mbps\nUpload:               %s Mbps (client-observed-complete-body)\nLoaded latency down:  %s ms p90\nLoaded latency up:    %s ms p90\nPacket loss:          %s %%\n",num(lat.available,lat.median,a,sizeof(a)),num(down.available,down.mbps,b,sizeof(b)),num(up.available,up.mbps,c,sizeof(c)),num(dl.available,dl.p90,d,sizeof(d)),num(ul.available,ul.p90,e,sizeof(e)),num(p.available,p.loss,f,sizeof(f)));if(!p.available)printf("Packet test:          unavailable (%s)\n",p.reason);}
 
-int ns_cloudflare_dispatch(int*argc,char***argv){cf_options o;memset(&o,0,sizeof(o));if(parse_provider(&o,argc,argv)){fprintf(stderr,"netspeed: invalid provider arguments\n");return 2;}for(int i=1;i<*argc;i++){if(!strcmp((*argv)[i],"--help")||!strcmp((*argv)[i],"-h")||!strcmp((*argv)[i],"--version")||!strcmp((*argv)[i],"-version"))return-1;}if(!strcasecmp(o.provider,"netspeed")){setenv("NETSPEED_SELECTED_PROVIDER","netspeed",1);return-1;}if(strcasecmp(o.provider,"auto")&&strcasecmp(o.provider,"cloudflare")){fprintf(stderr,"netspeed: invalid --provider value %s\n",o.provider);return 2;}if(!strcasecmp(o.provider,"auto")){bool ns,inc,cf;if(probe(&o,&ns,&inc,&cf)||ns||inc||!cf){setenv("NETSPEED_SELECTED_PROVIDER","netspeed",1);return-1;}}latency_result lat=idle_latency(&o),dl={0},ul={0};speed_result down={0},up={0};if(!o.upload_only)down=direction(&o,false,&dl);if(!o.download_only)up=direction(&o,true,&ul);packet_result p;if(o.skip_packet){memset(&p,0,sizeof(p));snprintf(p.reason,sizeof(p.reason),"skipped by request");}else p=loopback(&o);print_result(&o,lat,down,up,dl,ul,p);return(!lat.available||(!o.upload_only&&!down.available)||(!o.download_only&&!up.available))?1:0;}
+static void
+free_latency_result(latency_result *result)
+{
+    free(result->samples.v);
+    result->samples.v = NULL;
+    result->samples.n = 0;
+    result->samples.cap = 0;
+}
+
+static void
+free_speed_result(speed_result *result)
+{
+    free(result->samples.v);
+    result->samples.v = NULL;
+    result->samples.n = 0;
+    result->samples.cap = 0;
+}
+
+int
+ns_cloudflare_dispatch(int *argc, char ***argv)
+{
+    cf_options options;
+    memset(&options, 0, sizeof(options));
+    if (parse_provider(&options, argc, argv) != 0) {
+        fprintf(stderr, "netspeed: invalid provider arguments\n");
+        return 2;
+    }
+    for (int index = 1; index < *argc; index++) {
+        if (strcmp((*argv)[index], "--help") == 0 ||
+            strcmp((*argv)[index], "-h") == 0 ||
+            strcmp((*argv)[index], "--version") == 0 ||
+            strcmp((*argv)[index], "-version") == 0)
+            return -1;
+    }
+    if (strcasecmp(options.provider, "netspeed") == 0) {
+        setenv("NETSPEED_SELECTED_PROVIDER", "netspeed", 1);
+        return -1;
+    }
+    if (strcasecmp(options.provider, "auto") != 0 &&
+        strcasecmp(options.provider, "cloudflare") != 0) {
+        fprintf(stderr, "netspeed: invalid --provider value %s\n", options.provider);
+        return 2;
+    }
+    if (strcasecmp(options.provider, "auto") == 0) {
+        bool netspeed;
+        bool incompatible;
+        bool cloudflare;
+        if (probe(&options, &netspeed, &incompatible, &cloudflare) != 0 ||
+            netspeed || incompatible || !cloudflare) {
+            setenv("NETSPEED_SELECTED_PROVIDER", "netspeed", 1);
+            return -1;
+        }
+    }
+
+    latency_result latency = idle_latency(&options);
+    latency_result download_loaded = {0};
+    latency_result upload_loaded = {0};
+    speed_result download = {0};
+    speed_result upload = {0};
+    if (!options.upload_only) download = direction(&options, false, &download_loaded);
+    if (!options.download_only) upload = direction(&options, true, &upload_loaded);
+
+    packet_result packet;
+    if (options.skip_packet) {
+        memset(&packet, 0, sizeof(packet));
+        snprintf(packet.reason, sizeof(packet.reason), "skipped by request");
+    } else {
+        packet = loopback(&options);
+    }
+    print_result(&options, latency, download, upload, download_loaded, upload_loaded, packet);
+
+    int status = (!latency.available || (!options.upload_only && !download.available) ||
+                  (!options.download_only && !upload.available)) ? 1 : 0;
+    free_latency_result(&latency);
+    free_latency_result(&download_loaded);
+    free_latency_result(&upload_loaded);
+    free_speed_result(&download);
+    free_speed_result(&upload);
+    return status;
+}

@@ -111,7 +111,12 @@ def metadata(root: Path, requested_version: str | None, allow_dirty: bool) -> Re
     if epoch < 0:
         raise SystemExit("SOURCE_DATE_EPOCH cannot be negative")
     date = datetime.fromtimestamp(epoch, timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
-    go_version = run(root, ["go", "version"], capture=True)
+    # `go version` includes the build host (for example linux/amd64), which
+    # would make otherwise identical archives differ across supported builders.
+    # GOVERSION is the normalized compiler identity and is host-independent.
+    go_version = run(root, ["go", "env", "GOVERSION"], capture=True)
+    if not re.fullmatch(r"go[0-9]+(?:\.[0-9]+)+(?:[A-Za-z0-9.-]+)?", go_version):
+        raise SystemExit(f"unexpected Go compiler identity: {go_version!r}")
     return ReleaseMetadata(
         version=version,
         commit=commit,

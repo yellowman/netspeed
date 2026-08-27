@@ -112,12 +112,10 @@ func Dispatch(args []string) (bool, int) {
 		fmt.Fprintln(os.Stderr, "netspeed:", err)
 		return true, 2
 	}
+	os.Args = append([]string{os.Args[0]}, stripped...)
 	if hasHelpOrVersion(args) {
-		fmt.Fprintln(os.Stderr, "Provider selection: --provider auto|netspeed|cloudflare")
-		fmt.Fprintln(os.Stderr, "Cloudflare TURN: --turn-credentials-url URL or --turn-url URL --turn-username USER --turn-credential PASS")
 		return false, 0
 	}
-	os.Args = append([]string{os.Args[0]}, stripped...)
 
 	switch opts.Provider {
 	case providerNetspeed:
@@ -148,6 +146,17 @@ func Dispatch(args []string) (bool, int) {
 	}
 }
 
+// WriteUsage appends the provider and TURN options consumed before the ordinary
+// flag package parses the strict Netspeed options.
+func WriteUsage(w io.Writer) {
+	fmt.Fprintln(w, "  --provider MODE             auto, netspeed, or cloudflare")
+	fmt.Fprintln(w, "  --turn-credentials-url URL Cloudflare-compatible TURN credential endpoint")
+	fmt.Fprintln(w, "  --turn-url URL             Direct TURN URL for relay-only loopback")
+	fmt.Fprintln(w, "  --turn-username USER       Direct TURN username")
+	fmt.Fprintln(w, "  --turn-credential PASS     Direct TURN credential")
+	fmt.Fprintln(w, "  --insecure                 Disable TLS verification in Cloudflare mode")
+}
+
 func setIdentity(provider, contract, topology string) {
 	_ = os.Setenv("NETSPEED_SELECTED_PROVIDER", provider)
 	_ = os.Setenv("NETSPEED_MEASUREMENT_CONTRACT", contract)
@@ -166,11 +175,13 @@ func hasHelpOrVersion(args []string) bool {
 func parseOptions(args []string) (options, []string, error) {
 	o := options{Provider: providerAuto, Server: "http://localhost:8080", Timeout: 30 * time.Second}
 	stripped := make([]string, 0, len(args))
+	serverExplicit := false
+	positionalServer := false
 	take := func(i *int, name string) (string, error) {
 		if *i+1 >= len(args) {
 			return "", fmt.Errorf("%s requires a value", name)
 		}
-		*i++
+		*i = *i + 1
 		return args[*i], nil
 	}
 	for i := 0; i < len(args); i++ {
@@ -186,7 +197,7 @@ func parseOptions(args []string) (options, []string, error) {
 					return o, nil, err
 				}
 			}
-			o.Provider = strings.ToLower(val)
+			o.Provider = strings.ToLower(strings.TrimSpace(val))
 		case "--server", "-s":
 			if !hasEq {
 				var err error
@@ -196,6 +207,7 @@ func parseOptions(args []string) (options, []string, error) {
 				}
 			}
 			o.Server = val
+			serverExplicit = true
 			stripped = append(stripped, a)
 			if !hasEq {
 				stripped = append(stripped, val)
@@ -213,31 +225,34 @@ func parseOptions(args []string) (options, []string, error) {
 			if !hasEq {
 				stripped = append(stripped, val)
 			}
-		case "--json":
+		case "--json", "-j":
 			o.JSON = true
 			stripped = append(stripped, a)
-		case "--quiet", "-q":
+		case "--quiet":
 			o.Quiet = true
 			stripped = append(stripped, a)
-		case "--csv":
+		case "--csv", "-c":
 			o.CSV = true
 			stripped = append(stripped, a)
-		case "--quick":
+		case "--quick", "-q":
 			o.Quick = true
 			stripped = append(stripped, a)
-		case "--download-only":
+		case "--download-only", "-d":
 			o.DownloadOnly = true
 			stripped = append(stripped, a)
-		case "--upload-only":
+		case "--upload-only", "-u":
 			o.UploadOnly = true
 			stripped = append(stripped, a)
-		case "--skip-packet-loss":
+		case "--no-packet-loss", "--skip-packet-loss":
 			o.SkipPacketLoss = true
-			stripped = append(stripped, a)
+			// The strict client understands --no-packet-loss. Normalize the
+			// compatibility alias before handing control back to it.
+			stripped = append(stripped, "--no-packet-loss")
 		case "--insecure", "-k":
 			o.Insecure = true
-			stripped = append(stripped, a)
-		case "--timeout":
+			// The Cloudflare adapter consumes this option. The strict client
+			// does not currently expose an insecure-TLS mode.
+		case "--timeout", "-t":
 			if !hasEq {
 				var err error
 				val, err = take(&i, key)
@@ -246,7 +261,10 @@ func parseOptions(args []string) (options, []string, error) {
 				}
 			}
 			d, err := time.ParseDuration(val)
-			if err != nil {
+			if err != nil || d <= 0 {
+				if err == nil {
+					err = errors.New("duration must be positive")
+				}
 				return o, nil, fmt.Errorf("invalid timeout: %w", err)
 			}
 			o.Timeout = d
@@ -291,11 +309,18 @@ func parseOptions(args []string) (options, []string, error) {
 			}
 			o.TurnCredential = val
 		default:
+			if !strings.HasPrefix(a, "-") {
+				if serverExplicit || positionalServer {
+					return o, nil, fmt.Errorf("unexpected positional argument %q", a)
+				}
+				o.Server = a
+				positionalServer = true
+			}
 			stripped = append(stripped, a)
 		}
 	}
 	if v := os.Getenv("NETSPEED_PROVIDER"); !o.ProviderExplicit && v != "" {
-		o.Provider = strings.ToLower(v)
+		o.Provider = strings.ToLower(strings.TrimSpace(v))
 	}
 	if o.Token == "" {
 		o.Token = os.Getenv("NETSPEED_TOKEN")
@@ -315,7 +340,20 @@ func parseOptions(args []string) (options, []string, error) {
 	if o.DownloadOnly && o.UploadOnly {
 		return o, nil, errors.New("--download-only and --upload-only are mutually exclusive")
 	}
-	if _, err := url.ParseRequestURI(o.Server); err != nil {
+	outputModes := 0
+	for _, enabled := range []bool{o.JSON, o.CSV, o.Quiet} {
+		if enabled {
+			outputModes++
+		}
+	}
+	if outputModes > 1 {
+		return o, nil, errors.New("choose only one of --json, --csv, or --quiet")
+	}
+	u, err := url.ParseRequestURI(o.Server)
+	if err != nil || u.Scheme == "" || u.Host == "" || (u.Scheme != "http" && u.Scheme != "https") {
+		if err == nil {
+			err = errors.New("URL must use http or https and include a host")
+		}
 		return o, nil, fmt.Errorf("invalid server URL: %w", err)
 	}
 	return o, stripped, nil

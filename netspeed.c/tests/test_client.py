@@ -141,10 +141,18 @@ class ProtocolHandler(BaseHTTPRequestHandler):
         )
 
 
-def run_client(binary: Path, server_url: str, direction: str, label: str = "client") -> dict[str, object]:
+def run_client(
+    binary: Path,
+    server_url: str,
+    direction: str,
+    label: str = "client",
+    provider: str | None = None,
+) -> dict[str, object]:
     flag = "--download-only" if direction == "download" else "--upload-only"
-    command = [
-        str(binary),
+    command = [str(binary)]
+    if provider is not None:
+        command.extend(["--provider", provider])
+    command.extend([
         "--server",
         server_url,
         "--token",
@@ -155,7 +163,7 @@ def run_client(binary: Path, server_url: str, direction: str, label: str = "clie
         "--json",
         "--timeout",
         "30s",
-    ]
+    ])
     completed = subprocess.run(command, text=True, capture_output=True, timeout=45)
     if completed.returncode != 0:
         raise AssertionError(
@@ -173,11 +181,13 @@ def run_expected_failure(
     binary: Path,
     server_url: str,
     direction: str,
+    provider: str | None = None,
 ) -> dict[str, object]:
     flag = "--download-only" if direction == "download" else "--upload-only"
-    completed = subprocess.run(
-        [
-            str(binary),
+    command = [str(binary)]
+    if provider is not None:
+        command.extend(["--provider", provider])
+    command.extend([
             "--server",
             server_url,
             "--token",
@@ -188,7 +198,9 @@ def run_expected_failure(
             "--json",
             "--timeout",
             "10s",
-        ],
+        ])
+    completed = subprocess.run(
+        command,
         text=True,
         capture_output=True,
         timeout=20,
@@ -254,10 +266,12 @@ def main() -> int:
     thread.start()
     try:
         url = f"http://127.0.0.1:{server.server_port}"
-        validate(run_client(binary, url, "download"), "download")
-        validate(run_client(binary, url, "upload"), "upload")
+        validate(run_client(binary, url, "download", provider="netspeed"), "download")
+        validate(run_client(binary, url, "upload", provider="auto"), "upload")
         server.mode = "old-protocol"  # type: ignore[attr-defined]
-        run_expected_failure(binary, url, "download")
+        # An endpoint that identifies itself as Netspeed is never downgraded to
+        # Cloudflare mode, even when an intermediary adds a Cloudflare header.
+        run_expected_failure(binary, url, "download", provider="auto")
         server.mode = "truncated-download"  # type: ignore[attr-defined]
         run_expected_failure(binary, url, "download")
         server.mode = "bad-upload-receipt"  # type: ignore[attr-defined]

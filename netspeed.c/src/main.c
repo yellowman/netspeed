@@ -29,6 +29,7 @@ static void usage(const char *program)
     fprintf(stderr, "A native C speed-test client for netspeedd measurement protocol v2.\n\n");
     fprintf(stderr, "Flags:\n");
     fprintf(stderr, "  -s, --server URL       Server URL (default: %s)\n", DEFAULT_SERVER_URL);
+    fprintf(stderr, "      --provider MODE    auto, netspeed, or cloudflare\n");
     fprintf(stderr, "      --token TOKEN      Shared bearer token (or NETSPEED_TOKEN)\n");
     fprintf(stderr, "  -j, --json             Output results as JSON\n");
     fprintf(stderr, "  -c, --csv              Output results as CSV\n");
@@ -37,7 +38,13 @@ static void usage(const char *program)
     fprintf(stderr, "  -q, --quick            Quick mode (fewer samples/windows)\n");
     fprintf(stderr, "  -d, --download-only    Skip upload tests\n");
     fprintf(stderr, "  -u, --upload-only      Skip download tests\n");
-    fprintf(stderr, "      --no-packet-loss   Skip the exact-size WebRTC packet test\n");
+    fprintf(stderr, "      --no-packet-loss   Skip the WebRTC packet test\n");
+    fprintf(stderr, "      --turn-credentials-url URL\n");
+    fprintf(stderr, "                           TURN credential endpoint for Cloudflare mode\n");
+    fprintf(stderr, "      --turn-url URL     Direct TURN URL for Cloudflare loopback\n");
+    fprintf(stderr, "      --turn-username USER\n");
+    fprintf(stderr, "      --turn-credential PASS\n");
+    fprintf(stderr, "      --insecure         Disable TLS verification in Cloudflare mode\n");
     fprintf(stderr, "      --no-color         Disable terminal colors\n");
     fprintf(stderr, "  -t, --timeout DURATION Total timeout (default: 60s)\n");
     fprintf(stderr, "  -V, --version          Show version and exit\n");
@@ -46,6 +53,7 @@ static void usage(const char *program)
     fprintf(stderr, "  %s\n", program);
     fprintf(stderr, "  %s --quick https://speed.example.com\n", program);
     fprintf(stderr, "  %s --token secret --json\n", program);
+    fprintf(stderr, "  %s --provider cloudflare https://speed.cloudflare.com\n", program);
 }
 
 static void print_version(void)

@@ -66,12 +66,14 @@ func main() {
 		fmt.Fprintf(os.Stderr, "A command-line speed test client for netspeedd.\n\n")
 		fmt.Fprintf(os.Stderr, "Flags:\n")
 		flag.PrintDefaults()
+		compatclient.WriteUsage(os.Stderr)
 		fmt.Fprintf(os.Stderr, "\nExamples:\n")
 		fmt.Fprintf(os.Stderr, "  netspeed                           Run test against http://localhost:8080\n")
 		fmt.Fprintf(os.Stderr, "  netspeed https://speed.example.com Run test against specific server\n")
 		fmt.Fprintf(os.Stderr, "  netspeed --quick                   Quick test with fewer samples\n")
 		fmt.Fprintf(os.Stderr, "  netspeed --json                    Output results as JSON\n")
 		fmt.Fprintf(os.Stderr, "  netspeed -v                        Verbose output with details\n")
+		fmt.Fprintf(os.Stderr, "  netspeed --provider cloudflare https://speed.cloudflare.com\n")
 	}
 
 	flag.Parse()

@@ -230,6 +230,22 @@ body.alternate-ui::before {
     box-shadow: 0 0 0 5px rgba(7, 10, 22, 0.96), 0 0 22px rgba(112, 164, 255, 0.48);
 }
 
+.progress-rail li.is-unavailable { color: #f4c86a; }
+.progress-rail li.is-unavailable span {
+    color: #251900;
+    border-color: #f4c86a;
+    background: #f4c86a;
+    box-shadow: 0 0 0 5px rgba(7, 10, 22, 0.96), 0 0 16px rgba(244, 200, 106, 0.28);
+}
+
+.progress-rail li.is-failed { color: #ff8f9c; }
+.progress-rail li.is-failed span {
+    color: #2b050a;
+    border-color: #ff7788;
+    background: #ff7788;
+    box-shadow: 0 0 0 5px rgba(7, 10, 22, 0.96), 0 0 18px rgba(255, 119, 136, 0.32);
+}
+
 .sequence-percent {
     justify-self: end;
     color: #a9c9ff;

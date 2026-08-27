@@ -246,6 +246,21 @@ body.phosphor-ui::after {
 .phosphor-ui .progress-rail li.is-complete { color: var(--phosphor-mid); }
 .phosphor-ui .progress-rail li.is-complete span::before { content: "[*"; }
 .phosphor-ui .progress-rail li.is-active { color: #000; background: var(--phosphor); text-shadow: none; }
+.phosphor-ui .progress-rail li.is-unavailable {
+    color: var(--phosphor-dim);
+    text-decoration: underline dashed;
+    text-underline-offset: 0.16rem;
+}
+.phosphor-ui .progress-rail li.is-unavailable span::before { content: "[?"; }
+.phosphor-ui .progress-rail li.is-failed {
+    color: var(--phosphor-hot);
+    box-shadow: inset 0 0 0 1px var(--phosphor);
+    animation: phosphor-stage-fault 1.2s steps(2, end) infinite;
+}
+.phosphor-ui .progress-rail li.is-failed span::before { content: "[!"; }
+@keyframes phosphor-stage-fault {
+    50% { color: #000; background: var(--phosphor); text-shadow: none; }
+}
 .phosphor-ui .sequence-percent { justify-self: end; color: var(--phosphor-hot); font-size: 0.75rem; }
 .phosphor-ui .sequence-percent::before { content: "SYS:"; color: var(--phosphor-dim); }
 

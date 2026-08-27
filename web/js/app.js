@@ -14,6 +14,7 @@
         isRunning: false,
         isPaused: false,
         currentStage: 'idle',
+        stageOutcomes: {},
         downloadSamples: [],
         uploadSamples: [],
         latencySamples: [],
@@ -341,6 +342,7 @@
 
         SpeedTest.setCallbacks({
             onProgress: handleProgress,
+            onStageChange: handleStageChange,
             onMetaReceived: handleMetaReceived,
             onDownloadProgress: handleDownloadProgress,
             onUploadProgress: handleUploadProgress,
@@ -351,8 +353,10 @@
             onTimingWarning: handleTimingWarning
         });
 
+        let completed = false;
         try {
             await SpeedTest.start();
+            completed = true;
         } catch (err) {
             if (err.name !== 'AbortError') {
                 console.error('Speed test failed:', err);
@@ -361,7 +365,7 @@
         }
 
         state.isRunning = false;
-        updateUIState('complete');
+        updateUIState(completed ? 'complete' : 'failed');
     }
 
     /**
@@ -395,6 +399,7 @@
      * Reset results display
      */
     function resetResults() {
+        state.stageOutcomes = {};
         state.downloadSamples = [];
         state.uploadSamples = [];
         state.latencySamples = [];
@@ -448,6 +453,7 @@
     function updateUIState(uiState) {
         const isRunning = uiState === 'running';
         const isComplete = uiState === 'complete';
+        const isFailed = uiState === 'failed';
 
         if (elements.startButton) {
             elements.startButton.disabled = isRunning;
@@ -475,15 +481,81 @@
         }
 
         if (elements.progressStatus) {
-            if (!isRunning && !isComplete) {
+            if (isFailed) {
+                elements.progressStatus.textContent = 'Test failed';
+            } else if (!isRunning && !isComplete) {
                 elements.progressStatus.textContent = 'Ready to test';
             } else if (isComplete) {
                 elements.progressStatus.textContent = 'Test complete';
             }
         }
 
-        if (elements.progressFill && !isRunning && !isComplete) {
+        if (elements.progressFill && !isRunning && !isComplete && !isFailed) {
             elements.progressFill.style.width = '0%';
+        }
+    }
+
+    const stageLabels = {
+        meta: 'Handshake',
+        latency: 'Idle latency',
+        download: 'Download',
+        upload: 'Upload',
+        'loaded-latency': 'Load response',
+        'packet-loss': 'Packet path',
+        complete: 'Analysis'
+    };
+
+    function dispatchStageChange(change) {
+        if (typeof document === 'undefined' || typeof CustomEvent !== 'function') return;
+        document.dispatchEvent(new CustomEvent('netspeed:stagechange', {
+            detail: { ...change }
+        }));
+    }
+
+    /**
+     * Preserve the measurement engine's structured outcome for each stage.
+     * Presentation code consumes this state directly and never infers success
+     * from human-readable status text.
+     */
+    function handleStageChange(change) {
+        if (!change || !stageLabels[change.stage]) return;
+        const normalized = { ...change };
+        state.stageOutcomes[normalized.stage] = normalized;
+        state.currentStage = normalized.stage;
+
+        if (elements.progressStatus) {
+            const label = stageLabels[normalized.stage];
+            if (normalized.outcome === 'running') {
+                elements.progressStatus.textContent = normalized.stage === 'complete'
+                    ? 'Analyzing results...'
+                    : `${label} in progress...`;
+            } else if (normalized.outcome === 'unavailable') {
+                elements.progressStatus.textContent = `${label} unavailable`;
+            } else if (normalized.outcome === 'failed') {
+                elements.progressStatus.textContent = `${label} failed`;
+            } else if (normalized.stage === 'complete' && normalized.outcome === 'succeeded') {
+                elements.progressStatus.textContent = 'Test complete';
+            }
+        }
+
+        dispatchStageChange(normalized);
+    }
+
+    function publishSharedStageOutcomes(results) {
+        const loadedAvailable = Array.isArray(results.latencyDownload) && results.latencyDownload.length > 0 &&
+            Array.isArray(results.latencyUpload) && results.latencyUpload.length > 0;
+        const packetAvailable = Number.isFinite(results.packetLossPercent);
+        const outcomes = {
+            meta: 'succeeded',
+            latency: Number.isFinite(results.latencyMs) ? 'succeeded' : 'unavailable',
+            download: Number.isFinite(results.downloadMbps) && results.downloadMbps > 0 ? 'succeeded' : 'unavailable',
+            upload: Number.isFinite(results.uploadMbps) && results.uploadMbps > 0 ? 'succeeded' : 'unavailable',
+            'loaded-latency': loadedAvailable ? 'succeeded' : 'unavailable',
+            'packet-loss': packetAvailable ? 'succeeded' : 'unavailable',
+            complete: 'succeeded'
+        };
+        for (const [stage, outcome] of Object.entries(outcomes)) {
+            handleStageChange({ stage, outcome, shared: true });
         }
     }
 
@@ -493,7 +565,7 @@
     function handleProgress(stage, progress) {
         state.currentStage = stage;
 
-        const stageLabels = {
+        const progressLabels = {
             'meta': 'Loading metadata...',
             'latency': 'Measuring latency...',
             'warmup': 'Warming up connection...',
@@ -504,12 +576,12 @@
         };
 
         if (elements.progressText) {
-            elements.progressText.textContent = stageLabels[stage] || 'Running tests...';
+            elements.progressText.textContent = progressLabels[stage] || 'Running tests...';
         }
 
         // Update the main status bar when the active operation changes.
         if (elements.progressStatus) {
-            elements.progressStatus.textContent = stageLabels[stage] || 'Running tests...';
+            elements.progressStatus.textContent = progressLabels[stage] || 'Running tests...';
         }
 
         // Reset the progress bar when packet-loss testing starts.
@@ -2166,6 +2238,7 @@
             elements.startButton.disabled = false;
         }
 
+        publishSharedStageOutcomes(results);
         showToast('Viewing shared speed test results', 3000);
     }
 

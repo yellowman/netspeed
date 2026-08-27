@@ -277,9 +277,21 @@ const SpeedTest = (function() {
         testConfidence: null
     };
 
+    const STAGE_KEYS = [
+        'meta',
+        'latency',
+        'download',
+        'upload',
+        'loaded-latency',
+        'packet-loss',
+        'complete'
+    ];
+    const TERMINAL_STAGE_OUTCOMES = new Set(['succeeded', 'unavailable', 'failed']);
+
     // Event callbacks
     let callbacks = {
         onProgress: null,
+        onStageChange: null,
         onMetaReceived: null,
         onDownloadProgress: null,
         onUploadProgress: null,
@@ -289,12 +301,47 @@ const SpeedTest = (function() {
         onError: null,
         onTimingWarning: null
     };
+    let stageOutcomes = Object.create(null);
 
     /**
      * Set event callbacks
      */
     function setCallbacks(cbs) {
         Object.assign(callbacks, cbs);
+    }
+
+    function emitStageChange(stage, outcome, detail = {}) {
+        if (!STAGE_KEYS.includes(stage)) {
+            throw new Error(`Unknown measurement stage: ${stage}`);
+        }
+        if (outcome !== 'pending' && outcome !== 'running' && !TERMINAL_STAGE_OUTCOMES.has(outcome)) {
+            throw new Error(`Unknown measurement stage outcome: ${outcome}`);
+        }
+        const change = {
+            stage,
+            outcome,
+            ...detail
+        };
+        stageOutcomes[stage] = change;
+        if (callbacks.onStageChange) callbacks.onStageChange({ ...change });
+        return change;
+    }
+
+    function resetStageOutcomes() {
+        stageOutcomes = Object.create(null);
+        for (const stage of STAGE_KEYS) emitStageChange(stage, 'pending');
+    }
+
+    function failRunningStages(error) {
+        const reason = error?.message || String(error || 'Measurement failed');
+        for (const stage of STAGE_KEYS) {
+            if (stageOutcomes[stage]?.outcome === 'running') {
+                emitStageChange(stage, 'failed', { reason });
+            }
+        }
+        if (stageOutcomes.complete?.outcome === 'pending') {
+            emitStageChange('complete', 'failed', { reason });
+        }
     }
 
     /**
@@ -2176,8 +2223,11 @@ const SpeedTest = (function() {
             testConfidence: null
         };
 
+        resetStageOutcomes();
+
         try {
-            // Fetch metadata and locations
+            // Fetch metadata and locations.
+            emitStageChange('meta', 'running');
             if (callbacks.onProgress) callbacks.onProgress('meta', 0);
 
             const [meta, locations] = await Promise.all([
@@ -2215,38 +2265,69 @@ const SpeedTest = (function() {
             if (callbacks.onMetaReceived) {
                 callbacks.onMetaReceived(meta, locations);
             }
+            emitStageChange('meta', 'succeeded');
 
-            // Run unloaded latency baseline
+            // Run unloaded latency baseline.
+            emitStageChange('latency', 'running');
             if (callbacks.onProgress) callbacks.onProgress('latency', 0);
             await runUnloadedLatency();
+            emitStageChange('latency', 'succeeded');
 
-            // Warmup: small transfers to establish connection and get past TCP slow start
+            // Warm the connection before the verified download windows. The
+            // presentation rail treats this as part of the download stage.
+            emitStageChange('download', 'running', { activity: 'warmup' });
             if (callbacks.onProgress) callbacks.onProgress('warmup', 0);
             await runWarmup();
 
-            // Run download tests
+            // Loaded probes are collected inside the selected download and
+            // upload windows, so this stage runs concurrently with both.
+            emitStageChange('loaded-latency', 'running');
             if (callbacks.onProgress) callbacks.onProgress('download', 0);
             await runDownloadTests();
+            emitStageChange('download', 'succeeded');
 
-            // Run upload tests
+            emitStageChange('upload', 'running');
             if (callbacks.onProgress) callbacks.onProgress('upload', 0);
             await runUploadTests();
+            emitStageChange('upload', 'succeeded');
 
-            // Loaded latency probes run inside the middle sustained download
-            // and upload windows. There is deliberately no post-load probe interval.
+            const loadedMinimum = requiredSuccessfulRuns(CONFIG.loadedLatencyProbes);
+            const loadedCounts = {
+                download: results.latencySamples.filter(sample => sample.condition === 'download' && sample.loadOverlapped === true).length,
+                upload: results.latencySamples.filter(sample => sample.condition === 'upload' && sample.loadOverlapped === true).length
+            };
+            if (loadedCounts.download >= loadedMinimum && loadedCounts.upload >= loadedMinimum) {
+                emitStageChange('loaded-latency', 'succeeded', { counts: loadedCounts });
+            } else {
+                emitStageChange('loaded-latency', 'unavailable', {
+                    counts: loadedCounts,
+                    reason: `Loaded latency requires ${loadedMinimum} verified probes in each direction`
+                });
+            }
             if (callbacks.onProgress) callbacks.onProgress('loaded-latency', 100);
 
-            // Run packet loss test
+            // Run packet loss test. An unsupported packet frame is an explicit
+            // unavailable outcome, not a successful stage and not measured zero.
+            emitStageChange('packet-loss', 'running');
             if (callbacks.onProgress) callbacks.onProgress('packet-loss', 0);
-            await runPacketLossTest();
+            const packetResult = await runPacketLossTest();
+            if (packetResult?.unavailable) {
+                emitStageChange('packet-loss', 'unavailable', {
+                    reason: packetResult.reason || 'Packet measurement unavailable'
+                });
+            } else {
+                emitStageChange('packet-loss', 'succeeded');
+            }
 
             results.endTime = Date.now();
 
-            // Calculate final summary
+            emitStageChange('complete', 'running');
+
+            // Calculate final summary.
             const summary = calculateSummary();
             const quality = calculateQuality(summary);
 
-            // Calculate enhanced metrics
+            // Calculate enhanced metrics.
             results.bandwidthEstimate = estimateBandwidth(results.throughputSamples);
             results.networkQualityScore = calculateNetworkQualityScore(summary, results.bandwidthEstimate);
             results.testConfidence = assessTestConfidence(
@@ -2254,6 +2335,7 @@ const SpeedTest = (function() {
                 results.latencySamples,
                 results.packetLoss
             );
+            emitStageChange('complete', 'succeeded');
 
             if (callbacks.onComplete) {
                 callbacks.onComplete(results, summary, quality);
@@ -2261,6 +2343,7 @@ const SpeedTest = (function() {
 
             return { results, summary, quality };
         } catch (err) {
+            failRunningStages(err);
             if (err.name !== 'AbortError') {
                 console.error('Speed test failed:', err);
                 if (callbacks.onError) {
@@ -2304,6 +2387,14 @@ const SpeedTest = (function() {
      */
     function getResults() {
         return results;
+    }
+
+    function getStageOutcomes() {
+        const copy = {};
+        for (const [stage, change] of Object.entries(stageOutcomes)) {
+            copy[stage] = { ...change };
+        }
+        return copy;
     }
 
     /**
@@ -2350,6 +2441,7 @@ const SpeedTest = (function() {
         pause,
         resume,
         getResults,
+        getStageOutcomes,
         getIsRunning,
         getIsPaused,
         exportResults,
@@ -2387,6 +2479,10 @@ const SpeedTest = (function() {
             coefficientOfVariation,
             assessTestConfidence,
             calculateSummary,
+            emitStageChange,
+            resetStageOutcomes,
+            failRunningStages,
+            getStageOutcomes,
             setResults(value) { results = value; },
             resetRequestStreamingSupport() { requestStreamingSupport = undefined; },
             setServerCapabilities(maxBytes, receiptVersion, protocolVersion = 2, frameVersion = 1, maxClientTransfers = 24) {

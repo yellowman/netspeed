@@ -69,7 +69,7 @@ class ReleaseToolTests(unittest.TestCase):
                 commit="abc123",
                 source_date_epoch=1_787_691_487,
                 date="2026-08-25T00:00:00Z",
-                go_version="go version go1.27.0 linux/amd64",
+                go_version="go1.27.0",
             )
             with mock.patch.object(release, "BINARY_PAYLOAD", ()):
                 release.write_binary_archive(
@@ -102,7 +102,7 @@ class ReleaseToolTests(unittest.TestCase):
                 commit="abc123",
                 source_date_epoch=1_787_691_487,
                 date="2026-08-25T00:00:00Z",
-                go_version="go version go1.27.0 linux/amd64",
+                go_version="go1.27.0",
             )
             with mock.patch.object(release, "BINARY_PAYLOAD", ()):
                 release.write_binary_archive(
@@ -118,6 +118,55 @@ class ReleaseToolTests(unittest.TestCase):
                     b"c_client=not-published-for-platform",
                     archive.read("netspeed-1.2.3-linux-amd64/BUILDINFO.txt"),
                 )
+
+    def test_metadata_uses_host_independent_go_version(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            responses = {
+                ("status", "--porcelain"): "",
+                ("rev-parse", "HEAD"): "abc123",
+                ("show", "-s", "--format=%ct", "HEAD"): "1787691487",
+            }
+
+            def fake_git(_root: Path, *args: str) -> str:
+                return responses[args]
+
+            with (
+                mock.patch.object(release, "git", side_effect=fake_git),
+                mock.patch.object(release, "exact_tag", return_value="v1.2.3"),
+                mock.patch.object(release, "run", return_value="go1.27.0") as run_mock,
+                mock.patch.dict("os.environ", {}, clear=True),
+            ):
+                meta = release.metadata(root, None, False)
+
+            self.assertEqual(meta.go_version, "go1.27.0")
+            run_mock.assert_called_once_with(
+                root, ["go", "env", "GOVERSION"], capture=True
+            )
+            self.assertNotIn("/", meta.go_version)
+
+    def test_metadata_rejects_host_qualified_go_version(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            responses = {
+                ("status", "--porcelain"): "",
+                ("rev-parse", "HEAD"): "abc123",
+                ("show", "-s", "--format=%ct", "HEAD"): "1787691487",
+            }
+
+            def fake_git(_root: Path, *args: str) -> str:
+                return responses[args]
+
+            with (
+                mock.patch.object(release, "git", side_effect=fake_git),
+                mock.patch.object(release, "exact_tag", return_value="v1.2.3"),
+                mock.patch.object(
+                    release, "run", return_value="go version go1.27.0 linux/amd64"
+                ),
+                mock.patch.dict("os.environ", {}, clear=True),
+            ):
+                with self.assertRaises(SystemExit):
+                    release.metadata(root, None, False)
 
     def test_release_versions(self) -> None:
         accepted = (

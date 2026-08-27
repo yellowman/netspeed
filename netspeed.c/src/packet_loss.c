@@ -430,7 +430,7 @@ static int parse_report(const char *body, packet_report_t *report)
     report->invalid_frames = json_get_int(root, "invalidFrames", -1);
     report->ack_send_failures = json_get_int(root, "ackSendFailures", -1);
     json_free(root);
-    return report->ok ? 0 : -1;
+    return 0;
 }
 
 static int report_packet_test(const packet_loss_config_t *config, const char *test_id,
@@ -474,6 +474,10 @@ static int report_packet_test(const packet_loss_config_t *config, const char *te
 static int validate_report(const packet_report_t *report, int sent, int received,
                            char *error, size_t error_len)
 {
+    if (!report->ok) {
+        snprintf(error, error_len, "server rejected packet report");
+        return -1;
+    }
     if (report->protocol_version < NETSPEED_MEASUREMENT_PROTOCOL_VERSION ||
         report->frame_size_bytes != NETSPEED_PACKET_FRAME_SIZE ||
         report->forward_received < 0 || report->forward_received > sent ||

@@ -12,7 +12,7 @@
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
 </head>
-<body>
+<body data-interface="standard">
     <!-- Top Navigation Bar -->
     <header class="top-bar">
         <div class="top-bar-content">
@@ -471,9 +471,9 @@
     <footer class="footer">
         <div class="footer-content">
             <div class="footer-links">
-                <a href="index.html" aria-current="page">Standard</a>
-                <a href="alternate.html">Observatory</a>
-                <a href="phosphor.html">Phosphor</a>
+                <a href="index.html" data-interface-link="standard" aria-current="page">Standard</a>
+                <a href="alternate.html" data-interface-link="alternate">Observatory</a>
+                <a href="phosphor.html" data-interface-link="phosphor">Phosphor</a>
                 <a href="https://github.com/yellowman/netspeed" target="_blank" rel="noopener">Source</a>
             </div>
             <div class="footer-brand">
@@ -551,5 +551,6 @@
     <script src="js/charts.js"></script>
     <script src="js/speedtest.js"></script>
     <script src="js/app.js"></script>
+    <script src="js/interface.js"></script>
 </body>
 </html>

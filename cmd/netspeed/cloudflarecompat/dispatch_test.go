@@ -146,3 +146,114 @@ func TestCloudflareRunEmitsIdentifiedResult(t *testing.T) {
 		t.Fatalf("missing provider identity: %#v", got)
 	}
 }
+
+func TestParseProviderContract(t *testing.T) {
+	tests := []struct {
+		name     string
+		args     []string
+		provider string
+		server   string
+		quick    bool
+		skip     bool
+	}{
+		{name: "explicit netspeed", args: []string{"--provider", "netspeed", "https://strict.example"}, provider: providerNetspeed, server: "https://strict.example"},
+		{name: "explicit cloudflare", args: []string{"--provider=cloudflare", "https://speed.cloudflare.com"}, provider: providerCloudflare, server: "https://speed.cloudflare.com"},
+		{name: "auto positional and quick shorthand", args: []string{"-q", "https://edge.example"}, provider: providerAuto, server: "https://edge.example", quick: true},
+		{name: "packet skip canonical", args: []string{"--no-packet-loss"}, provider: providerAuto, server: "http://localhost:8080", skip: true},
+		{name: "packet skip compatibility alias", args: []string{"--skip-packet-loss"}, provider: providerAuto, server: "http://localhost:8080", skip: true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			o, stripped, err := parseOptions(tc.args)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if o.Provider != tc.provider || o.Server != tc.server || o.Quick != tc.quick || o.SkipPacketLoss != tc.skip {
+				t.Fatalf("options=%+v", o)
+			}
+			for _, arg := range stripped {
+				if arg == "--provider" || arg == "netspeed" || arg == "cloudflare" {
+					t.Fatalf("provider option leaked to strict parser: %q in %#v", arg, stripped)
+				}
+			}
+		})
+	}
+}
+
+func TestParseProviderRejectsAmbiguousPositionalServer(t *testing.T) {
+	_, _, err := parseOptions([]string{"https://one.example", "https://two.example"})
+	if err == nil {
+		t.Fatal("expected second positional server to be rejected")
+	}
+}
+
+func TestParseProviderRejectsOutputModeConflict(t *testing.T) {
+	_, _, err := parseOptions([]string{"--json", "--quiet"})
+	if err == nil {
+		t.Fatal("expected machine output conflict to be rejected")
+	}
+}
+
+func TestDispatchHelpStripsCompatibilityOptions(t *testing.T) {
+	oldArgs := os.Args
+	defer func() { os.Args = oldArgs }()
+	os.Args = []string{"netspeed"}
+	handled, code := Dispatch([]string{"--provider", "cloudflare", "--turn-url", "turn:example.test", "--help"})
+	if handled || code != 0 {
+		t.Fatalf("handled=%v code=%d", handled, code)
+	}
+	if len(os.Args) != 2 || os.Args[1] != "--help" {
+		t.Fatalf("help args=%#v", os.Args)
+	}
+}
+
+func TestDispatchExplicitNetspeedUsesStrictClient(t *testing.T) {
+	oldArgs := os.Args
+	oldProvider := os.Getenv("NETSPEED_SELECTED_PROVIDER")
+	defer func() {
+		os.Args = oldArgs
+		_ = os.Setenv("NETSPEED_SELECTED_PROVIDER", oldProvider)
+	}()
+	os.Args = []string{"netspeed"}
+	handled, code := Dispatch([]string{"--provider", "netspeed", "https://strict.example", "--json"})
+	if handled || code != 0 {
+		t.Fatalf("handled=%v code=%d", handled, code)
+	}
+	if got := os.Getenv("NETSPEED_SELECTED_PROVIDER"); got != providerNetspeed {
+		t.Fatalf("selected provider=%q", got)
+	}
+	if len(os.Args) != 3 || os.Args[1] != "https://strict.example" || os.Args[2] != "--json" {
+		t.Fatalf("strict args=%#v", os.Args)
+	}
+}
+
+func TestDispatchAutoRefusesIncompatibleNetspeedDowngrade(t *testing.T) {
+	s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("CF-Ray", "proxy-added-header")
+		if r.URL.Path == "/meta" {
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"measurementProtocolVersion": 1,
+				"uploadReceiptVersion":       1,
+				"maxTransferBytes":           1048576,
+			})
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer s.Close()
+
+	oldArgs := os.Args
+	oldProvider := os.Getenv("NETSPEED_SELECTED_PROVIDER")
+	defer func() {
+		os.Args = oldArgs
+		_ = os.Setenv("NETSPEED_SELECTED_PROVIDER", oldProvider)
+	}()
+	os.Args = []string{"netspeed"}
+	handled, code := Dispatch([]string{"--provider", "auto", "--server", s.URL, "--json"})
+	if handled || code != 0 {
+		t.Fatalf("incompatible Netspeed endpoint was downgraded: handled=%v code=%d", handled, code)
+	}
+	if got := os.Getenv("NETSPEED_SELECTED_PROVIDER"); got != providerNetspeed {
+		t.Fatalf("selected provider=%q", got)
+	}
+}

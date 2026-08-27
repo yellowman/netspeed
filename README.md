@@ -163,6 +163,7 @@ make fmt-check
 make hygiene
 make docs-check
 make make-portability-check
+make workflow-contract-check
 make release-tools
 make test
 make test-parity
@@ -174,9 +175,11 @@ make c-sanitize
 make integration
 ```
 
-The full release gate additionally runs real embedded-TURN interoperability,
-Chromium automation, vulnerability/static analysis, native Windows and OpenBSD
-jobs, and a double-build reproducibility comparison in GitHub Actions. See
+The full non-platform release gate is available as `make ci`; it deliberately
+requires the analyzers, Chromium, libdatachannel, embedded-TURN fixtures,
+sanitizers, and double-build reproducibility check. GitHub Actions adds native
+Windows and OpenBSD jobs, and the publishing job cannot run unless every
+blocking job succeeds. See
 [`RELEASE_QUALIFICATION.md`](RELEASE_QUALIFICATION.md).
 
 All command-line programs use injected version, commit, and source-date
@@ -494,10 +497,19 @@ netspeed --provider cloudflare --server https://example.test \
 netspeed-c --provider cloudflare --server https://example.test \
   --turn-url 'turn:turn.example.test:3478?transport=udp' \
   --turn-username USER --turn-credential PASS
-``` Auto mode keeps the verified Netspeed protocol whenever the server identifies itself as Netspeed and permits Cloudflare fallback only after a positive Cloudflare compatibility fingerprint. WebRTC packet testing retains the authoritative Netspeed server-peer topology and also supports Cloudflare-compatible relay-only TURN loopback with two local peers. Results identify the selected provider, measurement contract, and packet topology.
+```
+
+Auto mode keeps the verified Netspeed protocol whenever the server identifies
+itself as Netspeed and permits Cloudflare fallback only after a positive
+Cloudflare compatibility fingerprint. WebRTC packet testing retains the
+authoritative Netspeed server-peer topology and also supports
+Cloudflare-compatible relay-only TURN loopback with two local peers. Results
+identify the selected provider, measurement contract, and packet topology.
 
 ### Interface notes
 
 - **Standard** is the compact general-purpose client.
 - **Observatory** removes the promotional hero and opens directly on the instruments, evidence, loaded-latency, packet-delivery, and confidence views.
 - **Phosphor** is an Apple II/ProDOS-inspired text-mode monitor: uppercase fixed-column typography, inverse-video headings, character plots and meters, scanlines, a block cursor, and a strictly monochrome green-phosphor display. It uses the same measurement engine and result elements as the other interfaces.
+- The progressive rail consumes structured measurement outcomes. A skipped capability remains `unavailable`, a failed operation remains `failed`, and final analysis never blanket-marks earlier work successful.
+- Presentation links retain the supported shared-result `r` parameter while discarding unrelated query state, so a shared measurement survives switching among Standard, Observatory, and Phosphor.
