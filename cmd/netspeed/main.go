@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	compatclient "github.com/yellowman/netspeed/cmd/netspeed/cloudflarecompat"
 	"os"
 	"os/signal"
 	"strings"
@@ -18,6 +19,9 @@ import (
 )
 
 func main() {
+	if handled, code := compatclient.Dispatch(os.Args[1:]); handled {
+		os.Exit(code)
+	}
 	// Command line flags
 	var (
 		serverURL    string

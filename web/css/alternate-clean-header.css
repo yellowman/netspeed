@@ -1,0 +1,3 @@
+/* Keep the observatory focused on the instruments, not a marketing hero. */
+body > header h1, .observatory-title, .hero-title, .hero-copy > h1, .hero-copy > p, .masthead-copy > h1, .masthead-copy > p { display: none !important; }
+body > header, .hero, .masthead { min-height: 0 !important; padding-top: .5rem !important; padding-bottom: .5rem !important; }

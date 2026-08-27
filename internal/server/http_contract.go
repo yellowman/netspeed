@@ -338,7 +338,7 @@ func (w *responseWriter) EnableFullDuplex() error {
 func (s *Server) setServerTiming(w http.ResponseWriter, start time.Time) {
 	if s.cfg.EnableServerTiming {
 		durationMS := float64(time.Since(start).Microseconds()) / 1000.0
-		w.Header().Set("Server-Timing", fmt.Sprintf("app;dur=%.3f", durationMS))
+		setCompatibleServerTiming(w, fmt.Sprintf("app;dur=%.3f", durationMS))
 	}
 }
 

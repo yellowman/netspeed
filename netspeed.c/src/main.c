@@ -1,3 +1,6 @@
+#include "cloudflare.h"
+#include <stdbool.h>
+#include <unistd.h>
 /* main.c - First-class protocol-v2 native C CLI. */
 #include "http.h"
 #include "output.h"
@@ -179,7 +182,7 @@ static void progress_callback(const char *stage, int current, int total, double 
     if (global_output) output_progress(global_output, stage, current, total, value);
 }
 
-int main(int argc, char **argv)
+static int netspeed_strict_main(int argc, char **argv)
 {
     config_t config;
     if (parse_args(argc, argv, &config) != 0) {
@@ -228,4 +231,80 @@ int main(int argc, char **argv)
     speedtest_cleanup(&test);
     http_global_cleanup();
     return 0;
+}
+
+
+static bool
+has_cli_flag(int argc, char **argv, const char *name)
+{
+	int i;
+	for (i = 1; i < argc; i++) {
+		if (strcmp(argv[i], name) == 0)
+			return true;
+	}
+	return false;
+}
+
+static int
+run_strict_json_with_identity(int argc, char **argv)
+{
+	FILE *tmp;
+	int saved, rc;
+	long length;
+	char *body, *start;
+	size_t got;
+
+	tmp = tmpfile();
+	if (tmp == NULL)
+		return netspeed_strict_main(argc, argv);
+	fflush(stdout);
+	saved = dup(STDOUT_FILENO);
+	if (saved < 0 || dup2(fileno(tmp), STDOUT_FILENO) < 0) {
+		if (saved >= 0)
+			close(saved);
+		fclose(tmp);
+		return netspeed_strict_main(argc, argv);
+	}
+	rc = netspeed_strict_main(argc, argv);
+	fflush(stdout);
+	(void)dup2(saved, STDOUT_FILENO);
+	close(saved);
+	if (fseek(tmp, 0, SEEK_END) != 0 || (length = ftell(tmp)) < 0 ||
+	    fseek(tmp, 0, SEEK_SET) != 0) {
+		fclose(tmp);
+		return rc;
+	}
+	body = calloc((size_t)length + 1, 1);
+	if (body == NULL) {
+		fclose(tmp);
+		return rc;
+	}
+	got = fread(body, 1, (size_t)length, tmp);
+	fclose(tmp);
+	body[got] = '\0';
+	start = body;
+	while (*start == ' ' || *start == '\t' || *start == '\r' || *start == '\n')
+		start++;
+	if (*start == '{') {
+		fwrite(body, 1, (size_t)(start - body), stdout);
+		fputs("{\"provider\":\"netspeed\",\"measurementContract\":\"netspeed-verified-v2\",\"packetTopology\":\"server-peer\",", stdout);
+		fputs(start + 1, stdout);
+	} else {
+		fwrite(body, 1, got, stdout);
+	}
+	free(body);
+	return rc;
+}
+
+int
+main(int argc, char **argv)
+{
+	int compat_status;
+
+	compat_status = ns_cloudflare_dispatch(&argc, &argv);
+	if (compat_status >= 0)
+		return compat_status;
+	if (has_cli_flag(argc, argv, "--json"))
+		return run_strict_json_with_identity(argc, argv);
+	return netspeed_strict_main(argc, argv);
 }

@@ -146,7 +146,7 @@ func (o *Output) ClearProgress() {
 // Error prints an error message.
 func (o *Output) Error(msg string) {
 	if o.cfg.JSON {
-		_ = json.NewEncoder(os.Stderr).Encode(map[string]string{"error": msg})
+		_ = json.NewEncoder(os.Stderr).Encode(withProviderIdentity(map[string]string{"error": msg}))
 		return
 	}
 	fmt.Fprintf(os.Stderr, "%s %s\n", o.color(ColorRed, "Error:"), msg)

@@ -1,0 +1,76 @@
+:root {
+  --phosphor: #33ff66;
+  --phosphor-dim: rgba(51,255,102,.62);
+  --phosphor-faint: rgba(51,255,102,.22);
+  --black: #000;
+}
+* { box-sizing: border-box; border-radius: 0 !important; }
+html, body { min-height: 100%; background: #000 !important; color: var(--phosphor) !important; }
+body {
+  margin: 0 auto !important;
+  width: min(calc(100% - 2ch), 96ch);
+  padding: 1.4rem 2ch 3rem !important;
+  font-family: "Courier New", Courier, monospace !important;
+  font-size: clamp(13px, 1.2vw, 18px) !important;
+  font-weight: 700 !important;
+  line-height: 1.18 !important;
+  letter-spacing: .055em !important;
+  text-transform: uppercase;
+  text-shadow: 0 0 .22rem var(--phosphor), 0 0 .7rem rgba(51,255,102,.34);
+  image-rendering: pixelated;
+  -webkit-font-smoothing: none;
+}
+body::before {
+  content: ""; position: fixed; inset: 0; pointer-events: none; z-index: 9998;
+  background: repeating-linear-gradient(to bottom, rgba(0,0,0,0) 0, rgba(0,0,0,0) 2px, rgba(0,0,0,.42) 3px, rgba(0,0,0,.42) 4px);
+  mix-blend-mode: multiply;
+}
+body::after {
+  content: ""; position: fixed; inset: 0; pointer-events: none; z-index: 9999;
+  box-shadow: inset 0 0 8rem #000, inset 0 0 1.8rem rgba(51,255,102,.18);
+}
+.apple-crt { position: fixed; inset: .5rem; border: 2px solid var(--phosphor-dim); pointer-events:none; z-index:9997; }
+.apple-boot { display:grid; grid-template-columns:1fr auto 1fr; border-bottom:2px solid var(--phosphor); padding:.25rem 0 .45rem; margin-bottom:.35rem; }
+.apple-boot div:nth-child(2){text-align:center}.apple-boot div:last-child{text-align:right}
+.prodos-menu { display:flex; flex-wrap:wrap; justify-content:space-between; gap:1ch; padding:.35rem 1ch; margin:.3rem 0 .8rem; color:#000!important; background:var(--phosphor)!important; text-shadow:none; border:0!important; }
+.prodos-menu span:first-child{min-width:24ch}
+header, main, footer, section, article, aside, nav, div { background: transparent !important; color: inherit !important; box-shadow: none !important; }
+header { border: 2px solid var(--phosphor) !important; padding: .55rem 1ch !important; margin: 0 0 .6rem !important; }
+h1,h2,h3,h4 { margin:.2rem 0 .45rem!important; padding:.2rem 1ch!important; color:#000!important; background:var(--phosphor)!important; text-shadow:none!important; font:inherit!important; letter-spacing:.08em!important; }
+h1 { text-align:center; font-size:1em!important; }
+h2::before { content:"] "; }
+p { margin:.25rem 0 .6rem!important; max-width:none!important; }
+a, button, input, select { color:var(--phosphor)!important; font:inherit!important; text-transform:uppercase; }
+a { text-decoration:none!important; border-bottom:1px solid var(--phosphor); }
+button, .button, [role="button"] { border:1px solid var(--phosphor)!important; background:#000!important; padding:.25rem 1ch!important; box-shadow:none!important; }
+button::before { content:"[" } button::after { content:"]" }
+button:hover, button:focus { color:#000!important; background:var(--phosphor)!important; text-shadow:none!important; outline:0!important; }
+input, select { border:0!important; border-bottom:1px solid var(--phosphor)!important; background:#000!important; padding:.2rem .5ch!important; }
+main { display:block!important; width:100%!important; }
+section, article, .card, .panel, [class*="card"], [class*="panel"] { border:1px solid var(--phosphor)!important; margin:.65rem 0!important; padding:.5rem 1ch!important; }
+section::before, article::before { color:var(--phosphor-dim); }
+.grid, [class*="grid"], [class*="metrics"], [class*="summary"] { display:grid!important; grid-template-columns:repeat(4,minmax(12ch,1fr))!important; gap:0!important; }
+.grid > *, [class*="grid"] > *, [class*="metrics"] > *, [class*="summary"] > * { min-width:0!important; border:1px solid var(--phosphor-faint)!important; padding:.45rem 1ch!important; }
+.metric-value, [class*="value"], [class*="number"] { font-size:1.25em!important; line-height:1!important; color:var(--phosphor)!important; font-variant-numeric:tabular-nums; }
+.metric-label, [class*="label"], small { color:var(--phosphor-dim)!important; font-size:.78em!important; }
+.progress, [class*="progress"] { height:1.2em!important; border:1px solid var(--phosphor)!important; background:#000!important; }
+.progress > *, [class*="progress"] > * { background:repeating-linear-gradient(90deg,var(--phosphor) 0 1ch,transparent 1ch 1.25ch)!important; }
+canvas, svg, img { filter: grayscale(1) sepia(1) saturate(8) hue-rotate(72deg) brightness(1.15) contrast(1.35)!important; background:#000!important; border:1px solid var(--phosphor)!important; }
+.mapboxgl-map, .leaflet-container { filter: grayscale(1) sepia(1) saturate(8) hue-rotate(72deg) brightness(.62) contrast(1.8)!important; }
+.modal, dialog { background:#000!important; color:var(--phosphor)!important; border:2px solid var(--phosphor)!important; }
+footer { margin-top:1rem!important; padding-top:.4rem!important; border-top:2px solid var(--phosphor)!important; text-align:left!important; }
+footer::before { content:"] CAT /NETSPEED/INTERFACES\A"; white-space:pre; }
+.sr-only { position:absolute!important;width:1px!important;height:1px!important;padding:0!important;margin:-1px!important;overflow:hidden!important;clip:rect(0,0,0,0)!important;white-space:nowrap!important;border:0!important; }
+@media (max-width: 760px) { body{padding:1rem 1ch 2rem!important;font-size:12px!important}.grid,[class*="grid"],[class*="metrics"],[class*="summary"]{grid-template-columns:repeat(2,minmax(12ch,1fr))!important}.apple-boot{grid-template-columns:1fr}.apple-boot div{text-align:left!important}.prodos-menu{display:grid;grid-template-columns:1fr 1fr} }
+@media (prefers-reduced-motion:no-preference){ body{animation:phosphor-flicker 9s infinite steps(2,end)} @keyframes phosphor-flicker{0%,97%,100%{opacity:1}98%{opacity:.965}99%{opacity:.99}} }
+
+
+/* Apple II text mode replaces modern chart chrome with character graphics. */
+.apple2-text-mode canvas { position:absolute!important; width:1px!important; height:1px!important; overflow:hidden!important; clip:rect(0,0,0,0)!important; opacity:0!important; }
+.apple-ascii-plot { margin:.35rem 0!important; overflow:hidden; white-space:pre; color:var(--phosphor)!important; font:inherit!important; line-height:1!important; letter-spacing:0!important; text-shadow:0 0 .25rem var(--phosphor); }
+.apple-text-meter { display:block; white-space:nowrap; overflow:hidden; color:var(--phosphor)!important; }
+[data-apple-file]::before { content:"] BLOAD PANEL." attr(data-apple-file); display:block; margin:-.2rem 0 .35rem; color:var(--phosphor-dim); }
+.apple-prompt { border-top:1px solid var(--phosphor); margin-top:.5rem; padding-top:.35rem; min-height:2em; }
+.apple-cursor { animation:apple-cursor 1s steps(1,end) infinite; }
+@keyframes apple-cursor { 0%,49%{opacity:1}50%,100%{opacity:0} }
+[class*="gauge"] svg, [class*="ring"] svg, [class*="icon"] svg { display:none!important; }

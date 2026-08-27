@@ -483,4 +483,21 @@ links
 
 ### Cloudflare compatibility
 
-The native clients support `--provider auto`, `--provider netspeed`, and `--provider cloudflare`. Auto mode keeps the verified Netspeed protocol whenever the server identifies itself as Netspeed and permits Cloudflare fallback only after a positive Cloudflare compatibility fingerprint. WebRTC packet testing retains the authoritative Netspeed server-peer topology and also supports Cloudflare-compatible relay-only TURN loopback with two local peers. Results identify the selected provider, measurement contract, and packet topology.
+The native clients support `--provider auto`, `--provider netspeed`, and `--provider cloudflare`. `netspeed` preserves protocol-v2 metadata and verified upload receipts. `cloudflare` uses Cloudflare-compatible HTTP endpoints and reports upload evidence as client-observed, never as a Netspeed receipt. `auto` selects Cloudflare only after a positive Cloudflare hostname or response-header fingerprint; recognizable incompatible Netspeed metadata is never downgraded.
+
+Cloudflare-compatible TURN loopback requires usable TURN credentials, supplied with `--turn-credentials-url` or `--turn-url`, `--turn-username`, and `--turn-credential`. The C build requires libdatachannel for this packet test; without it the measurement is explicitly unavailable.
+
+```sh
+netspeed --provider auto --server https://speed.cloudflare.com
+netspeed --provider cloudflare --server https://example.test \
+  --turn-credentials-url https://example.test/turn-credentials
+netspeed-c --provider cloudflare --server https://example.test \
+  --turn-url 'turn:turn.example.test:3478?transport=udp' \
+  --turn-username USER --turn-credential PASS
+``` Auto mode keeps the verified Netspeed protocol whenever the server identifies itself as Netspeed and permits Cloudflare fallback only after a positive Cloudflare compatibility fingerprint. WebRTC packet testing retains the authoritative Netspeed server-peer topology and also supports Cloudflare-compatible relay-only TURN loopback with two local peers. Results identify the selected provider, measurement contract, and packet topology.
+
+### Interface notes
+
+- **Standard** is the compact general-purpose client.
+- **Observatory** removes the promotional hero and opens directly on the instruments, evidence, loaded-latency, packet-delivery, and confidence views.
+- **Phosphor** is an Apple II/ProDOS-inspired text-mode monitor: uppercase fixed-column typography, inverse-video headings, character plots and meters, scanlines, a block cursor, and a strictly monochrome green-phosphor display. It uses the same measurement engine and result elements as the other interfaces.

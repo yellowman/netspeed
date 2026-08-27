@@ -229,7 +229,7 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 	mux.Handle("/__up", upload(s.handleUp))
 	mux.Handle("/locations", control(s.handleLocations))
 	mux.Handle("/cdn-cgi/trace", control(s.handleTrace))
-	mux.Handle("/api/turn/credentials", control(s.handleTurnCredentials))
+	mux.Handle("/api/turn/credentials", turnCompatibilityMiddleware(control(s.handleTurnCredentials)))
 	mux.Handle("/api/packet-test/offer", control(s.handlePacketTestOffer))
 	mux.Handle("/api/packet-test/report", control(s.handlePacketTestReport))
 	mux.Handle("/health", control(s.handleHealth))

@@ -60,7 +60,7 @@ func (s *Server) handleMeta(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-store")
 
-	if err := json.NewEncoder(w).Encode(clientMeta); err != nil {
+	if err := writeTURNCompatibilityJSON(w, clientMeta); err != nil {
 		// Log error but response is likely already started
 		return
 	}
@@ -239,7 +239,7 @@ func (s *Server) handleUp(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	s.setServerTiming(w, start)
 	w.WriteHeader(http.StatusOK)
-	if err := json.NewEncoder(w).Encode(receipt); err != nil {
+	if err := writeTURNCompatibilityJSON(w, receipt); err != nil {
 		s.metrics.internalFailures.Add(1)
 		log.Printf("Upload receipt write error: client=%s measId=%s error=%v", clientIP, measID, err)
 	}
@@ -259,7 +259,7 @@ func (s *Server) handleLocations(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Pragma", "no-cache")
 	addVary(w.Header(), "Authorization")
 
-	if err := json.NewEncoder(w).Encode(locs); err != nil {
+	if err := writeTURNCompatibilityJSON(w, locs); err != nil {
 		return
 	}
 }
@@ -363,7 +363,7 @@ func (s *Server) handleTurnCredentials(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("X-Content-Type-Options", "nosniff")
-	if err := json.NewEncoder(w).Encode(response); err != nil {
+	if err := writeTURNCompatibilityJSON(w, response); err != nil {
 		s.metrics.internalFailures.Add(1)
 		log.Printf("TURN credential response write error: client=%s error=%v", clientKey, err)
 		return
@@ -440,7 +440,7 @@ func (s *Server) handlePacketTestOffer(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("X-Content-Type-Options", "nosniff")
-	if err := json.NewEncoder(w).Encode(response); err != nil {
+	if err := writeTURNCompatibilityJSON(w, response); err != nil {
 		s.metrics.internalFailures.Add(1)
 		log.Printf("Packet-test offer response write error: client=%s testId=%s error=%v", clientKey, testID, err)
 	}
@@ -565,7 +565,7 @@ func (s *Server) handlePacketTestReport(w http.ResponseWriter, r *http.Request) 
 
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-store")
-	if err := json.NewEncoder(w).Encode(response); err != nil {
+	if err := writeTURNCompatibilityJSON(w, response); err != nil {
 		s.metrics.internalFailures.Add(1)
 		log.Printf("Packet test report response write error: testId=%s error=%v", req.TestID, err)
 	}
