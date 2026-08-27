@@ -139,6 +139,8 @@ func New(cfg Config) *Client {
 
 // Run executes the full speed test suite.
 func (c *Client) Run(ctx context.Context) (*Results, error) {
+	_netspeedProgress := nsBeginProgress("speed test")
+	defer _netspeedProgress.Done("complete")
 	if c.cfg.DownloadOnly && c.cfg.UploadOnly {
 		return nil, fmt.Errorf("download-only and upload-only modes are mutually exclusive")
 	}
@@ -255,6 +257,8 @@ func (c *Client) fetchMeta(ctx context.Context) (*Meta, error) {
 
 // runAdaptiveLatencyTest runs latency probes with adaptive batching (matching web client).
 func (c *Client) runAdaptiveLatencyTest(ctx context.Context, condition string, count int) ([]LatencySample, error) {
+	_netspeedProgress := nsBeginProgress("latency probes")
+	defer _netspeedProgress.Done("complete")
 	if c.cfg.Quick {
 		count = 5
 	}
@@ -353,6 +357,8 @@ func (c *Client) runAdaptiveLatencyTest(ctx context.Context, condition string, c
 
 // runParallelLatencyProbes runs multiple latency probes in parallel.
 func (c *Client) runParallelLatencyProbes(ctx context.Context, condition string, startSeq, count int) []LatencySample {
+	_netspeedProgress := nsBeginProgress("latency probes")
+	defer _netspeedProgress.Done("complete")
 	var wg sync.WaitGroup
 	results := make(chan LatencySample, count)
 
@@ -407,6 +413,8 @@ func (c *Client) quickBandwidthEstimate(ctx context.Context) float64 {
 }
 
 func (c *Client) measureLatencySample(ctx context.Context, condition string, seq int) (LatencySample, error) {
+	_netspeedProgress := nsBeginProgress("latency probes")
+	defer _netspeedProgress.Done("complete")
 	startedAt := time.Now()
 	rtt, err := c.measureLatency(ctx, condition, seq)
 	endedAt := time.Now()
@@ -426,6 +434,8 @@ func (c *Client) measureLatencySample(ctx context.Context, condition string, seq
 // measureLatency measures a single latency probe using precise timing.
 // RTT = GotFirstResponseByte - WroteRequest (excludes connection setup, TLS, DNS)
 func (c *Client) measureLatency(ctx context.Context, condition string, seq int) (time.Duration, error) {
+	_netspeedProgress := nsBeginProgress("latency probes")
+	defer _netspeedProgress.Done("complete")
 	measID := fmt.Sprintf("%d-%s-%d", time.Now().UnixNano(), condition, seq)
 	requestURL := buildMeasurementURL(c.cfg.ServerURL, "/__down", url.Values{
 		"bytes":  {"0"},
@@ -507,6 +517,8 @@ type windowPlan struct {
 }
 
 func requiredSuccessfulRuns(total int) int {
+	_netspeedProgress := nsBeginProgress("speed test")
+	defer _netspeedProgress.Done("complete")
 	if total <= 1 {
 		return total
 	}
@@ -527,6 +539,8 @@ func profilesWithinLimit(profiles []profile, maxBytes int64) []profile {
 // parallel flows. Increasing link rates increase concurrency, never a single
 // allocation or request beyond maxWindowChunkBytes.
 func selectWindowPlan(estimatedMbps float64, maxBytes int64, quick bool) windowPlan {
+	_netspeedProgress := nsBeginProgress("sustained measurement window")
+	defer _netspeedProgress.Done("complete")
 	if estimatedMbps <= 0 || math.IsNaN(estimatedMbps) || math.IsInf(estimatedMbps, 0) {
 		estimatedMbps = 10
 	}
@@ -663,6 +677,8 @@ func (c *Client) clampLoadConcurrency(requested int) int {
 // runDownloadTests runs small verified baselines, then bounded fixed-duration
 // windows. The selected window owns the loaded-latency probes.
 func (c *Client) runDownloadTests(ctx context.Context) ([]ThroughputSample, []LatencySample, error) {
+	_netspeedProgress := nsBeginProgress("download measurement")
+	defer _netspeedProgress.Done("complete")
 	profiles := profilesWithinLimit(baselineDownloadProfiles, c.maxTransferBytes)
 	if len(profiles) != len(baselineDownloadProfiles) {
 		return nil, nil, fmt.Errorf("server transfer limit %d is below the 1MB download baseline", c.maxTransferBytes)
@@ -682,6 +698,8 @@ func (c *Client) runDownloadTests(ctx context.Context) ([]ThroughputSample, []La
 
 // runUploadTests is the upload counterpart to runDownloadTests.
 func (c *Client) runUploadTests(ctx context.Context) ([]ThroughputSample, []LatencySample, error) {
+	_netspeedProgress := nsBeginProgress("upload measurement")
+	defer _netspeedProgress.Done("complete")
 	profiles := profilesWithinLimit(baselineUploadProfiles, c.maxTransferBytes)
 	if len(profiles) != len(baselineUploadProfiles) {
 		return nil, nil, fmt.Errorf("server transfer limit %d is below the 1MB upload baseline", c.maxTransferBytes)
@@ -700,6 +718,8 @@ func (c *Client) runUploadTests(ctx context.Context) ([]ThroughputSample, []Late
 }
 
 func (c *Client) runBaselineProfiles(ctx context.Context, profiles []profile, direction string) ([]ThroughputSample, error) {
+	_netspeedProgress := nsBeginProgress("calibration transfer")
+	defer _netspeedProgress.Done("complete")
 	var samples []ThroughputSample
 	totalRuns := 0
 	for _, candidate := range profiles {
@@ -742,6 +762,8 @@ func (c *Client) runBaselineProfiles(ctx context.Context, profiles []profile, di
 }
 
 func (c *Client) runSustainedWindows(ctx context.Context, direction string, plan windowPlan) ([]ThroughputSample, []LatencySample, error) {
+	_netspeedProgress := nsBeginProgress("sustained measurement window")
+	defer _netspeedProgress.Done("complete")
 	if plan.ChunkBytes <= 0 || plan.Concurrency <= 0 || plan.Windows <= 0 {
 		return nil, nil, fmt.Errorf("invalid %s sustained-window plan: %#v", direction, plan)
 	}
@@ -795,6 +817,8 @@ func (c *Client) runThroughputWindow(
 	windowIndex int,
 	withLoadedLatency bool,
 ) (ThroughputSample, []LatencySample, error) {
+	_netspeedProgress := nsBeginProgress("sustained measurement window")
+	defer _netspeedProgress.Done("complete")
 	activity := &loadActivity{}
 	aggregate := &windowAggregate{}
 	startGate := make(chan struct{})
@@ -929,6 +953,8 @@ func (c *Client) runThroughputWindow(
 }
 
 func (c *Client) runLoadedLatencyProbes(ctx context.Context, condition string, count int, activity *loadActivity) ([]LatencySample, error) {
+	_netspeedProgress := nsBeginProgress("latency probes")
+	defer _netspeedProgress.Done("complete")
 	if count <= 0 {
 		return nil, nil
 	}
@@ -1002,6 +1028,8 @@ func (c *Client) runLoadedLatencyProbes(ctx context.Context, condition string, c
 
 // measureDownload measures one verified bounded request.
 func (c *Client) measureDownload(ctx context.Context, profileName string, numBytes int64, run int) (ThroughputSample, error) {
+	_netspeedProgress := nsBeginProgress("download measurement")
+	defer _netspeedProgress.Done("complete")
 	return c.measureDownloadTracked(ctx, profileName, numBytes, run, nil)
 }
 
@@ -1012,6 +1040,8 @@ func (c *Client) measureDownloadTracked(
 	run int,
 	activity *loadActivity,
 ) (ThroughputSample, error) {
+	_netspeedProgress := nsBeginProgress("download measurement")
+	defer _netspeedProgress.Done("complete")
 	if numBytes < 0 || numBytes > c.maxTransferBytes {
 		return ThroughputSample{}, fmt.Errorf("download size %d exceeds negotiated maximum %d", numBytes, c.maxTransferBytes)
 	}
@@ -1213,6 +1243,8 @@ func decodeLimitedJSON(reader io.Reader, maxBytes int64, destination any) error 
 // measureUpload streams one bounded request and requires a receipt proving the
 // server consumed the exact body.
 func (c *Client) measureUpload(ctx context.Context, profileName string, numBytes int64, run int) (ThroughputSample, error) {
+	_netspeedProgress := nsBeginProgress("upload measurement")
+	defer _netspeedProgress.Done("complete")
 	return c.measureUploadTracked(ctx, profileName, numBytes, run, nil)
 }
 
@@ -1223,6 +1255,8 @@ func (c *Client) measureUploadTracked(
 	run int,
 	activity *loadActivity,
 ) (ThroughputSample, error) {
+	_netspeedProgress := nsBeginProgress("upload measurement")
+	defer _netspeedProgress.Done("complete")
 	if numBytes < 0 || numBytes > c.maxTransferBytes {
 		return ThroughputSample{}, fmt.Errorf("upload size %d exceeds negotiated maximum %d", numBytes, c.maxTransferBytes)
 	}
@@ -1297,6 +1331,8 @@ func (c *Client) measureUploadTracked(
 
 // runPacketLossTest runs the WebRTC packet loss test.
 func (c *Client) runPacketLossTest(ctx context.Context) (*PacketLossResult, error) {
+	_netspeedProgress := nsBeginProgress("packet delivery test")
+	defer _netspeedProgress.Done("complete")
 	// Use WebRTC implementation with pion/webrtc
 	return c.runPacketLossTestWebRTC(ctx)
 }
@@ -1323,6 +1359,8 @@ func throughputValues(samples []ThroughputSample, direction string) []float64 {
 }
 
 func latencyValues(samples []LatencySample, condition string, requireOverlap bool) []float64 {
+	_netspeedProgress := nsBeginProgress("latency probes")
+	defer _netspeedProgress.Done("complete")
 	values := make([]float64, 0, len(samples))
 	for _, sample := range samples {
 		if sample.Condition != condition || (requireOverlap && !sample.LoadOverlapped) {
@@ -1380,6 +1418,8 @@ func hasImpreciseTiming(results *Results) bool {
 }
 
 func countWindows(samples []ThroughputSample, direction string) int {
+	_netspeedProgress := nsBeginProgress("sustained measurement window")
+	defer _netspeedProgress.Done("complete")
 	count := 0
 	for _, sample := range samples {
 		if sample.Direction == direction && (sample.SampleKind == "window" || sample.Profile == "window") {
@@ -1390,6 +1430,8 @@ func countWindows(samples []ThroughputSample, direction string) int {
 }
 
 func countLatency(samples []LatencySample, condition string, overlapOnly bool) int {
+	_netspeedProgress := nsBeginProgress("latency probes")
+	defer _netspeedProgress.Done("complete")
 	count := 0
 	for _, sample := range samples {
 		if sample.Condition == condition && (!overlapOnly || sample.LoadOverlapped) {

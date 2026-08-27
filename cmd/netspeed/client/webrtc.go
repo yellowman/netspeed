@@ -129,6 +129,8 @@ func (c *Client) reportPacketTest(
 	ctx context.Context,
 	request packetTestReportRequest,
 ) (packetTestReportResponse, error) {
+	_netspeedProgress := nsBeginProgress("packet delivery test")
+	defer _netspeedProgress.Done("complete")
 	body, err := json.Marshal(request)
 	if err != nil {
 		return packetTestReportResponse{}, err
@@ -205,6 +207,8 @@ func calculateLossPercent(sent, received int) float64 {
 }
 
 func validatePacketReport(report packetTestReportResponse, probesSent, acknowledgementsReceived int) error {
+	_netspeedProgress := nsBeginProgress("packet delivery test")
+	defer _netspeedProgress.Done("complete")
 	if probesSent <= 0 {
 		return fmt.Errorf("packet report has no submitted probes")
 	}
@@ -243,6 +247,8 @@ func containsTURNURL(servers []string) bool {
 
 // runPacketLossTestWebRTC runs the exact-size WebRTC packet loss test.
 func (c *Client) runPacketLossTestWebRTC(ctx context.Context) (*PacketLossResult, error) {
+	_netspeedProgress := nsBeginProgress("packet delivery test")
+	defer _netspeedProgress.Done("complete")
 	if c.packetLossFrameVersion < protocol.PacketLossFrameVersion {
 		return &PacketLossResult{
 			Unavailable: true,

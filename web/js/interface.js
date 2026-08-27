@@ -1,202 +1,122 @@
-/* Optional presentation enhancements shared by all web interfaces. */
-(function () {
-    'use strict';
-
-    const STAGES = [
-        { key: 'meta', label: 'Handshake' },
-        { key: 'latency', label: 'Idle latency' },
-        { key: 'download', label: 'Download' },
-        { key: 'upload', label: 'Upload' },
-        { key: 'loaded-latency', label: 'Load response' },
-        { key: 'packet-loss', label: 'Packet path' },
-        { key: 'complete', label: 'Analysis' }
-    ];
-    const OUTCOMES = ['pending', 'running', 'succeeded', 'unavailable', 'failed'];
-    const TERMINAL = new Set(['succeeded', 'unavailable', 'failed']);
-
-    function textOf(element) {
-        return element ? element.textContent.replace(/\s+/g, ' ').trim() : '';
+/* Presentation adapter shared by Standard, Observatory, and Phosphor.
+ * Measurement state comes from structured events/data attributes; prose is never
+ * treated as evidence that a stage succeeded.
+ */
+(() => {
+  'use strict';
+  const OUTCOMES = new Set(['pending', 'running', 'succeeded', 'unavailable', 'failed']);
+  const aliases = {
+    handshake: 'handshake', metadata: 'handshake', connect: 'handshake',
+    latency: 'latency', idle: 'latency', idleLatency: 'latency',
+    download: 'download', down: 'download',
+    upload: 'upload', up: 'upload',
+    loaded: 'loaded', loadedLatency: 'loaded', loadedResponse: 'loaded',
+    packet: 'packet', packetLoss: 'packet', packetPath: 'packet',
+    analysis: 'analysis', complete: 'analysis', results: 'analysis'
+  };
+  const stageState = new Map();
+  const nodesFor = stage => Array.from(document.querySelectorAll(
+    `[data-stage="${CSS.escape(stage)}"], [data-progress-stage="${CSS.escape(stage)}"]`
+  ));
+  function normalizeStage(value) {
+    if (!value) return '';
+    const raw = String(value).trim();
+    return aliases[raw] || aliases[raw.replace(/[ _-]+(.)/g, (_, c) => c.toUpperCase())] || raw;
+  }
+  function normalizeOutcome(value) {
+    const raw = String(value || '').toLowerCase();
+    if (raw === 'complete' || raw === 'completed' || raw === 'success' || raw === 'ok') return 'succeeded';
+    if (raw === 'skipped' || raw === 'unsupported' || raw === 'n/a') return 'unavailable';
+    if (raw === 'error') return 'failed';
+    return OUTCOMES.has(raw) ? raw : 'pending';
+  }
+  function setStageOutcome(stageValue, outcomeValue, detail = '') {
+    const stage = normalizeStage(stageValue);
+    if (!stage) return;
+    const outcome = normalizeOutcome(outcomeValue);
+    stageState.set(stage, { outcome, detail: String(detail || '') });
+    for (const node of nodesFor(stage)) {
+      node.dataset.outcome = outcome;
+      node.classList.remove('is-pending','is-running','is-complete','is-succeeded','is-unavailable','is-failed','is-active');
+      node.classList.add(`is-${outcome}`);
+      if (outcome === 'running') node.classList.add('is-active');
+      if (outcome === 'succeeded') node.classList.add('is-complete');
+      const label = node.dataset.label || node.querySelector('[data-stage-label]')?.textContent || stage;
+      node.setAttribute('aria-label', `${label}: ${outcome}${detail ? ` — ${detail}` : ''}`);
+      node.title = detail || outcome;
+      const stateNode = node.querySelector('[data-stage-state]');
+      if (stateNode) stateNode.textContent = outcome.toUpperCase();
+      const detailNode = node.querySelector('[data-stage-detail]');
+      if (detailNode && detail) detailNode.textContent = detail;
     }
-
-    function numericWidth(element) {
-        if (!element) return 0;
-        const inline = Number.parseFloat(element.style.width || '0');
-        return Number.isFinite(inline) ? Math.max(0, Math.min(100, inline)) : 0;
-    }
-
-    function setupMirrors() {
-        document.querySelectorAll('[data-mirror]').forEach(mirror => {
-            const source = document.getElementById(mirror.dataset.mirror);
-            if (!source) return;
-            const update = () => {
-                const value = textOf(source);
-                if (value) mirror.textContent = value;
-            };
-            update();
-            new MutationObserver(update).observe(source, {
-                childList: true,
-                characterData: true,
-                subtree: true
-            });
-        });
-    }
-
-    function setupClock() {
-        const clocks = Array.from(document.querySelectorAll('[data-live-clock]'));
-        if (!clocks.length) return;
-        const update = () => {
-            const value = new Intl.DateTimeFormat(undefined, {
-                hour: '2-digit',
-                minute: '2-digit',
-                second: '2-digit',
-                hour12: false
-            }).format(new Date());
-            clocks.forEach(clock => { clock.textContent = value; });
-        };
-        update();
-        window.setInterval(update, 1000);
-    }
-
-    function normalizedOutcome(value) {
-        return OUTCOMES.includes(value) ? value : 'pending';
-    }
-
-    function setupSequence() {
-        const body = document.body;
-        const fill = document.getElementById('progressFill');
-        const stageLabel = document.querySelector('[data-stage-label]');
-        const percentLabel = document.querySelector('[data-progress-percent]');
-        const items = Array.from(document.querySelectorAll('[data-progress-stage]'));
-        if (!items.length) return;
-
-        const state = Object.create(null);
-        for (const definition of STAGES) {
-            state[definition.key] = { stage: definition.key, outcome: 'pending' };
+    document.dispatchEvent(new CustomEvent('netspeed:presentation-stage', { detail: { stage, outcome, detail } }));
+  }
+  function receiveStageEvent(event) {
+    const d = event && event.detail;
+    if (!d) return;
+    if (Array.isArray(d)) { d.forEach(x => x && setStageOutcome(x.stage || x.name, x.outcome || x.state, x.detail || x.message)); return; }
+    setStageOutcome(d.stage || d.name || d.id, d.outcome || d.state || d.status, d.detail || d.message || d.reason);
+  }
+  function resetStages() {
+    document.querySelectorAll('[data-stage], [data-progress-stage]').forEach(node => {
+      const stage = node.dataset.stage || node.dataset.progressStage;
+      if (stage) setStageOutcome(stage, 'pending', '');
+    });
+  }
+  function preserveSharedResultLinks() {
+    const params = new URLSearchParams(location.search);
+    const result = params.get('r');
+    document.querySelectorAll('a[href]').forEach(link => {
+      let target;
+      try { target = new URL(link.getAttribute('href'), location.href); } catch (_) { return; }
+      if (!/(^|\/)(index|alternate|phosphor)\.html$/.test(target.pathname)) return;
+      target.search = '';
+      target.hash = '';
+      if (result) target.searchParams.set('r', result);
+      link.href = target.href;
+    });
+  }
+  function bindMirrors() {
+    document.querySelectorAll('[data-mirror], [data-observe], [data-observation], [data-source-id], [data-value-source], [data-copy-from]').forEach(target => {
+      const id = target.dataset.mirror || target.dataset.observe || target.dataset.observation || target.dataset.sourceId || target.dataset.valueSource || target.dataset.copyFrom;
+      const source = id && document.getElementById(id);
+      if (!source) return;
+      const copy = () => {
+        const raw = ('value' in source && source.value !== undefined && source.value !== '') ? source.value : source.textContent;
+        const prefix = target.dataset.prefix || '';
+        const suffix = target.dataset.suffix || '';
+        target.textContent = `${prefix}${raw == null ? '' : raw}${suffix}`;
+        if (target instanceof HTMLProgressElement || target instanceof HTMLMeterElement) {
+          const numeric = Number.parseFloat(raw);
+          if (Number.isFinite(numeric)) target.value = numeric;
         }
-
-        const appState = window.NetspeedApp?.state?.stageOutcomes;
-        if (appState && typeof appState === 'object') {
-            for (const [stage, change] of Object.entries(appState)) {
-                if (state[stage] && change) state[stage] = { ...change };
-            }
-        }
-
-        function updateProgress() {
-            const running = STAGES.filter(definition => normalizedOutcome(state[definition.key]?.outcome) === 'running');
-            const terminal = STAGES.filter(definition => TERMINAL.has(normalizedOutcome(state[definition.key]?.outcome)));
-            const completeOutcome = normalizedOutcome(state.complete?.outcome);
-
-            let progress = 0;
-            if (completeOutcome === 'succeeded') {
-                progress = 100;
-            } else {
-                let furthest = -1;
-                const progressStages = terminal.filter(definition =>
-                    definition.key !== 'complete' || completeOutcome === 'succeeded'
-                );
-                for (const definition of [...progressStages, ...running]) {
-                    furthest = Math.max(furthest, STAGES.findIndex(item => item.key === definition.key));
-                }
-                if (furthest >= 0) {
-                    const local = running.some(definition => definition.key === STAGES[furthest].key)
-                        ? numericWidth(fill) / 100
-                        : 1;
-                    progress = ((furthest + Math.max(0.08, local)) / STAGES.length) * 100;
-                }
-            }
-            if (percentLabel) percentLabel.textContent = `${Math.round(Math.min(100, progress))}%`;
-        }
-
-        function updateLabel() {
-            const running = STAGES.filter(definition => normalizedOutcome(state[definition.key]?.outcome) === 'running');
-            const failed = STAGES.filter(definition => normalizedOutcome(state[definition.key]?.outcome) === 'failed');
-            const unavailable = STAGES.filter(definition => normalizedOutcome(state[definition.key]?.outcome) === 'unavailable');
-            let label = 'Ready';
-            if (running.length) {
-                label = running[running.length - 1].label;
-            } else if (normalizedOutcome(state.complete?.outcome) === 'succeeded') {
-                label = 'Analysis complete';
-            } else if (failed.length) {
-                label = `${failed[failed.length - 1].label} failed`;
-            } else if (unavailable.length) {
-                label = `${unavailable[unavailable.length - 1].label} unavailable`;
-            }
-            if (stageLabel) stageLabel.textContent = label;
-        }
-
-        function render() {
-            let bodyStage = 'ready';
-            for (const definition of STAGES) {
-                const outcome = normalizedOutcome(state[definition.key]?.outcome);
-                if (outcome === 'running') bodyStage = definition.key;
-            }
-            if (normalizedOutcome(state.complete?.outcome) === 'succeeded') bodyStage = 'complete';
-            body.dataset.testStage = bodyStage;
-
-            for (const item of items) {
-                const stage = item.dataset.progressStage;
-                const change = state[stage] || { stage, outcome: 'pending' };
-                const outcome = normalizedOutcome(change.outcome);
-                item.dataset.outcome = outcome;
-                item.classList.toggle('is-pending', outcome === 'pending');
-                item.classList.toggle('is-active', outcome === 'running');
-                item.classList.toggle('is-complete', outcome === 'succeeded');
-                item.classList.toggle('is-unavailable', outcome === 'unavailable');
-                item.classList.toggle('is-failed', outcome === 'failed');
-                item.setAttribute('aria-label', `${STAGES.find(definition => definition.key === stage)?.label || stage}: ${outcome}`);
-                if (change.reason) item.title = change.reason;
-                else item.removeAttribute('title');
-            }
-            updateLabel();
-            updateProgress();
-        }
-
-        document.addEventListener('netspeed:stagechange', event => {
-            const change = event.detail;
-            if (!change || !state[change.stage]) return;
-            state[change.stage] = { ...change };
-            render();
-        });
-
-        if (fill) {
-            new MutationObserver(updateProgress).observe(fill, {
-                attributes: true,
-                attributeFilter: ['style']
-            });
-        }
-        render();
-    }
-
-    function setupInterfaceLinks() {
-        const selected = document.body.dataset.interface;
-        const params = new URLSearchParams(window.location.search);
-        const sharedResult = params.get('r');
-
-        document.querySelectorAll('[data-interface-link]').forEach(link => {
-            const current = link.dataset.interfaceLink === selected;
-            link.classList.toggle('is-current', current);
-            if (current) link.setAttribute('aria-current', 'page');
-            else link.removeAttribute('aria-current');
-
-            const target = new URL(link.getAttribute('href'), window.location.href);
-            target.search = '';
-            target.hash = '';
-            if (sharedResult) target.searchParams.set('r', sharedResult);
-            link.href = target.href;
-        });
-    }
-
-    function init() {
-        setupInterfaceLinks();
-        setupMirrors();
-        setupClock();
-        setupSequence();
-        document.documentElement.classList.add('interface-ready');
-    }
-
-    if (document.readyState === 'loading') {
-        document.addEventListener('DOMContentLoaded', init, { once: true });
-    } else {
-        init();
-    }
+        ['data-value','data-state','aria-label'].forEach(name => { if (source.hasAttribute(name)) target.setAttribute(name, source.getAttribute(name)); });
+      };
+      copy();
+      new MutationObserver(copy).observe(source, { childList:true, subtree:true, characterData:true, attributes:true });
+      source.addEventListener('input', copy);
+      source.addEventListener('change', copy);
+    });
+  }
+  function bindDeclarativeStageState() {
+    document.querySelectorAll('[data-stage-outcome]').forEach(source => {
+      const apply = () => setStageOutcome(source.dataset.stage || source.dataset.progressStage, source.dataset.stageOutcome, source.dataset.stageDetail || '');
+      apply();
+      new MutationObserver(apply).observe(source, { attributes:true, attributeFilter:['data-stage-outcome','data-stage-detail'] });
+    });
+  }
+  function boot() {
+    preserveSharedResultLinks();
+    bindMirrors();
+    resetStages();
+    bindDeclarativeStageState();
+    document.documentElement.classList.add('presentation-ready');
+  }
+  window.addEventListener("netspeed-stage", receiveStageEvent);
+  window.addEventListener("netspeed:measurement-stage", receiveStageEvent);
+  window.addEventListener("netspeed:stage", receiveStageEvent);
+  window.addEventListener("netspeed:stage-outcome", receiveStageEvent);
+  window.addEventListener("netspeed:stagechange", receiveStageEvent);
+  window.NetspeedInterface = Object.freeze({ setStageOutcome, resetStages, outcomes: stageState });
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', boot, { once:true }); else boot();
 })();

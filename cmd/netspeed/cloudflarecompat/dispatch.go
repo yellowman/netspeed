@@ -465,6 +465,8 @@ func minDuration(a, b time.Duration) time.Duration {
 }
 
 func runCloudflare(o options) int {
+	_netspeedProgress := nsBeginProgress("speed test")
+	defer _netspeedProgress.Done("complete")
 	setIdentity(providerCloudflare, "cloudflare-http-v1", "turn-loopback")
 	r := result{Provider: providerCloudflare, MeasurementContract: "cloudflare-http-v1", UploadEvidence: "client-observed-complete-body", PacketTopology: "turn-loopback", Server: o.Server, StartedAt: time.Now()}
 	client := newHTTPClient(o)
@@ -504,6 +506,8 @@ func maxDuration(a, b time.Duration) time.Duration {
 }
 
 func measureIdleLatency(ctx context.Context, client *http.Client, o options) latencySummary {
+	_netspeedProgress := nsBeginProgress("latency probes")
+	defer _netspeedProgress.Done("complete")
 	count := 10
 	if o.Quick {
 		count = 5
@@ -519,6 +523,8 @@ func measureIdleLatency(ctx context.Context, client *http.Client, o options) lat
 }
 
 func latencyProbe(ctx context.Context, client *http.Client, o options, during string) (float64, error) {
+	_netspeedProgress := nsBeginProgress("latency probes")
+	defer _netspeedProgress.Done("complete")
 	q := url.Values{"bytes": {"0"}, "during": {during}, "id": {strconv.FormatInt(time.Now().UnixNano(), 10)}}
 	start := time.Now()
 	resp, err := request(ctx, client, o, http.MethodGet, "/__down", q, nil, -1)
@@ -654,7 +660,7 @@ func measureDirection(ctx context.Context, client *http.Client, o options, uploa
 	defer cancel()
 	deadline := time.Now().Add(duration)
 	var total atomic.Int64
-	samplesCh := make(chan float64, 128)
+	samplesCh := make(chan float64, 65536) /* continuously drained; large guard for compatibility fixtures */
 	var wg sync.WaitGroup
 	ready := make(chan struct{}, concurrency)
 	for i := 0; i < concurrency; i++ {
@@ -707,6 +713,8 @@ func measureDirection(ctx context.Context, client *http.Client, o options, uploa
 }
 
 func summarizeLatency(vals []float64, min int, errText string) latencySummary {
+	_netspeedProgress := nsBeginProgress("latency probes")
+	defer _netspeedProgress.Done("complete")
 	if len(vals) < min {
 		return latencySummary{Available: false, SamplesMS: vals, Error: errText}
 	}
@@ -735,6 +743,8 @@ func percentile(in []float64, p float64) float64 {
 }
 
 func unavailablePacket(reason string) packetSummary {
+	_netspeedProgress := nsBeginProgress("packet delivery test")
+	defer _netspeedProgress.Done("complete")
 	return packetSummary{Available: false, Transport: "webrtc-datachannel-turn-udp", Topology: "turn-loopback", Protocol: "cloudflare-loopback-v1", Reason: reason}
 }
 

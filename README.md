@@ -513,3 +513,7 @@ identify the selected provider, measurement contract, and packet topology.
 - **Phosphor** is an Apple II/ProDOS-inspired text-mode monitor: uppercase fixed-column typography, inverse-video headings, character plots and meters, scanlines, a block cursor, and a strictly monochrome green-phosphor display. It uses the same measurement engine and result elements as the other interfaces.
 - The progressive rail consumes structured measurement outcomes. A skipped capability remains `unavailable`, a failed operation remains `failed`, and final analysis never blanket-marks earlier work successful.
 - Presentation links retain the supported shared-result `r` parameter while discarding unrelated query state, so a shared measurement survives switching among Standard, Observatory, and Phosphor.
+
+## Native client progress
+
+The Go and C clients report live work to standard error when run in a terminal or with `-v`. Progress includes provider discovery, idle-latency probes, calibration transfers, sustained download and upload windows, loaded-latency overlap, and packet-path setup. Machine-readable JSON and CSV remain clean on standard output. Set `NETSPEED_PROGRESS=0` to suppress progress or `NETSPEED_PROGRESS=1` to force it when stderr is redirected.

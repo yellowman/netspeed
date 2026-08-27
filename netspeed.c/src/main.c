@@ -13,6 +13,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include "progress.h"
 
 static speedtest_t *global_test;
 static output_t *global_output;
@@ -125,7 +126,7 @@ static int parse_args(int argc, char **argv, config_t *config)
         } else if (strcmp(argument, "--quiet") == 0) {
             config->quiet = true;
         } else if (strcmp(argument, "-v") == 0 || strcmp(argument, "--verbose") == 0) {
-            config->verbose = true;
+            config->verbose = true; ns_progress_force(1);
         } else if (strcmp(argument, "-q") == 0 || strcmp(argument, "--quick") == 0) {
             config->quick = true;
         } else if (strcmp(argument, "-d") == 0 || strcmp(argument, "--download-only") == 0) {

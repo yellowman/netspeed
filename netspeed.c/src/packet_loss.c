@@ -17,6 +17,7 @@
 
 #ifdef NETSPEED_HAVE_LIBDATACHANNEL
 #include <rtc/rtc.h>
+#include "progress.h"
 #endif
 
 #define PACKET_HEADER_SIZE 32
@@ -138,6 +139,7 @@ static void unavailable(packet_loss_result_t *result, const char *reason)
 int packet_loss_run(const packet_loss_config_t *config, packet_loss_result_t *result,
                     char *error, size_t error_len)
 {
+    ns_progress("packet delivery test");
     (void)config;
     (void)error;
     (void)error_len;

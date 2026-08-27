@@ -17,6 +17,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <strings.h>
+#include "progress.h"
 
 #define META_BODY_LIMIT (1024U * 1024U)
 #define RECEIPT_BODY_LIMIT (64U * 1024U)
@@ -152,6 +153,7 @@ static int append_throughput(speedtest_t *test, const throughput_sample_t *sampl
 static int append_latency(speedtest_t *test, const latency_sample_t *sample)
 {
     if (test->results.latency_count >= MAX_SAMPLES) {
+    ns_progress("latency probes");
         set_error(test, "latency sample capacity exceeded");
         return ERR_MEMORY;
     }
@@ -193,6 +195,7 @@ static int measure_latency_with_session(speedtest_t *test, http_session_t *sessi
                                         latency_sample_t *sample)
 {
     if (test_expired(test)) {
+    ns_progress("latency probes");
         return ERR_TIMEOUT;
     }
     char path[768];
@@ -236,6 +239,7 @@ static int measure_download_with_session(speedtest_t *test, http_session_t *sess
                                          throughput_sample_t *sample)
 {
     if (bytes < 0 || bytes > test->results.meta.max_transfer_bytes) {
+    ns_progress("download measurement");
         set_error(test, "download size %" PRId64 " exceeds negotiated maximum %" PRId64,
                   bytes, test->results.meta.max_transfer_bytes);
         return ERR_PROTOCOL;
@@ -287,6 +291,7 @@ static int measure_download_with_session(speedtest_t *test, http_session_t *sess
 static int parse_upload_receipt(const char *body, int64_t expected_bytes,
                                 int64_t *accepted_bytes, int64_t *duration_ns)
 {
+    ns_progress("upload measurement");
     json_value_t *root = json_parse(body ? body : "");
     if (!root) {
         return -1;
@@ -309,6 +314,7 @@ static int measure_upload_with_session(speedtest_t *test, http_session_t *sessio
                                        throughput_sample_t *sample)
 {
     if (bytes < 0 || bytes > test->results.meta.max_transfer_bytes) {
+    ns_progress("upload measurement");
         set_error(test, "upload size %" PRId64 " exceeds negotiated maximum %" PRId64,
                   bytes, test->results.meta.max_transfer_bytes);
         return ERR_PROTOCOL;
@@ -360,6 +366,7 @@ static int measure_upload_with_session(speedtest_t *test, http_session_t *sessio
 
 static void *latency_worker_main(void *opaque)
 {
+    ns_progress("latency probes");
     latency_task_t *task = opaque;
     http_session_t session;
     http_session_init(&session, &task->test->http);
@@ -376,6 +383,7 @@ static void *latency_worker_main(void *opaque)
 static int run_parallel_latency(speedtest_t *test, const char *condition, int start_sequence,
                                 int count, latency_sample_t *samples, int *sample_count)
 {
+    ns_progress("latency probes");
     latency_task_t tasks[LATENCY_BATCH_SIZE];
     pthread_t threads[LATENCY_BATCH_SIZE];
     bool created[LATENCY_BATCH_SIZE];
@@ -422,6 +430,7 @@ static double quick_bandwidth_estimate(speedtest_t *test)
 int speedtest_latency(speedtest_t *test, const char *condition, int count)
 {
     if (test->config->quick) {
+    ns_progress("latency probes");
         count = LATENCY_PROBES_QUICK;
     }
     latency_sample_t samples[LATENCY_PROBES_FULL];
@@ -506,6 +515,7 @@ int speedtest_latency(speedtest_t *test, const char *condition, int count)
 
 static int run_baseline(speedtest_t *test, const char *direction)
 {
+    ns_progress("calibration transfer");
     const int64_t sizes[] = {BASELINE_SMALL_BYTES, BASELINE_LARGE_BYTES};
     const char *names[] = {"100kB", "1MB"};
     if (test->results.meta.max_transfer_bytes < BASELINE_LARGE_BYTES) {
@@ -558,6 +568,7 @@ static int run_baseline(speedtest_t *test, const char *direction)
 
 static double median_baseline_speed(const speedtest_t *test, const char *direction)
 {
+    ns_progress("calibration transfer");
     double values[BASELINE_RUNS];
     size_t count = 0;
     for (int index = 0; index < test->results.throughput_count; index++) {
@@ -574,6 +585,7 @@ static window_plan_t select_window_plan(double estimated_mbps, int64_t max_bytes
                                         int max_concurrency, bool quick)
 {
     if (estimated_mbps <= 0 || !isfinite(estimated_mbps)) {
+    ns_progress("sustained measurement window");
         estimated_mbps = 10;
     }
     int concurrency = 1;
@@ -688,6 +700,7 @@ static void aggregate_failure(window_aggregate_t *aggregate, const char *error)
 
 static void *window_worker_main(void *opaque)
 {
+    ns_progress("sustained measurement window");
     window_worker_t *worker = opaque;
     pthread_mutex_lock(&worker->control->mutex);
     while (!worker->control->started) {
@@ -793,6 +806,7 @@ static int run_window(speedtest_t *test, const char *direction, window_plan_t pl
                       throughput_sample_t *window_sample,
                       latency_sample_t *loaded_samples, int *loaded_count)
 {
+    ns_progress("sustained measurement window");
     load_activity_t activity;
     load_activity_init(&activity);
     window_control_t control;
@@ -964,11 +978,13 @@ static int run_direction(speedtest_t *test, const char *direction)
 
 int speedtest_download(speedtest_t *test)
 {
+    ns_progress("download measurement");
     return run_direction(test, "download");
 }
 
 int speedtest_upload(speedtest_t *test)
 {
+    ns_progress("upload measurement");
     return run_direction(test, "upload");
 }
 

@@ -11,6 +11,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <strings.h>
+#include "progress.h"
 
 #define USER_AGENT "netspeed-c/" NETSPEED_VERSION
 #define RESPONSE_SLACK 1
