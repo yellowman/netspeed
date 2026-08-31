@@ -9,6 +9,7 @@ it covers:
   - `GET /meta`
   - `GET /__down`
   - `POST /__up`
+  - `GET` or `HEAD /__ping`
   - `GET /locations`
   - (optional) `GET /cdn-cgi/trace`
 - request/response semantics
@@ -21,8 +22,11 @@ it covers:
 > is the canonical measurement contract,
 > [`WEBRTC_LIFECYCLE.md`](WEBRTC_LIFECYCLE.md) is the canonical session contract,
 > [`SERVICE_HARDENING.md`](SERVICE_HARDENING.md) is the canonical
-> deployment-safety contract, and [`HTTP_DEPLOYMENT.md`](HTTP_DEPLOYMENT.md) is
-> the canonical HTTP/deployment contract. Those documents supersede incompatible
+> deployment-safety contract,
+> [`HTTP_MEASUREMENT_TRANSPORT.md`](HTTP_MEASUREMENT_TRANSPORT.md) is the
+> canonical HTTP measurement-discriminator contract, and
+> [`HTTP_DEPLOYMENT.md`](HTTP_DEPLOYMENT.md) is the canonical HTTP/deployment
+> contract. Those documents supersede incompatible
 > legacy examples in this combined design note.
 
 Service hardening normative addendum
@@ -53,7 +57,11 @@ control and transfer deadlines; it does not use whole-request `ReadTimeout` or
 and one Fetch/XHR credentials mode. Allowed origins receive matching CORS and
 `Timing-Allow-Origin` headers; disallowed browser origins receive `403`.
 
-The HTTP writer records only the first status and actual bytes, delegates modern
+The daemon advertises pseudorandom and zero-fill payloads, fixed and streamed
+framing, identity-only uploads, and warm zero-body HTTP ping. Measurement
+responses carry anti-transform and proxy-buffer-suppression headers; proxy
+configuration is still required for request-body buffering. The HTTP writer
+records only the first status and actual bytes, delegates modern
 streaming/response-controller capabilities, and aborts a committed stream after
 a panic instead of appending a replacement error body. Graceful shutdown drains
 HTTP handlers before WebRTC, GeoIP, or embedded TURN are closed.
@@ -106,7 +114,13 @@ returns per-client metadata similar to `https://speed.cloudflare.com/meta`, typi
   "maxConcurrentTransfersPerClient": 24,
   "measurementProtocolVersion": 2,
   "uploadReceiptVersion": 1,
-  "packetLossFrameVersion": 1
+  "packetLossFrameVersion": 1,
+  "measurementCapabilities": {
+    "version": 1,
+    "downloadPayloads": ["random", "zero"],
+    "downloadFramings": ["fixed", "chunked"],
+    "httpPingPath": "/__ping"
+  }
 }
 ```
 
@@ -131,89 +145,34 @@ the exact field names are chosen for compatibility with the real `/meta` endpoin
 
 ### 1.1.2 `GET /__down` - download / latency payload
 
-**purpose**
+The compatibility request is `GET /__down?bytes=N`. Transport-controls version
+1 additionally accepts `payload=random|zero`, `framing=fixed|chunked`,
+`chunkBytes=N`, and `flush=true|false`, while tolerating opaque correlation
+parameters such as `measId` and `during`.
 
-provides binary payloads for:
+Fixed framing supplies `Content-Length: N`. Streamed framing deliberately omits
+`Content-Length`, commits streaming before the first body write, and uses
+application flushes according to `flush`. Both modes return exactly `N` bytes or
+fail; clients never accept a short response. Pseudorandom mode generates a
+nonrepeating per-request stream, while zero-fill minimizes generator CPU.
 
-- raw download throughput tests
-- ttfb / latency tests (with `bytes=0` or very small)
-- “latency under load” tests
-
-**request**
-
-- method: `GET`
-- path: `/__down`
-- query parameters (all optional, must accept extras):
-
-  - `bytes` (string -> int64)
-    - meaning: number of bytes to return in the response body
-    - default: 0 (latency-only test)
-    - min: `0`
-    - max: configurable (`Config.MaxBytes`, default e.g. 1 GiB)
-  - `measId` (string)
-    - client-side measurement id for correlation
-    - server treats as opaque; logs it if desired
-  - `during` (string)
-    - semantic labels like `download`, `upload`, etc.
-    - safe for server to ignore
-
-- body: none
-
-**response**
-
-- status:
-  - `200 OK` on success;
-  - `400 Bad Request` if `bytes` is invalid, negative, or exceeds the configured maximum.
-- headers:
-  - `Content-Type: application/octet-stream`
-  - `Content-Length: <bytes>`
-  - optional metadata headers (cf-style):
-
-    ```http
-    cf-meta-asn: <int>
-    cf-meta-city: <string>
-    cf-meta-colo: <iata>
-    cf-meta-country: <cca2>
-    cf-meta-ip: <ip>
-    cf-meta-latitude: <float>
-    cf-meta-longitude: <float>
-    cf-meta-postalcode: <string>
-    cf-meta-request-time: <unix_ms>
-    cf-meta-timezone: <tz>
-    ```
-
-  - optional server timing header:
-
-    ```http
-    server-timing: app;dur=<ms>
-    ```
-
-- body:
-  - exactly `bytes` bytes of arbitrary data
-  - content can be random or deterministic; clients only care about size and timing
-
-**behavior**
-
-1. parse `bytes` from query string:
-   - if empty - 0
-   - if non-integer - respond `400`
-   - if negative - respond `400`
-   - if greater than `Config.MaxBytes`, respond `400`; never clamp a measurement request.
-2. record `start := time.Now()` if `ServerTiming` enabled
-3. write headers (including `Content-Length`)
-4. if `bytes == 0`, write no body and return
-5. otherwise, stream `bytes` bytes using a reusable buffer (see section 3.4)
-6. if `ServerTiming` enabled, compute `durMs := time.Since(start) / time.Millisecond` and set `Server-Timing: app;dur=<durMs>`
+Every response carries `Cache-Control: no-store, no-transform`, CDN/surrogate
+cache suppression, `X-Accel-Buffering: no`, and diagnostic payload/framing/chunk
+headers. The complete query, status, and response contract is in
+[`HTTP_MEASUREMENT_TRANSPORT.md`](HTTP_MEASUREMENT_TRANSPORT.md).
 
 ---
 
 ### 1.1.3 `POST /__up` - verified upload
 
-The daemon reads the complete request body and distinguishes four outcomes:
+The daemon reads the complete request body and distinguishes these outcomes:
 
 - a declared length above `Config.MaxBytes` is rejected with `413`;
 - an undeclared body that reaches `MaxBytes + 1` is rejected with `413`;
 - a body shorter than its declared `Content-Length` is rejected with `400`;
+- an optional `bytes=N` discriminator that does not match is rejected with `400`;
+- gzip, Brotli, or any other non-identity `Content-Encoding` is rejected with
+  `415`;
 - any body-read failure is rejected with `400`.
 
 A successful request returns JSON receipt version 1:
@@ -228,10 +187,17 @@ A successful request returns JSON receipt version 1:
 
 `acceptedBytes` is the exact number of bytes consumed. `serverDurationNs` spans
 daemon body reading and is the canonical per-request upload duration. The daemon
-sets JSON content type and `Cache-Control: no-store`. It never returns success for
-truncated or silently limited input.
+sets JSON content type and `Cache-Control: no-store, no-transform`. It never
+returns success for truncated or silently limited input.
 
-### 1.1.4 `GET /locations` - colo list
+### 1.1.4 `GET` or `HEAD /__ping` - warm HTTP latency
+
+The endpoint returns `200`, `Content-Length: 0`, and no body. Clients reuse one
+persistent HTTP connection so probe timing excludes repeated connection and TLS
+setup. `GET /__down?bytes=0` remains the compatibility fallback. A WebSocket
+latency path is optional and must not be assumed unless `/meta` advertises it.
+
+### 1.1.5 `GET /locations` - colo list
 
 **purpose**
 
@@ -310,7 +276,7 @@ binary name: `netspeedd`
 
 responsibilities:
 
-- serve `/meta`, `/__down`, `/__up`, `/locations` (and optional `/cdn-cgi/trace`)
+- serve `/meta`, `/__down`, `/__up`, `/__ping`, `/locations` (and optional `/cdn-cgi/trace`)
 - expose simple configuration (listen address, tls, limits, cors, geo db, locations file)
 - be robust under very high concurrency and long-lived connections
 
@@ -464,8 +430,6 @@ type Server struct {
     httpServer   *http.Server
     metaProvider MetaProvider
     locations    LocationStore
-
-    payloadBuf   []byte  // shared download buffer
 }
 ```
 
@@ -474,7 +438,7 @@ type Server struct {
 - load defaults, overlay strictly parsed environment values, then explicit flags; no YAML/TOML loader is implemented
 - build `metaProvider` based on geo configuration
 - build `locations` from `LocationsFile`
-- allocate `payloadBuf` (e.g. 1 MiB or 4 MiB), optionally fill with random bytes
+- initialize the bounded measurement stream buffer pool and per-request payload generator
 - configure `http.ServeMux` and route handlers
 - create `http.Server` with `ReadHeaderTimeout` and `IdleTimeout`; apply control/transfer deadlines in endpoint wrappers
 - optionally wrap `mux` in logging / recover / cors middleware
@@ -515,69 +479,46 @@ edge cases: none; errors should be extremely rare.
 
 ### 2.5.3 `/__down`
 
-handler flow:
+1. normalize the transport query through `measurementhttp.ParseDownload`;
+2. enforce transfer admission and byte quota before committing a body;
+3. apply anti-cache, `no-transform`, proxy-buffer suppression, metadata, and
+   discriminator headers;
+4. for streamed framing, commit a flush before writing so net/http cannot infer
+   a small `Content-Length`;
+5. stream exactly the requested bytes through `measurementhttp.Stream`, using
+   per-request pseudorandom generation or a cleared zero buffer;
+6. log selected payload, framing, application chunk size, bytes, duration, and
+   interruption state.
 
-1. parse `bytes`:
-
-   ```go
-   bytesStr := r.URL.Query().Get("bytes")
-   var nBytes int64
-   if bytesStr != "" {
-       v, err := strconv.ParseInt(bytesStr, 10, 64)
-       if err != nil || v < 0 {
-           http.Error(w, "invalid bytes", http.StatusBadRequest)
-           return
-       }
-       if v > s.cfg.MaxBytes {
-           http.Error(w, "bytes too large", http.StatusBadRequest)
-           return
-       }
-       nBytes = v
-   }
-   ```
-
-2. record `start := time.Now()` if `EnableServerTiming`
-3. set headers:
-   - `Content-Type`
-   - `Content-Length`
-   - meta headers built from `MetaProvider` (optionally; or reuse same meta as `/meta`)
-4. if `nBytes == 0`, just `w.WriteHeader(http.StatusOK)` and return
-5. else, stream:
-
-   ```go
-   buf := s.payloadBuf
-   remaining := nBytes
-   for remaining > 0 {
-       chunk := int64(len(buf))
-       if remaining < chunk {
-           chunk = remaining
-       }
-       if _, err := w.Write(buf[:chunk]); err != nil {
-           // client probably disconnected; log and abort
-           return
-       }
-       remaining -= chunk
-   }
-   ```
-
-6. if `EnableServerTiming`, compute `durMs` and add `Server-Timing` header
+The independent standard-library package `internal/measurementhttp` owns query
+normalization and stream generation, allowing its exact-byte behavior to be
+qualified without WebRTC or GeoIP dependencies.
 
 ---
 
 ### 2.5.4 `/__up`
 
-1. reject a known `Content-Length` above `MaxBytes` before consuming it;
-2. read at most `MaxBytes + 1` so chunked or unknown-length overflow is visible;
-3. reject read errors and declared-length mismatches;
-4. on success, calculate the body-read duration and emit the verified receipt;
-5. log the exact accepted bytes, correlation id, client address, duration, and
+1. reject non-identity content coding and a known `Content-Length` above
+   `MaxBytes` before consuming it;
+2. parse optional `bytes=N` and verify it against known and observed lengths;
+3. read at most `MaxBytes + 1` so chunked or unknown-length overflow is visible;
+4. reject read errors and declared-length mismatches;
+5. on success, calculate body-ingestion duration and emit the verified receipt
+   plus accepted-byte and framing diagnostics;
+6. log the exact accepted bytes, correlation id, client address, duration, and
    calculated rate.
 
 The implementation is `protocol.ReadUpload`; a plain `io.LimitReader(...,
 MaxBytes)` is insufficient because reaching its artificial EOF does not reveal
 that more request data existed.
 
-### 2.5.5 `/locations`
+### 2.5.5 `/__ping`
+
+Accept `GET` and `HEAD`, apply the same admission and response controls as a
+zero-byte download, and return `Content-Length: 0` with no body. The control
+endpoint timeout applies and the connection remains reusable.
+
+### 2.5.6 `/locations`
 
 handler flow:
 
@@ -588,7 +529,7 @@ handler flow:
 
 ---
 
-### 2.5.6 optional `/cdn-cgi/trace`
+### 2.5.7 optional `/cdn-cgi/trace`
 
 handler flow:
 
@@ -608,14 +549,14 @@ handler flow:
 
 if `EnableCORS` is `true`:
 
-- handle `OPTIONS` requests for `/meta`, `/__down`, `/__up`, `/locations`:
+- handle `OPTIONS` requests for `/meta`, `/__down`, `/__up`, `/__ping`, `/locations`:
 
   - status: `204 No Content`
   - headers:
 
     ```http
     Access-Control-Allow-Origin: <origin or *>
-    Access-Control-Allow-Methods: GET, POST, OPTIONS
+    Access-Control-Allow-Methods: GET, HEAD, POST, OPTIONS
     Access-Control-Allow-Headers: Content-Type, X-Requested-With
     Access-Control-Max-Age: 86400
     ```
@@ -643,7 +584,7 @@ an `Origin` header are unaffected.
 
 - set `http.Server.ReadHeaderTimeout` to 10 seconds and `IdleTimeout` to two minutes by default;
 - leave whole-request `ReadTimeout` and `WriteTimeout` disabled;
-- apply a 30-second deadline to control/static routes and a five-minute deadline to each upload/download request;
+- apply a 30-second deadline to control/static routes, including `/__ping`, and a five-minute deadline to each upload/download request;
 - set only the read/write sides an endpoint needs, attach the same request-context deadline, and clear connection deadlines before keep-alive reuse;
 - when a reverse proxy terminates TLS, disable buffering/compression/transformation on measurement routes and make proxy body/time limits at least as large as the daemon limits.
 
@@ -651,7 +592,7 @@ an `Origin` header are unaffected.
 ----------------
 
 - avoid allocating `bytes` bytes per request
-- a single shared `payloadBuf` of 1–4 MiB and streaming loop is adequate
+- reuse bounded buffers from a pool; never allocate the requested transfer size
 - goroutine per connection is fine; go’s runtime handles this well
 
 3.3 safety limits
@@ -661,21 +602,14 @@ an `Origin` header are unaffected.
 - consider tighter defaults (e.g. 256 MiB) and allow override via config
 - implement server-level rate limiting (ip-based, token bucket) if you plan to expose it publicly
 
-3.4 payload buffer generation
------------------------------
+3.4 payload generation
+----------------------
 
-at startup:
-
-```go
-bufSize := 1 << 20 // 1 MiB
-buf := make([]byte, bufSize)
-if _, err := rand.Read(buf); err != nil {
-    // fallback to zeros or a deterministic pattern
-}
-s.payloadBuf = buf
-```
-
-since content doesn’t need to be cryptographically strong, but `crypto/rand` is fine too. `math/rand` is usually enough here.
+The daemon pools buffers up to 1 MiB. `payload=random` refills each application
+chunk from a per-request SplitMix64 stream so adjacent chunks do not repeat.
+`payload=zero` clears the pooled buffer once and reuses it, minimizing generator
+CPU. The pseudorandom stream is intended to resist transparent compression, not
+to provide cryptographic bytes.
 
 ---
 
@@ -704,7 +638,8 @@ the go backend, as designed above, fully satisfies the expectations of this libr
 
 - `__down` respects `bytes` and streams payload
 - `__up` accepts uploads and finishes quickly
-- optional: return `Server-Timing` to improve latency accuracy
+- `/__ping` provides warm zero-body HTTP latency while `/__down?bytes=0` remains compatible
+- optional `Server-Timing` improves latency diagnostics
 
 4.2 your own spa
 ----------------
@@ -754,8 +689,9 @@ netspeed/
 this spec defines a go-based speedtest backend that emulates the observable api surface used by speed.cloudflare.com:
 
 - `/meta` - per-client metadata (ip, geo, asn, colo)
-- `/__down` - download / latency endpoint with `bytes` control and optional cf-style meta headers and `Server-Timing`
-- `/__up` - bounded upload endpoint with exact-byte receipt and read-duration proof
+- `/__down` - exact download endpoint with payload, framing, chunk, and flush controls
+- `/__up` - identity-only bounded upload endpoint with exact-byte receipt and read-duration proof
+- `/__ping` - zero-body warm-connection HTTP latency endpoint
 - `/locations` - static list of test locations / colos
 - optional `/cdn-cgi/trace` for debugging
 
@@ -775,6 +711,7 @@ it assumes the existing http api:
 - `GET /meta`
 - `GET /__down`
 - `POST /__up`
+- `GET` or `HEAD /__ping`
 - `GET /locations`
 
 and adds:
@@ -991,10 +928,11 @@ window orchestration.
 
 ### 2.1 capabilities and exact transfers
 
-`GET /meta` advertises protocol 2, upload receipt 1, packet frame 1, and the
-largest individual request. `/__down` streams exactly the requested bytes or
-returns an error. `/__up` accepts exactly the declared/generated bytes or returns
-an error and, on success, emits the verified receipt.
+`GET /meta` advertises protocol 2, upload receipt 1, packet frame 1, the
+largest individual request, and optional HTTP transport-controls version 1.
+`/__down` streams exactly the requested bytes under the selected payload and
+framing. `/__up` accepts exactly the declared/generated bytes under identity
+content coding or returns an error and, on success, emits the verified receipt.
 
 ### 2.2 bounded fixed-duration windows
 
@@ -1009,8 +947,9 @@ the client's aggregate window bytes.
 
 ### 2.3 continuous loaded latency
 
-Clients issue zero-byte `/__down` probes while one selected throughput window is
-active. A probe is retained only if at least one transfer body remains active for
+Clients issue zero-byte `/__ping` probes when advertised, falling back to
+`/__down?bytes=0`, while one selected throughput window is active. A probe is
+retained only if at least one transfer body remains active for
 the entire probe. Upload receipt wait does not count as outbound load. The daemon
 accepts opaque `during`/`measId` labels for logging but does not claim overlap on
 the client's behalf.

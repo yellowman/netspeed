@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/yellowman/netspeed/internal/limits"
+	"github.com/yellowman/netspeed/internal/measurementhttp"
 )
 
 var errBandwidthQuotaExceeded = errors.New("client bandwidth quota exceeded")
@@ -84,7 +85,7 @@ func (s *Server) authenticationMiddleware(next http.Handler) http.Handler {
 
 func isProtectedServicePath(path string) bool {
 	switch path {
-	case "/meta", "/__down", "/__up", "/locations", "/cdn-cgi/trace":
+	case "/meta", "/__down", "/__up", "/__ping", "/locations", "/cdn-cgi/trace":
 		return true
 	default:
 		return strings.HasPrefix(path, "/api/")
@@ -109,7 +110,7 @@ func (s *Server) beginTransfer(w http.ResponseWriter, request *http.Request) (fu
 	releaseLimit, rejection := s.transferLimiter.Acquire(clientKey)
 	if rejection != limits.TransferAdmitted {
 		w.Header().Set("Retry-After", "1")
-		w.Header().Set("Cache-Control", "no-store")
+		w.Header().Set("Cache-Control", measurementhttp.CacheControl)
 		switch rejection {
 		case limits.TransferRejectedClient:
 			s.metrics.transferRejectedClient.Add(1)
@@ -142,7 +143,7 @@ func (s *Server) reserveBandwidth(w http.ResponseWriter, clientKey string, bytes
 
 	s.metrics.bandwidthQuotaRejected.Add(1)
 	setRetryAfter(w, result.RetryAfter)
-	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("Cache-Control", measurementhttp.CacheControl)
 	http.Error(w, errBandwidthQuotaExceeded.Error(), http.StatusTooManyRequests)
 	return false
 }

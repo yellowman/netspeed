@@ -20,10 +20,12 @@ func TestAuthenticationMiddlewareProtectsServiceButNotHealth(t *testing.T) {
 		w.WriteHeader(http.StatusNoContent)
 	}))
 
-	unauthorized := httptest.NewRecorder()
-	handler.ServeHTTP(unauthorized, httptest.NewRequest(http.MethodGet, "/meta", nil))
-	if unauthorized.Code != http.StatusUnauthorized {
-		t.Fatalf("unauthorized status=%d; want 401", unauthorized.Code)
+	for _, path := range []string{"/meta", "/__ping"} {
+		unauthorized := httptest.NewRecorder()
+		handler.ServeHTTP(unauthorized, httptest.NewRequest(http.MethodGet, path, nil))
+		if unauthorized.Code != http.StatusUnauthorized {
+			t.Fatalf("unauthorized %s status=%d; want 401", path, unauthorized.Code)
+		}
 	}
 
 	authorizedRequest := httptest.NewRequest(http.MethodGet, "/meta", nil)
@@ -91,6 +93,9 @@ func TestBeginTransferEnforcesPerClientAndGlobalCeilings(t *testing.T) {
 	clientReject := httptest.NewRecorder()
 	if _, ok := server.beginTransfer(clientReject, requestA); ok || clientReject.Code != http.StatusTooManyRequests {
 		t.Fatalf("client rejection ok=%v status=%d", ok, clientReject.Code)
+	}
+	if clientReject.Header().Get("Cache-Control") != "no-store, no-transform" {
+		t.Fatalf("client rejection Cache-Control=%q", clientReject.Header().Get("Cache-Control"))
 	}
 
 	requestB := httptest.NewRequest(http.MethodGet, "/__down?bytes=1", nil)

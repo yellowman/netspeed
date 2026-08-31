@@ -3,7 +3,6 @@ package server
 
 import (
 	"context"
-	"crypto/rand"
 	"crypto/tls"
 	"errors"
 	"fmt"
@@ -32,7 +31,6 @@ type Server struct {
 	metaProvider  meta.Provider
 	geoipCloser   io.Closer
 	locations     locations.Store
-	payloadBuf    []byte
 	webrtcManager *webrtc.Manager
 	clientAddress *clientaddr.Resolver
 
@@ -77,12 +75,6 @@ func New(cfg *config.Config) (*Server, error) {
 		return nil, err
 	}
 
-	// Reuse one bounded random payload instead of allocating per transfer.
-	payloadBuf := make([]byte, 1<<20)
-	if _, err := rand.Read(payloadBuf); err != nil {
-		log.Printf("Warning: failed to fill payload buffer with random data: %v", err)
-	}
-
 	webrtcCfg := webrtc.DefaultConfig()
 	webrtcCfg.MaxSessions = cfg.MaxWebRTCSessions
 	webrtcCfg.MaxSessionsPerClient = cfg.MaxWebRTCSessionsPerClient
@@ -106,7 +98,6 @@ func New(cfg *config.Config) (*Server, error) {
 		metaProvider:          metaProvider,
 		geoipCloser:           geoipCloser,
 		locations:             locationStore,
-		payloadBuf:            payloadBuf,
 		webrtcManager:         webrtcManager,
 		clientAddress:         clientAddress,
 		transferLimiter:       limits.NewTransferLimiter(cfg.MaxConcurrentTransfers, cfg.MaxConcurrentTransfersPerClient),
@@ -227,6 +218,7 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 	mux.Handle("/meta", control(s.handleMeta))
 	mux.Handle("/__down", download(s.handleDown))
 	mux.Handle("/__up", upload(s.handleUp))
+	mux.Handle("/__ping", control(s.handlePing))
 	mux.Handle("/locations", control(s.handleLocations))
 	mux.Handle("/cdn-cgi/trace", control(s.handleTrace))
 	mux.Handle("/api/turn/credentials", turnCompatibilityMiddleware(control(s.handleTurnCredentials)))
@@ -247,7 +239,7 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 func (s *Server) staticFileHandler(files http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		path := r.URL.Path
-		if path == "/meta" || path == "/__down" || path == "/__up" ||
+		if path == "/meta" || path == "/__down" || path == "/__up" || path == "/__ping" ||
 			path == "/locations" || path == "/health" || path == "/metrics" ||
 			strings.HasPrefix(path, "/api/") || strings.HasPrefix(path, "/cdn-cgi/") {
 			http.NotFound(w, r)

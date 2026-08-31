@@ -16,6 +16,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/yellowman/netspeed/internal/measurementhttp"
 	"github.com/yellowman/netspeed/internal/protocol"
 	"github.com/yellowman/netspeed/internal/webrtc"
 )
@@ -55,6 +56,7 @@ func (s *Server) handleMeta(w http.ResponseWriter, r *http.Request) {
 	clientMeta.MeasurementProtocolVersion = protocol.MeasurementProtocolVersion
 	clientMeta.UploadReceiptVersion = protocol.UploadReceiptVersion
 	clientMeta.PacketLossFrameVersion = protocol.PacketLossFrameVersion
+	clientMeta.MeasurementCapabilities = advertisedMeasurementCapabilities()
 
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-store")
@@ -67,37 +69,48 @@ func (s *Server) handleMeta(w http.ResponseWriter, r *http.Request) {
 
 // handleDown handles GET /__down - download/latency payload endpoint.
 func (s *Server) handleDown(w http.ResponseWriter, r *http.Request) {
+	measurementhttp.SetResponseHeaders(w.Header(), "download")
 	if r.Method != http.MethodGet {
+		w.Header().Set("Allow", http.MethodGet)
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
 
-	start := time.Now()
-
-	// Parse query parameters
-	bytesStr := r.URL.Query().Get("bytes")
-	measId := r.URL.Query().Get("measId")
-	condition := r.URL.Query().Get("during") // "download", "upload", or empty for standalone
-
-	var nBytes int64
-	if bytesStr != "" {
-		v, err := strconv.ParseInt(bytesStr, 10, 64)
-		if err != nil {
-			http.Error(w, "invalid bytes parameter", http.StatusBadRequest)
-			return
-		}
-		if v < 0 {
-			http.Error(w, "bytes cannot be negative", http.StatusBadRequest)
-			return
-		}
-		if v > s.cfg.MaxBytes {
-			http.Error(w, "bytes exceeds maximum allowed", http.StatusBadRequest)
-			return
-		}
-		nBytes = v
+	options, err := measurementhttp.ParseDownload(r, s.cfg.MaxBytes)
+	if err != nil {
+		http.Error(w, err.Error(), measurementhttp.StatusCode(err, http.StatusBadRequest))
+		return
 	}
+	measurement := "download"
+	if options.Bytes == 0 {
+		measurement = "latency"
+	}
+	s.serveDownload(w, r, options, measurement)
+}
 
-	// Get client info for headers, admission, quota, and logging.
+// handlePing handles GET or HEAD /__ping. It is a dedicated zero-payload
+// latency path for clients that want a stable warm-connection probe without
+// overloading /__down query semantics.
+func (s *Server) handlePing(w http.ResponseWriter, r *http.Request) {
+	measurementhttp.SetResponseHeaders(w.Header(), "latency")
+	if r.Method != http.MethodGet && r.Method != http.MethodHead {
+		w.Header().Set("Allow", "GET, HEAD")
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	s.serveDownload(w, r, measurementhttp.DownloadOptions{
+		Payload:    measurementhttp.PayloadRandom,
+		Framing:    measurementhttp.FramingFixed,
+		ChunkBytes: measurementhttp.DefaultChunkBytes,
+	}, "latency")
+}
+
+func (s *Server) serveDownload(w http.ResponseWriter, r *http.Request, options measurementhttp.DownloadOptions, measurement string) {
+	start := time.Now()
+	measID := r.URL.Query().Get("measId")
+	condition := r.URL.Query().Get("during")
+
+	measurementhttp.SetResponseHeaders(w.Header(), measurement)
 	clientMeta := s.metaProvider.MetaFor(r)
 	clientIP := clientMeta.ClientIP
 	release, admitted := s.beginTransfer(w, r)
@@ -105,74 +118,92 @@ func (s *Server) handleDown(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer release()
-	if !s.reserveBandwidth(w, clientIP, nBytes) {
+	if !s.reserveBandwidth(w, clientIP, options.Bytes) {
 		return
 	}
 
-	// Set headers
-	w.Header().Set("Content-Type", "application/octet-stream")
-	w.Header().Set("Content-Length", strconv.FormatInt(nBytes, 10))
-	w.Header().Set("Cache-Control", "no-store, no-transform")
-	w.Header().Set("X-Content-Type-Options", "nosniff")
+	measurementhttp.SetDownloadHeaders(w.Header(), options)
 	s.setMetaHeaders(w, clientMeta, start)
-
-	// Set Server-Timing header before body starts (measures server-side latency)
-	// Note: For streaming responses, this reflects setup time, not total transfer time
 	s.setServerTiming(w, start)
-
-	// If bytes == 0, this is a latency-only test (TTFB measurement)
-	if nBytes == 0 {
-		w.WriteHeader(http.StatusOK)
-		latencyMs := float64(time.Since(start).Microseconds()) / 1000.0
-		if condition != "" {
-			log.Printf("Latency probe: client=%s measId=%s condition=%s latency=%.3fms",
-				clientIP, measId, condition, latencyMs)
-		} else {
-			log.Printf("Latency probe: client=%s measId=%s latency=%.3fms",
-				clientIP, measId, latencyMs)
-		}
-		return
-	}
-
-	// Stream the payload
-	buf := s.payloadBuf
-	remaining := nBytes
-	for remaining > 0 {
-		chunk := int64(len(buf))
-		if remaining < chunk {
-			chunk = remaining
-		}
-		n, err := w.Write(buf[:chunk])
-		if n > 0 {
-			s.metrics.downloadBytes.Add(uint64(n))
-		}
-		if err != nil {
-			// Client disconnected - log partial transfer
-			duration := time.Since(start)
-			bytesSent := nBytes - remaining + int64(n)
-			speedMbps := calculateSpeedMbps(bytesSent, duration)
-			log.Printf("Download interrupted: client=%s measId=%s bytes=%d/%d duration=%s speed=%s",
-				clientIP, measId, bytesSent, nBytes, duration, formatSpeed(speedMbps))
+	w.WriteHeader(http.StatusOK)
+	// Commit streamed framing before the first payload write so net/http cannot
+	// infer a small Content-Length when flush=false. Per-chunk flushing remains
+	// selectable to balance live progress against high-rate syscall overhead.
+	if options.Framing == measurementhttp.FramingChunked {
+		if err := measurementhttp.Flush(w); err != nil {
+			log.Printf("Download framing flush failed: client=%s measId=%s error=%v", clientIP, measID, err)
 			return
 		}
-		remaining -= int64(n)
 	}
 
-	// Log completed download with speed
+	if options.Bytes == 0 {
+		latencyMS := float64(time.Since(start).Microseconds()) / 1000.0
+		if condition != "" {
+			log.Printf("Latency probe: client=%s measId=%s condition=%s latency=%.3fms",
+				clientIP, measID, condition, latencyMS)
+		} else {
+			log.Printf("Latency probe: client=%s measId=%s latency=%.3fms",
+				clientIP, measID, latencyMS)
+		}
+		return
+	}
+
+	written, err := measurementhttp.Stream(w, options)
+	if written > 0 {
+		s.metrics.downloadBytes.Add(uint64(written))
+	}
+	if err != nil {
+		duration := time.Since(start)
+		speedMbps := calculateSpeedMbps(written, duration)
+		log.Printf("Download interrupted: client=%s measId=%s bytes=%d/%d payload=%s framing=%s duration=%s speed=%s error=%v",
+			clientIP, measID, written, options.Bytes, options.Payload, options.Framing, duration, formatSpeed(speedMbps), err)
+		return
+	}
+
 	duration := time.Since(start)
-	speedMbps := calculateSpeedMbps(nBytes, duration)
-	log.Printf("Download: client=%s measId=%s bytes=%d duration=%s speed=%s",
-		clientIP, measId, nBytes, duration, formatSpeed(speedMbps))
+	speedMbps := calculateSpeedMbps(written, duration)
+	log.Printf("Download: client=%s measId=%s bytes=%d payload=%s framing=%s chunkBytes=%d flush=%v duration=%s speed=%s",
+		clientIP, measID, written, options.Payload, options.Framing, options.ChunkBytes, options.Flush, duration, formatSpeed(speedMbps))
 }
 
 // handleUp handles POST /__up - upload sink endpoint.
 func (s *Server) handleUp(w http.ResponseWriter, r *http.Request) {
+	requestStart := time.Now()
+	measurementhttp.SetResponseHeaders(w.Header(), "upload")
+	w.Header().Set("X-Netspeed-Payload", "discarded")
+	w.Header().Set("X-Netspeed-Content-Encoding", "identity")
+	if r.ContentLength >= 0 {
+		w.Header().Set("X-Netspeed-Framing", "fixed")
+	} else {
+		w.Header().Set("X-Netspeed-Framing", "chunked")
+	}
 	if r.Method != http.MethodPost {
+		w.Header().Set("Allow", http.MethodPost)
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
 
-	start := time.Now()
+	expectedBytes, expectedPresent, err := measurementhttp.ParseUploadExpectedBytes(r, s.cfg.MaxBytes)
+	if err != nil {
+		http.Error(w, err.Error(), measurementhttp.StatusCode(err, http.StatusBadRequest))
+		return
+	}
+	if err := measurementhttp.ValidateIdentityContentEncoding(r); err != nil {
+		http.Error(w, err.Error(), measurementhttp.StatusCode(err, http.StatusUnsupportedMediaType))
+		return
+	}
+	if expectedPresent {
+		w.Header().Set("X-Netspeed-Expected-Bytes", strconv.FormatInt(expectedBytes, 10))
+	}
+	if r.ContentLength > s.cfg.MaxBytes {
+		http.Error(w, protocol.ErrUploadTooLarge.Error(), http.StatusRequestEntityTooLarge)
+		return
+	}
+	if expectedPresent && r.ContentLength >= 0 && r.ContentLength != expectedBytes {
+		http.Error(w, "Content-Length does not match bytes parameter", http.StatusBadRequest)
+		return
+	}
+
 	measID := r.URL.Query().Get("measId")
 	clientIP := s.clientIP(r)
 	release, admitted := s.beginTransfer(w, r)
@@ -193,7 +224,12 @@ func (s *Server) handleUp(w http.ResponseWriter, r *http.Request) {
 		bodyReader = &quotaChargingReader{reader: r.Body, quota: s.bandwidthQuota, key: clientIP}
 	}
 
+	readStart := time.Now()
 	n, err := protocol.ReadUpload(bodyReader, r.ContentLength, s.cfg.MaxBytes)
+	readDuration := time.Since(readStart)
+	if readDuration <= 0 {
+		readDuration = time.Nanosecond
+	}
 	if n > 0 {
 		s.metrics.uploadBytes.Add(uint64(n))
 	}
@@ -221,22 +257,26 @@ func (s *Server) handleUp(w http.ResponseWriter, r *http.Request) {
 		}
 		return
 	}
+	if expectedPresent && n != expectedBytes {
+		log.Printf("Upload bytes discriminator mismatch: client=%s measId=%s bytes=%d expected=%d", clientIP, measID, n, expectedBytes)
+		http.Error(w, "upload body does not match bytes parameter", http.StatusBadRequest)
+		return
+	}
 
-	duration := time.Since(start)
-	speedMbps := calculateSpeedMbps(n, duration)
-	log.Printf("Upload: client=%s measId=%s bytes=%d duration=%s speed=%s",
-		clientIP, measID, n, duration, formatSpeed(speedMbps))
+	speedMbps := calculateSpeedMbps(n, readDuration)
+	log.Printf("Upload: client=%s measId=%s bytes=%d readDuration=%s speed=%s",
+		clientIP, measID, n, readDuration, formatSpeed(speedMbps))
 
 	receipt := protocol.UploadReceipt{
 		OK:               true,
 		AcceptedBytes:    n,
-		ServerDurationNS: duration.Nanoseconds(),
+		ServerDurationNS: readDuration.Nanoseconds(),
 	}
 
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
-	w.Header().Set("Cache-Control", "no-store")
-	w.Header().Set("X-Content-Type-Options", "nosniff")
-	s.setServerTiming(w, start)
+	w.Header().Set("X-Netspeed-Accepted-Bytes", strconv.FormatInt(n, 10))
+	w.Header().Set("X-Netspeed-Upload-Duration-Ns", strconv.FormatInt(readDuration.Nanoseconds(), 10))
+	s.setServerTiming(w, requestStart)
 	w.WriteHeader(http.StatusOK)
 	if err := writeTURNCompatibilityJSON(w, receipt); err != nil {
 		s.metrics.internalFailures.Add(1)

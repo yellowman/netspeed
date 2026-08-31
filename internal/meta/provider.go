@@ -9,26 +9,57 @@ import (
 	"github.com/yellowman/netspeed/internal/clientaddr"
 )
 
+// MeasurementCapabilities advertises optional HTTP transport discriminators.
+// These extend, but do not replace, the strict measurement protocol contract.
+type MeasurementCapabilities struct {
+	Version                       int      `json:"version"`
+	DownloadPath                  string   `json:"downloadPath"`
+	DownloadBytesParameter        string   `json:"downloadBytesParameter"`
+	DownloadPayloadParameter      string   `json:"downloadPayloadParameter"`
+	DownloadFramingParameter      string   `json:"downloadFramingParameter"`
+	DownloadChunkBytesParameter   string   `json:"downloadChunkBytesParameter"`
+	DownloadFlushParameter        string   `json:"downloadFlushParameter"`
+	UploadPath                    string   `json:"uploadPath"`
+	UploadBytesParameter          string   `json:"uploadBytesParameter"`
+	HTTPPingPath                  string   `json:"httpPingPath"`
+	HTTPPingMethods               []string `json:"httpPingMethods"`
+	WebSocketPingPath             string   `json:"webSocketPingPath,omitempty"`
+	WarmConnectionPing            bool     `json:"warmConnectionPing"`
+	DownloadPayloads              []string `json:"downloadPayloads"`
+	DownloadFramings              []string `json:"downloadFramings"`
+	DefaultDownloadPayload        string   `json:"defaultDownloadPayload"`
+	DefaultDownloadFraming        string   `json:"defaultDownloadFraming"`
+	DefaultChunkBytes             int      `json:"defaultChunkBytes"`
+	MinimumChunkBytes             int      `json:"minimumChunkBytes"`
+	MaximumChunkBytes             int      `json:"maximumChunkBytes"`
+	UploadContentEncodings        []string `json:"uploadContentEncodings"`
+	ResponseCacheControl          string   `json:"responseCacheControl"`
+	NoTransform                   bool     `json:"noTransform"`
+	ProxyBufferSuppressionHeader  string   `json:"proxyBufferSuppressionHeader"`
+	ProxyRequestBufferingAdvisory bool     `json:"proxyRequestBufferingAdvisory"`
+}
+
 // ClientMeta holds per-client metadata for the /meta endpoint.
 type ClientMeta struct {
-	Hostname                        string  `json:"hostname"`
-	ClientIP                        string  `json:"clientIp"`
-	HTTPProtocol                    string  `json:"httpProtocol"`
-	ASN                             int     `json:"asn"`
-	ASOrg                           string  `json:"asOrganization"`
-	Colo                            string  `json:"colo"`
-	Country                         string  `json:"country"`
-	City                            string  `json:"city"`
-	Region                          string  `json:"region"`
-	PostalCode                      string  `json:"postalCode"`
-	Latitude                        float64 `json:"latitude"`
-	Longitude                       float64 `json:"longitude"`
-	Timezone                        string  `json:"timezone,omitempty"`
-	MaxTransferBytes                int64   `json:"maxTransferBytes"`
-	MaxConcurrentTransfersPerClient int     `json:"maxConcurrentTransfersPerClient"`
-	MeasurementProtocolVersion      int     `json:"measurementProtocolVersion"`
-	UploadReceiptVersion            int     `json:"uploadReceiptVersion"`
-	PacketLossFrameVersion          int     `json:"packetLossFrameVersion"`
+	Hostname                        string                   `json:"hostname"`
+	ClientIP                        string                   `json:"clientIp"`
+	HTTPProtocol                    string                   `json:"httpProtocol"`
+	ASN                             int                      `json:"asn"`
+	ASOrg                           string                   `json:"asOrganization"`
+	Colo                            string                   `json:"colo"`
+	Country                         string                   `json:"country"`
+	City                            string                   `json:"city"`
+	Region                          string                   `json:"region"`
+	PostalCode                      string                   `json:"postalCode"`
+	Latitude                        float64                  `json:"latitude"`
+	Longitude                       float64                  `json:"longitude"`
+	Timezone                        string                   `json:"timezone,omitempty"`
+	MaxTransferBytes                int64                    `json:"maxTransferBytes"`
+	MaxConcurrentTransfersPerClient int                      `json:"maxConcurrentTransfersPerClient"`
+	MeasurementProtocolVersion      int                      `json:"measurementProtocolVersion"`
+	UploadReceiptVersion            int                      `json:"uploadReceiptVersion"`
+	PacketLossFrameVersion          int                      `json:"packetLossFrameVersion"`
+	MeasurementCapabilities         *MeasurementCapabilities `json:"measurementCapabilities,omitempty"`
 }
 
 // Provider is the interface for extracting client metadata from requests.

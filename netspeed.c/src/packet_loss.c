@@ -4,6 +4,7 @@
 #include "packet_loss.h"
 
 #include "json.h"
+#include "progress.h"
 #include "stats.h"
 #include "timing.h"
 
@@ -17,7 +18,6 @@
 
 #ifdef NETSPEED_HAVE_LIBDATACHANNEL
 #include <rtc/rtc.h>
-#include "progress.h"
 #endif
 
 #define PACKET_HEADER_SIZE 32

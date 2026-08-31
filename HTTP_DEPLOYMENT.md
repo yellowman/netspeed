@@ -15,7 +15,7 @@ The server instead uses four independent limits:
 | setting | default | scope |
 |---|---:|---|
 | `NETSPEEDD_READ_HEADER_TIMEOUT` / `-read-header-timeout` | 10s | request headers only |
-| `NETSPEEDD_CONTROL_TIMEOUT` / `-control-timeout` | 30s | metadata, health, locations, metrics, signaling, reports, and static files |
+| `NETSPEEDD_CONTROL_TIMEOUT` / `-control-timeout` | 30s | metadata, `/__ping`, health, locations, metrics, signaling, reports, and static files |
 | `NETSPEEDD_TRANSFER_TIMEOUT` / `-transfer-timeout` | 5m | one `/__down` or `/__up` request |
 | `NETSPEEDD_IDLE_TIMEOUT` / `-idle-timeout` | 2m | an idle keep-alive connection |
 
@@ -31,8 +31,8 @@ request at the slowest link rate the deployment intends to support.
 ### Same-origin deployment
 
 When the UI and daemon share an origin, no browser configuration is required.
-The browser uses `/meta`, `/__down`, `/__up`, `/locations`, and `/api/*` on the
-page origin.
+The browser uses `/meta`, `/__down`, `/__up`, `/__ping`, `/locations`, and
+`/api/*` on the page origin.
 
 When bearer authentication is enabled, `/locations` is protected and successful
 responses are `Cache-Control: private, no-store` with `Pragma: no-cache` and
@@ -132,14 +132,67 @@ address and list every trusted proxy network explicitly:
 ```
 
 Forwarding headers from all other peers are ignored. The proxy must not buffer,
-compress, cache, or transform `/__down` or `/__up`; doing so changes the path
-being measured. It should also permit request and response bodies up to
-`NETSPEEDD_MAX_BYTES` and use upstream timeouts at least as long as
+compress, cache, or transform `/__down`, `/__up`, or `/__ping`; doing so changes
+the path being measured. It should also permit request and response bodies up
+to `NETSPEEDD_MAX_BYTES` and use upstream timeouts at least as long as
 `NETSPEEDD_TRANSFER_TIMEOUT`.
 
+The daemon emits `Cache-Control: no-store, no-transform` and
+`X-Accel-Buffering: no`, but those are not a substitute for proxy configuration.
+In particular, a response header cannot disable buffering of the incoming
+`/__up` request body.
+
+### Nginx measurement location
+
+A representative Nginx location is:
+
+```nginx
+location ~ ^/__(down|up|ping)$ {
+    proxy_pass http://127.0.0.1:8080;
+    proxy_http_version 1.1;
+
+    proxy_cache off;
+    proxy_buffering off;
+    proxy_request_buffering off;
+    gzip off;
+    proxy_set_header Accept-Encoding "";
+
+    # Nginx processes this upstream header; pass it through as a diagnostic too.
+    proxy_pass_header X-Accel-Buffering;
+
+    client_max_body_size 1g;   # keep aligned with NETSPEEDD_MAX_BYTES
+    proxy_read_timeout 5m;     # keep aligned with NETSPEEDD_TRANSFER_TIMEOUT
+    proxy_send_timeout 5m;
+}
+```
+
+Do not configure `proxy_ignore_headers X-Accel-Buffering` for these routes. The
+explicit `proxy_buffering off` remains useful even though the daemon emits the
+same instruction, and `proxy_request_buffering off` is required for upload
+timing to reach the daemon as the client sends it.
+
+### Caddy measurement route
+
+Caddy's reverse proxy partially buffers responses for wire efficiency unless a
+streaming condition applies. Select low-latency flushing explicitly for the
+measurement paths and do not add `request_buffers`, `response_buffers`, or an
+`encode` handler to them:
+
+```caddyfile
+@measurement path /__down /__up /__ping
+reverse_proxy @measurement 127.0.0.1:8080 {
+    flush_interval -1
+}
+```
+
+`flush_interval -1` disables response buffering and flushes each upstream write.
+The daemon's `framing=chunked&flush=false` option can reduce its own per-chunk
+flushes, but a deployment using the Caddy low-latency setting deliberately
+chooses immediate downstream forwarding.
+
 A path-prefixed deployment can strip the prefix before proxying. For example,
-an upstream route `/netspeed-api/` should present `/meta`, `/__down`, and the
-other root paths to `netspeedd`, while the browser uses
+an upstream route `/netspeed-api/` should present `/meta`, `/__down`, `/__up`,
+`/__ping`, and the other root paths to `netspeedd`, while the browser uses
 `apiBaseUrl: "https://example.com/netspeed-api/"`.
 
 ## 5. Direct TLS

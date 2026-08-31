@@ -165,8 +165,11 @@ func TestCORSCrossOriginTimingAndCredentialsContract(t *testing.T) {
 	if recorder.Header().Get("Access-Control-Allow-Origin") != "*" || recorder.Header().Get("Timing-Allow-Origin") != "*" {
 		t.Fatalf("wildcard CORS=%q TAO=%q", recorder.Header().Get("Access-Control-Allow-Origin"), recorder.Header().Get("Timing-Allow-Origin"))
 	}
-	if !strings.Contains(recorder.Header().Get("Access-Control-Expose-Headers"), "Server-Timing") {
-		t.Fatalf("exposed headers=%q; want Server-Timing", recorder.Header().Get("Access-Control-Expose-Headers"))
+	exposed := recorder.Header().Get("Access-Control-Expose-Headers")
+	for _, header := range []string{"Server-Timing", "X-Accel-Buffering", "X-Netspeed-Payload", "X-Netspeed-Framing"} {
+		if !strings.Contains(exposed, header) {
+			t.Fatalf("exposed headers=%q; want %s", exposed, header)
+		}
 	}
 
 	server.cfg.AllowedOrigins = []string{"https://UI.Example.Test"}
@@ -185,11 +188,12 @@ func TestCORSCrossOriginTimingAndCredentialsContract(t *testing.T) {
 
 	preflight := httptest.NewRequest(http.MethodOptions, "/meta", nil)
 	preflight.Header.Set("Origin", "https://ui.example.test")
-	preflight.Header.Set("Access-Control-Request-Method", http.MethodGet)
+	preflight.Header.Set("Access-Control-Request-Method", http.MethodHead)
 	preflight.Header.Set("Access-Control-Request-Headers", "authorization, cache-control")
 	recorder = httptest.NewRecorder()
 	credentialed.ServeHTTP(recorder, preflight)
-	if recorder.Code != http.StatusNoContent || !strings.Contains(recorder.Header().Get("Access-Control-Allow-Headers"), "Cache-Control") {
+	if recorder.Code != http.StatusNoContent || !strings.Contains(recorder.Header().Get("Access-Control-Allow-Headers"), "Cache-Control") ||
+		!strings.Contains(recorder.Header().Get("Access-Control-Allow-Methods"), http.MethodHead) {
 		t.Fatalf("preflight status=%d headers=%#v", recorder.Code, recorder.Header())
 	}
 

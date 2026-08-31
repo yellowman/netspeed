@@ -19,7 +19,14 @@ A version-2 client starts with `GET /meta` and requires these fields:
   "maxConcurrentTransfersPerClient": 24,
   "measurementProtocolVersion": 2,
   "uploadReceiptVersion": 1,
-  "packetLossFrameVersion": 1
+  "packetLossFrameVersion": 1,
+  "measurementCapabilities": {
+    "version": 1,
+    "downloadPayloads": ["random", "zero"],
+    "downloadFramings": ["fixed", "chunked"],
+    "httpPingPath": "/__ping",
+    "httpPingMethods": ["GET", "HEAD"]
+  }
 }
 ```
 
@@ -31,6 +38,11 @@ A version-2 client starts with `GET /meta` and requires these fields:
 - `measurementProtocolVersion` must be at least `2`.
 - `uploadReceiptVersion` must be at least `1` whenever uploads are requested.
 - `packetLossFrameVersion` must be at least `1` for the packet test.
+- `measurementCapabilities` is an optional transport-control extension. Version
+  1 advertises exact query parameter names, pseudorandom and zero-fill payloads,
+  fixed and streamed framing, upload content-coding restrictions, warm HTTP ping,
+  and anti-transform/proxy-buffer headers. Its complete schema is defined in
+  [`HTTP_MEASUREMENT_TRANSPORT.md`](HTTP_MEASUREMENT_TRANSPORT.md).
 
 A v2 client does not silently fall back to pre-v2 measurement methodology. A
 packet test may be reported as unavailable when its frame capability is missing,
@@ -40,37 +52,48 @@ but missing throughput capabilities are fatal to a normal test.
 
 ### 2.1 download
 
-A client requests a bounded payload with:
+A client requests a bounded payload with the compatibility form:
 
 ```text
 GET /__down?bytes=<decimal>&measId=<unique-id>&profile=<name>&run=<index>
 ```
 
+When transport capabilities version 1 is advertised, the request may also
+select `payload=random|zero`, `framing=fixed|chunked`, `chunkBytes=N`, and
+`flush=true|false`. Defaults remain `random`, `fixed`, and 1 MiB application
+writes, so existing clients are unchanged. The full discriminator contract is
+in [`HTTP_MEASUREMENT_TRANSPORT.md`](HTTP_MEASUREMENT_TRANSPORT.md).
+
 The client accepts a sample only when:
 
 - the response status is `200`;
 - the content type is `application/octet-stream`;
-- a supplied `Content-Length` equals the requested byte count;
+- fixed framing supplies a `Content-Length` equal to the requested byte count;
+- streamed framing supplies no `Content-Length`;
 - the body contains exactly the requested number of bytes;
 - the measured body interval is positive.
 
-The Go client consumes the body without retaining it. The browser uses a
-`ReadableStream` when available and otherwise refuses to materialize more than
-100 MB.
+`Cache-Control: no-store, no-transform` applies in both modes. The Go client
+consumes the body without retaining it. The browser uses a `ReadableStream` when
+available and otherwise refuses to materialize more than 100 MB.
 
 ### 2.2 upload
 
 A client sends an exact-length binary request with:
 
 ```text
-POST /__up?measId=<unique-id>&profile=<name>&run=<index>
+POST /__up?bytes=<decimal>&measId=<unique-id>&profile=<name>&run=<index>
 Content-Type: application/octet-stream
+Content-Encoding: identity
 Content-Length: <decimal>
 ```
 
-The daemon rejects a request when its declared or observed body exceeds
-`maxTransferBytes`, when the body is shorter than its declared length, or when
-body reading fails. A successful response is version 1 of the verified receipt:
+The optional `bytes` query value is verified against both a known
+`Content-Length` and the actual consumed body. The daemon rejects a request when
+its declared or observed body exceeds `maxTransferBytes`, when the body is
+shorter than its declared length, when `bytes` does not match, when body reading
+fails, or when a non-identity content coding such as gzip or Brotli is supplied.
+A successful response is version 1 of the verified receipt:
 
 ```json
 {
@@ -80,10 +103,13 @@ body reading fails. A successful response is version 1 of the verified receipt:
 }
 ```
 
-A client accepts the sample only when `acceptedBytes` equals both the declared
-length and the number of bytes actually supplied by the client. The canonical
-upload duration is `serverDurationNs`; precise client body-write timing is a
-fallback only when the receipt duration is unavailable.
+A client accepts the sample only when `acceptedBytes` equals the query
+`bytes`, the declared length when present, and the number of bytes actually
+supplied by the client. The canonical upload duration is `serverDurationNs`;
+it spans daemon body ingestion only. Precise client body-write timing is a
+fallback only when the receipt duration is unavailable. Successful and error
+responses use `Cache-Control: no-store, no-transform` and advertise identity
+content handling through diagnostic headers.
 
 The Go client generates upload bytes from a bounded streaming reader. A browser
 with request-stream support emits 64 KiB chunks. Other browsers reuse one payload
@@ -153,12 +179,16 @@ for old internally constructed result fixtures, not normal v2 runs.
 ### 4.1 unloaded latency
 
 A normal run requests 20 latency probes; quick mode uses fewer probes according
-to the client configuration. A probe is a zero-byte `GET /__down`. RTT is the
-interval from request write completion to first response byte when precise timing
-is available.
+to the client configuration. When transport capabilities advertise `/__ping`,
+a probe is a zero-body `GET` or `HEAD` to that path. Otherwise the compatibility
+fallback is `GET /__down?bytes=0`. RTT is the interval from request write
+completion to first response byte when precise timing is available.
 
-Warmup removal drops the first two valid unloaded samples before summary
-statistics are computed.
+Clients warm and reuse one persistent HTTP transport so repeated DNS, TCP, QUIC,
+and TLS setup is excluded. WebSocket probing remains optional: a client may use
+it only when a path is explicitly advertised and must otherwise retain HTTP
+fallback. Warmup removal drops the first two valid unloaded samples before
+summary statistics are computed.
 
 ### 4.2 loaded latency
 

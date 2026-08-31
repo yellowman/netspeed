@@ -90,11 +90,18 @@ func TestHandleMetaAdvertisesMeasurementCapabilities(t *testing.T) {
 	if got.PacketLossFrameVersion != protocol.PacketLossFrameVersion {
 		t.Fatalf("packetLossFrameVersion = %d; want %d", got.PacketLossFrameVersion, protocol.PacketLossFrameVersion)
 	}
+	if got.MeasurementCapabilities == nil || got.MeasurementCapabilities.HTTPPingPath != "/__ping" ||
+		len(got.MeasurementCapabilities.DownloadPayloads) != 2 || len(got.MeasurementCapabilities.DownloadFramings) != 2 ||
+		!got.MeasurementCapabilities.NoTransform || got.MeasurementCapabilities.ProxyBufferSuppressionHeader != "X-Accel-Buffering: no" ||
+		got.MeasurementCapabilities.DownloadPayloadParameter != "payload" || got.MeasurementCapabilities.DownloadFramingParameter != "framing" ||
+		len(got.MeasurementCapabilities.HTTPPingMethods) != 2 || !got.MeasurementCapabilities.WarmConnectionPing {
+		t.Fatalf("measurementCapabilities = %#v; want HTTP transport discriminators", got.MeasurementCapabilities)
+	}
 }
 
 func TestHandleUpReturnsVerifiedReceipt(t *testing.T) {
 	s := measurementTestServer(16)
-	req := httptest.NewRequest(http.MethodPost, "/__up?measId=test", bytes.NewReader([]byte("1234")))
+	req := httptest.NewRequest(http.MethodPost, "/__up?bytes=4&measId=test", bytes.NewReader([]byte("1234")))
 	rec := httptest.NewRecorder()
 
 	s.handleUp(rec, req)
@@ -105,8 +112,8 @@ func TestHandleUpReturnsVerifiedReceipt(t *testing.T) {
 	if got := rec.Header().Get("Content-Type"); !strings.HasPrefix(got, "application/json") {
 		t.Fatalf("Content-Type = %q; want application/json", got)
 	}
-	if got := rec.Header().Get("Cache-Control"); got != "no-store" {
-		t.Fatalf("Cache-Control = %q; want no-store", got)
+	if got := rec.Header().Get("Cache-Control"); got != "no-store, no-transform" {
+		t.Fatalf("Cache-Control = %q; want no-store, no-transform", got)
 	}
 	var receipt protocol.UploadReceipt
 	if err := json.NewDecoder(rec.Body).Decode(&receipt); err != nil {
@@ -114,6 +121,13 @@ func TestHandleUpReturnsVerifiedReceipt(t *testing.T) {
 	}
 	if !receipt.OK || receipt.AcceptedBytes != 4 || receipt.ServerDurationNS <= 0 {
 		t.Fatalf("receipt = %#v; want verified 4-byte receipt", receipt)
+	}
+	if rec.Header().Get("X-Netspeed-Accepted-Bytes") != "4" ||
+		rec.Header().Get("X-Netspeed-Expected-Bytes") != "4" ||
+		rec.Header().Get("X-Netspeed-Content-Encoding") != "identity" ||
+		rec.Header().Get("X-Netspeed-Framing") != "fixed" ||
+		rec.Header().Get("X-Accel-Buffering") != "no" {
+		t.Fatalf("upload headers=%v", rec.Header())
 	}
 }
 
@@ -172,6 +186,96 @@ func TestHandleUpRejectsBodyReadFailure(t *testing.T) {
 	}
 	if !strings.Contains(rec.Body.String(), "failed to read complete upload") {
 		t.Fatalf("body = %q; want read-failure message", rec.Body.String())
+	}
+}
+
+func TestHandleDownSupportsPayloadAndFramingDiscriminators(t *testing.T) {
+	s := measurementTestServer(16 << 10)
+
+	zeroRequest := httptest.NewRequest(http.MethodGet, "/__down?bytes=8192&payload=zero&framing=fixed&chunkBytes=4096", nil)
+	zeroRecorder := httptest.NewRecorder()
+	s.handleDown(zeroRecorder, zeroRequest)
+	if zeroRecorder.Code != http.StatusOK {
+		t.Fatalf("zero status=%d body=%q", zeroRecorder.Code, zeroRecorder.Body.String())
+	}
+	if zeroRecorder.Body.Len() != 8192 || bytes.Count(zeroRecorder.Body.Bytes(), []byte{0}) != 8192 {
+		t.Fatalf("zero payload length=%d; want 8192 zero bytes", zeroRecorder.Body.Len())
+	}
+	if zeroRecorder.Header().Get("Cache-Control") != "no-store, no-transform" ||
+		zeroRecorder.Header().Get("X-Accel-Buffering") != "no" ||
+		zeroRecorder.Header().Get("X-Netspeed-Payload") != "zero" ||
+		zeroRecorder.Header().Get("X-Netspeed-Framing") != "fixed" ||
+		zeroRecorder.Header().Get("Content-Length") != "8192" {
+		t.Fatalf("zero headers=%v", zeroRecorder.Header())
+	}
+
+	randomRequest := httptest.NewRequest(http.MethodGet, "/__down?bytes=8192&payload=random&framing=chunked&chunkBytes=4096&flush=false", nil)
+	randomRecorder := httptest.NewRecorder()
+	s.handleDown(randomRecorder, randomRequest)
+	if randomRecorder.Code != http.StatusOK || randomRecorder.Body.Len() != 8192 {
+		t.Fatalf("random status=%d length=%d", randomRecorder.Code, randomRecorder.Body.Len())
+	}
+	if randomRecorder.Header().Get("Content-Length") != "" || !randomRecorder.Flushed {
+		t.Fatalf("chunked headers=%v flushed=%v", randomRecorder.Header(), randomRecorder.Flushed)
+	}
+	body := randomRecorder.Body.Bytes()
+	if bytes.Equal(body[:4096], body[4096:]) {
+		t.Fatal("adjacent random chunks repeated")
+	}
+}
+
+func TestHandleDownRejectsInvalidDiscriminator(t *testing.T) {
+	s := measurementTestServer(1024)
+	recorder := httptest.NewRecorder()
+	s.handleDown(recorder, httptest.NewRequest(http.MethodGet, "/__down?payload=compressible", nil))
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("status=%d; want 400", recorder.Code)
+	}
+}
+
+func TestHandlePingReturnsZeroPayloadWithMeasurementControls(t *testing.T) {
+	s := measurementTestServer(1024)
+	recorder := httptest.NewRecorder()
+	s.handlePing(recorder, httptest.NewRequest(http.MethodGet, "/__ping?during=download&seq=1", nil))
+	if recorder.Code != http.StatusOK || recorder.Body.Len() != 0 {
+		t.Fatalf("status=%d body=%q", recorder.Code, recorder.Body.String())
+	}
+	if recorder.Header().Get("Content-Length") != "0" || recorder.Header().Get("X-Netspeed-Measurement") != "latency" ||
+		recorder.Header().Get("Cache-Control") != "no-store, no-transform" {
+		t.Fatalf("headers=%v", recorder.Header())
+	}
+
+	headRecorder := httptest.NewRecorder()
+	s.handlePing(headRecorder, httptest.NewRequest(http.MethodHead, "/__ping?seq=2", nil))
+	if headRecorder.Code != http.StatusOK || headRecorder.Body.Len() != 0 || headRecorder.Header().Get("Content-Length") != "0" {
+		t.Fatalf("HEAD status=%d headers=%v body=%q", headRecorder.Code, headRecorder.Header(), headRecorder.Body.String())
+	}
+}
+
+func TestHandleUpRejectsCompressedAndMismatchedBodies(t *testing.T) {
+	s := measurementTestServer(16)
+
+	compressed := httptest.NewRequest(http.MethodPost, "/__up?bytes=4", bytes.NewReader([]byte("1234")))
+	compressed.Header.Set("Content-Encoding", "gzip")
+	compressedRecorder := httptest.NewRecorder()
+	s.handleUp(compressedRecorder, compressed)
+	if compressedRecorder.Code != http.StatusUnsupportedMediaType {
+		t.Fatalf("compressed status=%d; want 415", compressedRecorder.Code)
+	}
+
+	mismatch := httptest.NewRequest(http.MethodPost, "/__up?bytes=5", bytes.NewReader([]byte("1234")))
+	mismatchRecorder := httptest.NewRecorder()
+	s.handleUp(mismatchRecorder, mismatch)
+	if mismatchRecorder.Code != http.StatusBadRequest {
+		t.Fatalf("mismatch status=%d; want 400", mismatchRecorder.Code)
+	}
+
+	streamMismatch := httptest.NewRequest(http.MethodPost, "/__up?bytes=5", bytes.NewReader([]byte("1234")))
+	streamMismatch.ContentLength = -1
+	streamMismatchRecorder := httptest.NewRecorder()
+	s.handleUp(streamMismatchRecorder, streamMismatch)
+	if streamMismatchRecorder.Code != http.StatusBadRequest || streamMismatchRecorder.Header().Get("X-Netspeed-Framing") != "chunked" {
+		t.Fatalf("stream mismatch status=%d headers=%v; want 400 chunked", streamMismatchRecorder.Code, streamMismatchRecorder.Header())
 	}
 }
 

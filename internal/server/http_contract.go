@@ -86,10 +86,21 @@ func (s *Server) corsMiddleware(next http.Handler) http.Handler {
 		w.Header().Set("Access-Control-Allow-Origin", allowOrigin)
 		w.Header().Set("Timing-Allow-Origin", allowOrigin)
 		w.Header().Set("Access-Control-Expose-Headers", strings.Join([]string{
+			"CDN-Cache-Control",
 			"Content-Length",
 			"Retry-After",
+			"Surrogate-Control",
 			"Server-Timing",
+			"X-Accel-Buffering",
+			"X-Netspeed-Accepted-Bytes",
+			"X-Netspeed-Chunk-Bytes",
+			"X-Netspeed-Content-Encoding",
+			"X-Netspeed-Expected-Bytes",
+			"X-Netspeed-Framing",
+			"X-Netspeed-Measurement",
+			"X-Netspeed-Payload",
 			"X-Netspeed-Quota-Remaining-Bytes",
+			"X-Netspeed-Upload-Duration-Ns",
 			"cf-meta-asn",
 			"cf-meta-city",
 			"cf-meta-colo",
@@ -107,13 +118,13 @@ func (s *Server) corsMiddleware(next http.Handler) http.Handler {
 
 		if r.Method == http.MethodOptions {
 			requestedMethod := strings.ToUpper(strings.TrimSpace(r.Header.Get("Access-Control-Request-Method")))
-			if requestedMethod != "" && requestedMethod != http.MethodGet && requestedMethod != http.MethodPost && requestedMethod != http.MethodOptions {
+			if requestedMethod != "" && requestedMethod != http.MethodGet && requestedMethod != http.MethodHead && requestedMethod != http.MethodPost && requestedMethod != http.MethodOptions {
 				http.Error(w, "CORS method is not allowed", http.StatusMethodNotAllowed)
 				return
 			}
 			addVary(w.Header(), "Access-Control-Request-Method")
 			addVary(w.Header(), "Access-Control-Request-Headers")
-			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+			w.Header().Set("Access-Control-Allow-Methods", "GET, HEAD, POST, OPTIONS")
 			w.Header().Set("Access-Control-Allow-Headers", "Accept, Authorization, Cache-Control, Content-Type, Pragma, X-Requested-With")
 			w.Header().Set("Access-Control-Max-Age", "86400")
 			w.WriteHeader(http.StatusNoContent)

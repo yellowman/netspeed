@@ -23,8 +23,10 @@ capabilities
 - Measurement protocol v2 publishes explicit server capabilities and prevents
   clients from combining incompatible measurement methods with older servers.
 - Downloads must return the expected status, content type, and exact byte count.
-  Uploads must return a bounded receipt confirming the exact accepted byte count
-  and server body-read duration.
+  The daemon can discriminate pseudorandom versus zero-fill payloads and fixed
+  versus streamed framing without weakening exact-byte verification. Uploads
+  return a bounded receipt confirming the exact accepted byte count and server
+  body-read duration.
 - Transfer planning obeys the daemon's advertised byte and concurrency ceilings.
   Go and C uploads are generated as streams, and browser transfer fallbacks are
   memory-bounded.
@@ -37,7 +39,8 @@ capabilities
 - Small verified baselines select bounded chunks and reusable concurrent flows
   for fixed-duration throughput windows; high-rate tests do not depend on giant
   requests or allocations.
-- Loaded-latency probes are accepted only when continuous directional traffic
+- A dedicated zero-body `/__ping` path supports warm keep-alive HTTP latency;
+  loaded-latency probes are accepted only when continuous directional traffic
   spans the complete probe interval without a zero-load gap.
 - Packet testing uses exact 1,200-byte binary frames and reports transaction,
   forward, and reverse-acknowledgement loss separately.
@@ -81,8 +84,10 @@ capabilities
 
 - Header, control-request, transfer, and idle deadlines are independent, so
   slow measurement bodies are not truncated by a whole-request timeout.
-- CORS, Resource Timing, credentialed browser access, direct TLS, reverse-proxy
-  identity, and graceful shutdown have explicit validated behavior.
+- Measurement responses use `no-store, no-transform`, CDN cache suppression,
+  and `X-Accel-Buffering: no`; CORS, Resource Timing, credentialed browser access,
+  direct TLS, reverse-proxy identity, and graceful shutdown have explicit
+  validated behavior.
 - Configuration uses command-line flags and strictly parsed `NETSPEEDD_*`
   environment variables. ASN and City MaxMind databases can be configured
   independently.
@@ -126,6 +131,8 @@ The repository is defined by the following canonical contracts:
   disconnect recovery, and teardown;
 - [`SERVICE_HARDENING.md`](SERVICE_HARDENING.md) — admission limits,
   authentication, trusted proxies, TURN defaults, quotas, and metrics;
+- [`HTTP_MEASUREMENT_TRANSPORT.md`](HTTP_MEASUREMENT_TRANSPORT.md) — HTTP
+  payload, framing, latency, compression, caching, and proxy-buffer controls;
 - [`HTTP_DEPLOYMENT.md`](HTTP_DEPLOYMENT.md) — endpoint deadlines, browser API
   routing, CORS/Resource Timing, TLS, configuration, GeoIP, and shutdown;
 - [`RELEASE_QUALIFICATION.md`](RELEASE_QUALIFICATION.md) — CI, end-to-end,

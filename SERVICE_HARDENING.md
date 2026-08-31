@@ -80,7 +80,7 @@ scheme and length validation.
 
 Protected routes are:
 
-- `/meta`, `/__down`, `/__up`, `/locations`, and `/cdn-cgi/trace`;
+- `/meta`, `/__down`, `/__up`, `/__ping`, `/locations`, and `/cdn-cgi/trace`;
 - every `/api/` route, including ICE configuration and packet-test signaling.
 
 `/health` and static web assets remain public. CORS preflight requests are
