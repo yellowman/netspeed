@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"strings"
 	"testing"
 	"time"
 )
@@ -255,5 +256,76 @@ func TestDispatchAutoRefusesIncompatibleNetspeedDowngrade(t *testing.T) {
 	}
 	if got := os.Getenv("NETSPEED_SELECTED_PROVIDER"); got != providerNetspeed {
 		t.Fatalf("selected provider=%q", got)
+	}
+}
+
+func TestParseOptionsPreservesStrictTransportControls(t *testing.T) {
+	o, stripped, err := parseOptions([]string{
+		"--provider", "netspeed",
+		"--download-payload", "zero",
+		"--download-framing=chunked",
+		"--download-chunk-bytes", "4096",
+		"--download-flush=false",
+		"https://strict.example",
+	})
+	if err != nil {
+		t.Fatalf("parseOptions: %v", err)
+	}
+	if !o.TransportControls || o.Server != "https://strict.example" {
+		t.Fatalf("options = %+v; want transport controls and positional server", o)
+	}
+	joined := strings.Join(stripped, " ")
+	for _, expected := range []string{
+		"--download-payload zero",
+		"--download-framing=chunked",
+		"--download-chunk-bytes 4096",
+		"--download-flush=false",
+		"https://strict.example",
+	} {
+		if !strings.Contains(joined, expected) {
+			t.Fatalf("stripped args = %#v; want %q", stripped, expected)
+		}
+	}
+}
+
+func TestParseOptionsTreatsAutomaticTransportValuesAsNoOp(t *testing.T) {
+	o, _, err := parseOptions([]string{
+		"--download-payload", "auto",
+		"--download-framing=auto",
+		"--download-chunk-bytes", "0",
+		"--download-flush=auto",
+	})
+	if err != nil {
+		t.Fatalf("parseOptions: %v", err)
+	}
+	if o.TransportControls {
+		t.Fatalf("automatic transport values were classified as explicit: %+v", o)
+	}
+}
+
+func TestDispatchRejectsStrictTransportControlsInCloudflareMode(t *testing.T) {
+	oldArgs := os.Args
+	oldStderr := os.Stderr
+	defer func() {
+		os.Args = oldArgs
+		os.Stderr = oldStderr
+	}()
+
+	reader, writer, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	os.Stderr = writer
+	os.Args = []string{"netspeed"}
+	handled, code := Dispatch([]string{"--provider", "cloudflare", "--download-payload", "zero"})
+	_ = writer.Close()
+	body, _ := io.ReadAll(reader)
+	_ = reader.Close()
+
+	if !handled || code != 2 {
+		t.Fatalf("handled=%v code=%d; want handled argument error", handled, code)
+	}
+	if !strings.Contains(string(body), "require --provider netspeed") {
+		t.Fatalf("stderr = %q; want explicit provider guidance", body)
 	}
 }

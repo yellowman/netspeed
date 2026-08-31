@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
-	compatclient "github.com/yellowman/netspeed/cmd/netspeed/cloudflarecompat"
 	"os"
 	"os/signal"
 	"strings"
@@ -14,6 +13,7 @@ import (
 	"time"
 
 	"github.com/yellowman/netspeed/cmd/netspeed/client"
+	compatclient "github.com/yellowman/netspeed/cmd/netspeed/cloudflarecompat"
 	"github.com/yellowman/netspeed/cmd/netspeed/output"
 	"github.com/yellowman/netspeed/internal/buildinfo"
 )
@@ -24,19 +24,23 @@ func main() {
 	}
 	// Command line flags
 	var (
-		serverURL    string
-		accessToken  string
-		jsonOutput   bool
-		csvOutput    bool
-		quiet        bool
-		verbose      bool
-		quick        bool
-		downloadOnly bool
-		uploadOnly   bool
-		noPacketLoss bool
-		noColor      bool
-		timeout      time.Duration
-		showVersion  bool
+		serverURL       string
+		accessToken     string
+		jsonOutput      bool
+		csvOutput       bool
+		quiet           bool
+		verbose         bool
+		quick           bool
+		downloadOnly    bool
+		uploadOnly      bool
+		noPacketLoss    bool
+		downloadPayload string
+		downloadFraming string
+		downloadChunk   int
+		downloadFlush   string
+		noColor         bool
+		timeout         time.Duration
+		showVersion     bool
 	)
 
 	flag.StringVar(&serverURL, "server", "", "Server URL (default: http://localhost:8080)")
@@ -55,6 +59,10 @@ func main() {
 	flag.BoolVar(&uploadOnly, "upload-only", false, "Skip download tests")
 	flag.BoolVar(&uploadOnly, "u", false, "Skip download tests (shorthand)")
 	flag.BoolVar(&noPacketLoss, "no-packet-loss", false, "Skip packet loss test")
+	flag.StringVar(&downloadPayload, "download-payload", "auto", "Download payload: auto, random, or zero")
+	flag.StringVar(&downloadFraming, "download-framing", "auto", "Download framing: auto, fixed, or chunked")
+	flag.IntVar(&downloadChunk, "download-chunk-bytes", 0, "Daemon application chunk size; 0 uses the advertised default")
+	flag.StringVar(&downloadFlush, "download-flush", "auto", "Per-chunk flush: auto, true, or false")
 	flag.BoolVar(&noColor, "no-color", false, "Disable colored output")
 	flag.DurationVar(&timeout, "timeout", 60*time.Second, "Total test timeout")
 	flag.DurationVar(&timeout, "t", 60*time.Second, "Total test timeout (shorthand)")
@@ -117,13 +125,17 @@ func main() {
 
 	// Create client config
 	cfg := client.Config{
-		ServerURL:      serverURL,
-		Timeout:        timeout,
-		Quick:          quick,
-		DownloadOnly:   downloadOnly,
-		UploadOnly:     uploadOnly,
-		SkipPacketLoss: noPacketLoss,
-		AccessToken:    accessToken,
+		ServerURL:          serverURL,
+		Timeout:            timeout,
+		Quick:              quick,
+		DownloadOnly:       downloadOnly,
+		UploadOnly:         uploadOnly,
+		SkipPacketLoss:     noPacketLoss,
+		AccessToken:        accessToken,
+		DownloadPayload:    downloadPayload,
+		DownloadFraming:    downloadFraming,
+		DownloadChunkBytes: downloadChunk,
+		DownloadFlush:      downloadFlush,
 		OnProgress: func(stage string, current, total int, value float64) {
 			out.Progress(stage, current, total, value)
 		},

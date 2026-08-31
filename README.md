@@ -398,6 +398,12 @@ using the CLI
 
 # explicit legacy download-only mode
 ./bin/netspeed --download-only --no-packet-loss https://legacy.example.com
+
+# low-CPU streamed zero-fill against a capability-aware Netspeed daemon
+./bin/netspeed --provider netspeed \
+  --download-payload zero --download-framing chunked \
+  --download-chunk-bytes 65536 --download-flush=false \
+  https://speed.example.com
 ```
 
 Important CLI flags:
@@ -414,8 +420,18 @@ Important CLI flags:
 | `-d, --download-only` | skip upload |
 | `-u, --upload-only` | skip download |
 | `--no-packet-loss` | skip WebRTC packet test |
+| `--download-payload` | `auto`, `random`, or `zero`; explicit values require advertised transport capabilities |
+| `--download-framing` | `auto`, `fixed`, or `chunked` |
+| `--download-chunk-bytes` | daemon application chunk size; `0` uses the advertised default |
+| `--download-flush` | `auto`, `true`, or `false` per application chunk |
 | `--no-color` | disable terminal colors |
 | `-t, --timeout` | overall test timeout, default 60 seconds |
+
+The Go client validates `measurementCapabilities` before using it, follows only
+same-origin relative endpoint paths, and records the normalized choice as
+`meta.measurementSelection` in JSON output. Explicit transport controls are
+rejected rather than silently ignored when the endpoint is legacy or the
+Cloudflare compatibility provider is selected.
 
 what it measures
 ----------------
@@ -448,6 +464,7 @@ netspeed/
 │   ├── limits/          # concurrency, byte quota, and token buckets
 │   ├── locations/       # server location data
 │   ├── measurement/     # shared measurement planning/statistics
+│   ├── measurementhttp/ # HTTP transport capability and streaming contract
 │   ├── meta/            # client metadata and GeoIP
 │   ├── protocol/        # verified upload and packet-frame protocol
 │   ├── server/          # HTTP routes, security, and metrics

@@ -18,18 +18,25 @@ import (
 	"time"
 
 	"github.com/yellowman/netspeed/internal/measurement"
+	"github.com/yellowman/netspeed/internal/measurementhttp"
 	"github.com/yellowman/netspeed/internal/protocol"
 )
 
 // timingInfo captures precise HTTP timing events.
 type timingInfo struct {
-	wroteRequest time.Time
-	gotFirstByte time.Time
+	wroteRequest     time.Time
+	gotFirstByte     time.Time
+	gotConnection    bool
+	connectionReused bool
 }
 
 // createTrace creates an httptrace.ClientTrace for precise timing.
 func createTrace(t *timingInfo) *httptrace.ClientTrace {
 	return &httptrace.ClientTrace{
+		GotConn: func(info httptrace.GotConnInfo) {
+			t.gotConnection = true
+			t.connectionReused = info.Reused
+		},
 		WroteRequest: func(info httptrace.WroteRequestInfo) {
 			t.wroteRequest = time.Now()
 		},
@@ -41,14 +48,18 @@ func createTrace(t *timingInfo) *httptrace.ClientTrace {
 
 // Config holds client configuration.
 type Config struct {
-	ServerURL      string
-	Timeout        time.Duration
-	Quick          bool
-	DownloadOnly   bool
-	UploadOnly     bool
-	SkipPacketLoss bool
-	AccessToken    string
-	OnProgress     func(stage string, current, total int, value float64)
+	ServerURL          string
+	Timeout            time.Duration
+	Quick              bool
+	DownloadOnly       bool
+	UploadOnly         bool
+	SkipPacketLoss     bool
+	AccessToken        string
+	DownloadPayload    string
+	DownloadFraming    string
+	DownloadChunkBytes int
+	DownloadFlush      string
+	OnProgress         func(stage string, current, total int, value float64)
 }
 
 // Buffer sizes for high-speed connections
@@ -91,6 +102,7 @@ type Client struct {
 	uploadReceiptVersion            int
 	packetLossFrameVersion          int
 	maxConcurrentTransfersPerClient int
+	measurementTransport            measurementhttp.Selection
 }
 
 // New creates a new speed test client.
@@ -105,6 +117,7 @@ func New(cfg Config) *Client {
 		cfg:                             cfg,
 		maxTransferBytes:                legacyMaxTransferBytes,
 		maxConcurrentTransfersPerClient: 24,
+		measurementTransport:            measurementhttp.LegacySelection(),
 		httpClient: &http.Client{
 			Transport: &http.Transport{
 				DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
@@ -157,6 +170,17 @@ func (c *Client) Run(ctx context.Context) (*Results, error) {
 		return nil, fmt.Errorf("failed to fetch metadata: %w", err)
 	}
 	results.Meta = meta
+	selection, err := measurementhttp.Negotiate(meta.MeasurementCapabilities, measurementhttp.Preferences{
+		DownloadPayload:    c.cfg.DownloadPayload,
+		DownloadFraming:    c.cfg.DownloadFraming,
+		DownloadChunkBytes: c.cfg.DownloadChunkBytes,
+		DownloadFlush:      c.cfg.DownloadFlush,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("negotiate HTTP measurement transport: %w", err)
+	}
+	c.measurementTransport = selection
+	meta.MeasurementSelection = &c.measurementTransport
 	if meta.MaxTransferBytes > 0 {
 		c.maxTransferBytes = meta.MaxTransferBytes
 	}
@@ -412,73 +436,113 @@ func (c *Client) quickBandwidthEstimate(ctx context.Context) float64 {
 	return sample.Mbps
 }
 
+type latencyProbeMeasurement struct {
+	RTT              time.Duration
+	ConnectionReused bool
+	Method           string
+	Path             string
+}
+
 func (c *Client) measureLatencySample(ctx context.Context, condition string, seq int) (LatencySample, error) {
 	_netspeedProgress := nsBeginProgress("latency probes")
 	defer _netspeedProgress.Done("complete")
 	startedAt := time.Now()
-	rtt, err := c.measureLatency(ctx, condition, seq)
+	probe, err := c.measureLatency(ctx, condition, seq)
 	endedAt := time.Now()
 	if err != nil {
 		return LatencySample{}, err
 	}
 	return LatencySample{
-		Timestamp:    endedAt,
-		StartedAt:    startedAt,
-		EndedAt:      endedAt,
-		RTT:          rtt,
-		Condition:    condition,
-		TimingSource: "httptrace",
+		Timestamp:        endedAt,
+		StartedAt:        startedAt,
+		EndedAt:          endedAt,
+		RTT:              probe.RTT,
+		Condition:        condition,
+		TimingSource:     "httptrace",
+		ConnectionReused: probe.ConnectionReused,
+		ProbeTransport:   "http",
+		ProbeMethod:      probe.Method,
+		ProbePath:        probe.Path,
 	}, nil
 }
 
-// measureLatency measures a single latency probe using precise timing.
-// RTT = GotFirstResponseByte - WroteRequest (excludes connection setup, TLS, DNS)
-func (c *Client) measureLatency(ctx context.Context, condition string, seq int) (time.Duration, error) {
+// measureLatency uses a dedicated zero-byte endpoint when advertised and falls
+// back to /__down?bytes=0 for older servers. A server that advertises warm
+// connection support must produce a reused keep-alive connection; an unmeasured
+// cold probe is retried rather than contaminating the reported sample.
+func (c *Client) measureLatency(ctx context.Context, condition string, seq int) (latencyProbeMeasurement, error) {
 	_netspeedProgress := nsBeginProgress("latency probes")
 	defer _netspeedProgress.Done("complete")
-	measID := fmt.Sprintf("%d-%s-%d", time.Now().UnixNano(), condition, seq)
-	requestURL := buildMeasurementURL(c.cfg.ServerURL, "/__down", url.Values{
-		"bytes":  {"0"},
+	attempts := 1
+	if c.measurementTransport.WarmConnectionPing {
+		attempts = 3
+	}
+	var last latencyProbeMeasurement
+	for attempt := 0; attempt < attempts; attempt++ {
+		probe, err := c.measureLatencyAttempt(ctx, condition, seq, attempt)
+		if err != nil {
+			return latencyProbeMeasurement{}, err
+		}
+		last = probe
+		if !c.measurementTransport.WarmConnectionPing || probe.ConnectionReused {
+			return probe, nil
+		}
+	}
+	return latencyProbeMeasurement{}, fmt.Errorf("server advertised warm connection latency but %s %s was not reused after %d probes", last.Method, last.Path, attempts)
+}
+
+func (c *Client) measureLatencyAttempt(ctx context.Context, condition string, seq, attempt int) (latencyProbeMeasurement, error) {
+	measID := fmt.Sprintf("%d-%s-%d-%d", time.Now().UnixNano(), condition, seq, attempt)
+	method, requestURL := c.latencyMeasurementRequest(url.Values{
 		"measId": {measID},
 		"during": {condition},
 		"seq":    {fmt.Sprintf("%d", seq)},
 	})
 
 	var timing timingInfo
-	trace := createTrace(&timing)
-	ctx = httptrace.WithClientTrace(ctx, trace)
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, requestURL, nil)
+	traceContext := httptrace.WithClientTrace(ctx, createTrace(&timing))
+	req, err := http.NewRequestWithContext(traceContext, method, requestURL, nil)
 	if err != nil {
-		return 0, err
+		return latencyProbeMeasurement{}, err
 	}
-	c.setRequestHeaders(req)
-	req.Header.Set("Cache-Control", "no-store")
+	c.setMeasurementRequestHeaders(req)
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		return 0, err
+		return latencyProbeMeasurement{}, err
 	}
 	defer resp.Body.Close()
 	if err := requireMeasurementStatus(resp, http.StatusOK); err != nil {
-		return 0, err
+		return latencyProbeMeasurement{}, err
+	}
+	if c.measurementTransport.LatencyUsesDownload {
+		if err := c.verifyDownloadMeasurementResponse(resp, 0, "latency"); err != nil {
+			return latencyProbeMeasurement{}, err
+		}
+	} else if err := c.verifyDedicatedLatencyResponse(resp); err != nil {
+		return latencyProbeMeasurement{}, err
 	}
 	received, err := consumeExactBody(resp.Body, 0)
 	if err != nil {
-		return 0, fmt.Errorf("read latency response: %w", err)
+		return latencyProbeMeasurement{}, fmt.Errorf("read latency response: %w", err)
 	}
 	if received != 0 {
-		return 0, fmt.Errorf("latency response contained %d bytes; expected 0", received)
+		return latencyProbeMeasurement{}, fmt.Errorf("latency response contained %d bytes; expected 0", received)
 	}
 
-	if timing.wroteRequest.IsZero() || timing.gotFirstByte.IsZero() {
-		return 0, fmt.Errorf("timing trace failed")
+	if !timing.gotConnection || timing.wroteRequest.IsZero() || timing.gotFirstByte.IsZero() {
+		return latencyProbeMeasurement{}, fmt.Errorf("latency timing trace failed")
 	}
 	rtt := timing.gotFirstByte.Sub(timing.wroteRequest)
 	if rtt <= 0 {
-		return 0, fmt.Errorf("invalid latency duration %s", rtt)
+		return latencyProbeMeasurement{}, fmt.Errorf("invalid latency duration %s", rtt)
 	}
-	return rtt, nil
+	return latencyProbeMeasurement{
+		RTT:              rtt,
+		ConnectionReused: timing.connectionReused,
+		Method:           method,
+		Path:             c.measurementTransport.LatencyPath,
+	}, nil
 }
 
 // Profile configuration used only for the small baseline estimate. Sustained
@@ -979,7 +1043,7 @@ func (c *Client) runLoadedLatencyProbes(ctx context.Context, condition string, c
 			continue
 		}
 		startedAt := time.Now()
-		rtt, err := c.measureLatency(ctx, condition, attempt)
+		probe, err := c.measureLatency(ctx, condition, attempt)
 		endedAt := time.Now()
 		if err != nil {
 			lastErr = err
@@ -999,15 +1063,19 @@ func (c *Client) runLoadedLatencyProbes(ctx context.Context, condition string, c
 			Timestamp:            endedAt,
 			StartedAt:            startedAt,
 			EndedAt:              endedAt,
-			RTT:                  rtt,
+			RTT:                  probe.RTT,
 			Condition:            condition,
 			LoadOverlapped:       true,
 			LoadTrackingAccurate: true,
 			TimingSource:         "httptrace",
+			ConnectionReused:     probe.ConnectionReused,
+			ProbeTransport:       "http",
+			ProbeMethod:          probe.Method,
+			ProbePath:            probe.Path,
 		}
 		samples = append(samples, sample)
 		if c.cfg.OnProgress != nil {
-			c.cfg.OnProgress("loaded-latency", len(samples), count, float64(rtt.Microseconds())/1000)
+			c.cfg.OnProgress("loaded-latency", len(samples), count, float64(probe.RTT.Microseconds())/1000)
 		}
 		select {
 		case <-ctx.Done():
@@ -1047,8 +1115,7 @@ func (c *Client) measureDownloadTracked(
 	}
 
 	measID := fmt.Sprintf("%d-download-%d", time.Now().UnixNano(), run)
-	requestURL := buildMeasurementURL(c.cfg.ServerURL, "/__down", url.Values{
-		"bytes":   {fmt.Sprintf("%d", numBytes)},
+	requestURL := c.downloadMeasurementURL(numBytes, url.Values{
 		"measId":  {measID},
 		"profile": {profileName},
 		"run":     {fmt.Sprintf("%d", run)},
@@ -1061,8 +1128,7 @@ func (c *Client) measureDownloadTracked(
 	if err != nil {
 		return ThroughputSample{}, err
 	}
-	c.setRequestHeaders(req)
-	req.Header.Set("Cache-Control", "no-store")
+	c.setMeasurementRequestHeaders(req)
 
 	requestStart := time.Now()
 	resp, err := c.httpClient.Do(req)
@@ -1075,6 +1141,9 @@ func (c *Client) measureDownloadTracked(
 	}
 	if contentType := resp.Header.Get("Content-Type"); !strings.HasPrefix(strings.ToLower(contentType), "application/octet-stream") {
 		return ThroughputSample{}, fmt.Errorf("unexpected download content type %q", contentType)
+	}
+	if err := c.verifyDownloadMeasurementResponse(resp, numBytes, "download"); err != nil {
+		return ThroughputSample{}, err
 	}
 	if resp.ContentLength >= 0 && resp.ContentLength != numBytes {
 		return ThroughputSample{}, fmt.Errorf("download Content-Length %d; expected %d", resp.ContentLength, numBytes)
@@ -1265,7 +1334,7 @@ func (c *Client) measureUploadTracked(
 	}
 
 	measID := fmt.Sprintf("%d-upload-%d", time.Now().UnixNano(), run)
-	requestURL := buildMeasurementURL(c.cfg.ServerURL, "/__up", url.Values{
+	requestURL := c.uploadMeasurementURL(numBytes, url.Values{
 		"measId":  {measID},
 		"profile": {profileName},
 		"run":     {fmt.Sprintf("%d", run)},
@@ -1279,8 +1348,9 @@ func (c *Client) measureUploadTracked(
 	if err != nil {
 		return ThroughputSample{}, err
 	}
-	c.setRequestHeaders(req)
+	c.setMeasurementRequestHeaders(req)
 	req.Header.Set("Content-Type", "application/octet-stream")
+	req.Header.Set("Content-Encoding", c.measurementTransport.UploadEncoding)
 	req.ContentLength = numBytes
 
 	resp, err := c.httpClient.Do(req)
@@ -1293,6 +1363,9 @@ func (c *Client) measureUploadTracked(
 	}
 	if contentType := resp.Header.Get("Content-Type"); !strings.HasPrefix(strings.ToLower(contentType), "application/json") {
 		return ThroughputSample{}, fmt.Errorf("unexpected upload receipt content type %q", contentType)
+	}
+	if err := c.verifyUploadMeasurementResponse(resp, numBytes); err != nil {
+		return ThroughputSample{}, err
 	}
 
 	var receipt protocol.UploadReceipt

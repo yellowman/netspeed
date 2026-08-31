@@ -44,10 +44,44 @@ must retain HTTP fallback.
 }
 ```
 
-Parameter names are advertised rather than assumed so later Go, C, and browser
-clients can negotiate the same behavior. `proxyRequestBufferingAdvisory` means a
+Parameter names are advertised rather than assumed so Go, C, and browser clients
+can converge on the same behavior. `proxyRequestBufferingAdvisory` means a
 response header cannot disable buffering of an upload request body; the reverse
 proxy must be configured accordingly.
+
+### 1.1 Go client negotiation and safety
+
+The Go CLI validates the complete object before issuing a measurement request.
+Endpoint values must be clean, same-origin relative paths with no authority,
+query, fragment, traversal, or backslash form. Download query parameter names
+must be syntactically safe and distinct, so hostile or malformed metadata cannot
+redirect traffic or collapse two discriminators onto one key.
+
+The corresponding CLI controls are:
+
+```text
+--download-payload auto|random|zero
+--download-framing auto|fixed|chunked
+--download-chunk-bytes N
+--download-flush auto|true|false
+```
+
+`auto` uses the daemon's advertised defaults. `download-chunk-bytes=0` uses the
+advertised default chunk size, and automatic flushing is enabled for streamed
+framing and disabled for fixed framing. Explicit choices fail negotiation when
+the daemon does not advertise transport version 1 or the selected value. They
+are never silently sent to a legacy endpoint.
+
+For every run, the normalized contract is included in JSON metadata as
+`measurementSelection`. It records the selected payload, framing, application
+chunk size, flush behavior, upload encoding, latency path and method, warm-reuse
+requirement, and whether legacy fallback was used. The Go client also verifies
+the response's measurement type, payload, framing, chunk size, exact length,
+identity content coding, and `no-store, no-transform` controls.
+
+The native C and browser adoption is intentionally handled in later client
+phases; they continue to use the compatible default endpoint surface in this
+tree.
 
 ## 2. Download endpoint
 
@@ -140,11 +174,14 @@ included.
 body. Arbitrary query labels such as `measId`, `during`, and `seq` are accepted.
 The endpoint has no redirect and does not request connection closure.
 
-A client should warm one persistent HTTP transport, then issue sequential probes
-on that same transport. The measured interval therefore excludes repeated DNS,
-TCP, QUIC, and TLS setup. During loaded-latency measurement, the same endpoint
-is used while the client independently proves that directional load remained
-continuous for the full probe interval.
+A client should warm one persistent HTTP transport, then issue probes through the
+same connection pool. The measured interval therefore excludes repeated DNS,
+TCP, QUIC, and TLS setup. The Go client traces connection acquisition and, when
+`warmConnectionPing` is advertised, discards a cold probe and retries until the
+reported probe has `connectionReused=true`; it fails after three cold attempts
+rather than mislabeling handshake time as RTT. During loaded-latency measurement,
+the same endpoint is used while the client independently proves that directional
+load remained continuous for the full probe interval.
 
 `GET /__down?bytes=0` remains a compatible fallback. A future WebSocket ping
 path may be advertised through `webSocketPingPath`; its absence means the client

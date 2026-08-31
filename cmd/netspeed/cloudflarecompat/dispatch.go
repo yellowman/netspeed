@@ -45,6 +45,7 @@ type options struct {
 	TurnURL            string
 	TurnUsername       string
 	TurnCredential     string
+	TransportControls  bool
 }
 
 type probeResult struct {
@@ -122,6 +123,10 @@ func Dispatch(args []string) (bool, int) {
 		setIdentity(providerNetspeed, "netspeed-verified-v2", "server-peer")
 		return false, 0
 	case providerCloudflare:
+		if opts.TransportControls {
+			fmt.Fprintln(os.Stderr, "netspeed: download transport discriminator flags currently require --provider netspeed")
+			return true, 2
+		}
 		return true, runCloudflare(opts)
 	case providerAuto:
 		p, err := probeProvider(opts)
@@ -136,6 +141,10 @@ func Dispatch(args []string) (bool, int) {
 			return false, 0
 		}
 		if p.Cloudflare {
+			if opts.TransportControls {
+				fmt.Fprintln(os.Stderr, "netspeed: download transport discriminator flags currently require a Netspeed server advertising measurementCapabilities")
+				return true, 2
+			}
 			return true, runCloudflare(opts)
 		}
 		setIdentity(providerNetspeed, "netspeed-verified-v2", "server-peer")
@@ -161,6 +170,15 @@ func setIdentity(provider, contract, topology string) {
 	_ = os.Setenv("NETSPEED_SELECTED_PROVIDER", provider)
 	_ = os.Setenv("NETSPEED_MEASUREMENT_CONTRACT", contract)
 	_ = os.Setenv("NETSPEED_PACKET_TOPOLOGY", topology)
+}
+
+func transportControlIsExplicit(name, value string) bool {
+	value = strings.TrimSpace(value)
+	if name == "--download-chunk-bytes" {
+		parsed, err := strconv.Atoi(value)
+		return err != nil || parsed != 0
+	}
+	return value != "" && !strings.EqualFold(value, "auto")
 }
 
 func hasHelpOrVersion(args []string) bool {
@@ -268,6 +286,21 @@ func parseOptions(args []string) (options, []string, error) {
 				return o, nil, fmt.Errorf("invalid timeout: %w", err)
 			}
 			o.Timeout = d
+			stripped = append(stripped, a)
+			if !hasEq {
+				stripped = append(stripped, val)
+			}
+		case "--download-payload", "--download-framing", "--download-chunk-bytes", "--download-flush":
+			if !hasEq {
+				var err error
+				val, err = take(&i, key)
+				if err != nil {
+					return o, nil, err
+				}
+			}
+			if transportControlIsExplicit(key, val) {
+				o.TransportControls = true
+			}
 			stripped = append(stripped, a)
 			if !hasEq {
 				stripped = append(stripped, val)

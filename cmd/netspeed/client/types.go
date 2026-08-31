@@ -3,28 +3,32 @@ package client
 import (
 	"encoding/json"
 	"time"
+
+	"github.com/yellowman/netspeed/internal/measurementhttp"
 )
 
 // Meta holds server and client metadata (matches web client format).
 type Meta struct {
-	Hostname                        string  `json:"hostname"`
-	ClientIP                        string  `json:"clientIp"`
-	HTTPProtocol                    string  `json:"httpProtocol"`
-	ASN                             int     `json:"asn"`
-	ASOrganization                  string  `json:"asOrganization"`
-	Colo                            string  `json:"colo"`
-	Country                         string  `json:"country"`
-	City                            string  `json:"city"`
-	Region                          string  `json:"region"`
-	PostalCode                      string  `json:"postalCode"`
-	Latitude                        float64 `json:"latitude"`
-	Longitude                       float64 `json:"longitude"`
-	Timezone                        string  `json:"timezone,omitempty"`
-	MaxTransferBytes                int64   `json:"maxTransferBytes,omitempty"`
-	MaxConcurrentTransfersPerClient int     `json:"maxConcurrentTransfersPerClient,omitempty"`
-	MeasurementProtocolVersion      int     `json:"measurementProtocolVersion,omitempty"`
-	UploadReceiptVersion            int     `json:"uploadReceiptVersion,omitempty"`
-	PacketLossFrameVersion          int     `json:"packetLossFrameVersion,omitempty"`
+	Hostname                        string                        `json:"hostname"`
+	ClientIP                        string                        `json:"clientIp"`
+	HTTPProtocol                    string                        `json:"httpProtocol"`
+	ASN                             int                           `json:"asn"`
+	ASOrganization                  string                        `json:"asOrganization"`
+	Colo                            string                        `json:"colo"`
+	Country                         string                        `json:"country"`
+	City                            string                        `json:"city"`
+	Region                          string                        `json:"region"`
+	PostalCode                      string                        `json:"postalCode"`
+	Latitude                        float64                       `json:"latitude"`
+	Longitude                       float64                       `json:"longitude"`
+	Timezone                        string                        `json:"timezone,omitempty"`
+	MaxTransferBytes                int64                         `json:"maxTransferBytes,omitempty"`
+	MaxConcurrentTransfersPerClient int                           `json:"maxConcurrentTransfersPerClient,omitempty"`
+	MeasurementProtocolVersion      int                           `json:"measurementProtocolVersion,omitempty"`
+	UploadReceiptVersion            int                           `json:"uploadReceiptVersion,omitempty"`
+	PacketLossFrameVersion          int                           `json:"packetLossFrameVersion,omitempty"`
+	MeasurementCapabilities         *measurementhttp.Capabilities `json:"measurementCapabilities,omitempty"`
+	MeasurementSelection            *measurementhttp.Selection    `json:"measurementSelection,omitempty"`
 }
 
 // LatencySample represents a single latency measurement (internal format).
@@ -37,6 +41,10 @@ type LatencySample struct {
 	LoadOverlapped       bool          `json:"-"`
 	LoadTrackingAccurate bool          `json:"-"`
 	TimingSource         string        `json:"-"`
+	ConnectionReused     bool          `json:"-"`
+	ProbeTransport       string        `json:"-"`
+	ProbeMethod          string        `json:"-"`
+	ProbePath            string        `json:"-"`
 }
 
 // LatencySampleJSON is the JSON format matching the web client.
@@ -49,6 +57,10 @@ type LatencySampleJSON struct {
 	LoadOverlapped       bool    `json:"loadOverlapped,omitempty"`
 	LoadTrackingAccurate bool    `json:"loadTrackingAccurate,omitempty"`
 	TimingSource         string  `json:"timingSource,omitempty"`
+	ConnectionReused     bool    `json:"connectionReused"`
+	ProbeTransport       string  `json:"probeTransport,omitempty"`
+	ProbeMethod          string  `json:"probeMethod,omitempty"`
+	ProbePath            string  `json:"probePath,omitempty"`
 }
 
 // ToJSON converts LatencySample to JSON format.
@@ -60,6 +72,10 @@ func (s LatencySample) ToJSON() LatencySampleJSON {
 		LoadOverlapped:       s.LoadOverlapped,
 		LoadTrackingAccurate: s.LoadTrackingAccurate,
 		TimingSource:         s.TimingSource,
+		ConnectionReused:     s.ConnectionReused,
+		ProbeTransport:       s.ProbeTransport,
+		ProbeMethod:          s.ProbeMethod,
+		ProbePath:            s.ProbePath,
 	}
 	if !s.StartedAt.IsZero() {
 		out.StartedAt = s.StartedAt.UnixMilli()

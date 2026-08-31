@@ -44,6 +44,13 @@ A version-2 client starts with `GET /meta` and requires these fields:
   and anti-transform/proxy-buffer headers. Its complete schema is defined in
   [`HTTP_MEASUREMENT_TRANSPORT.md`](HTTP_MEASUREMENT_TRANSPORT.md).
 
+The Go CLI validates and negotiates this object, uses its advertised paths and
+parameter names, and publishes the normalized choice as
+`meta.measurementSelection`. Explicit transport controls fail against an absent,
+unsafe, incomplete, or unsupported advertisement. The native C and browser
+clients retain the compatible defaults until their negotiation phases are
+implemented.
+
 A v2 client does not silently fall back to pre-v2 measurement methodology. A
 packet test may be reported as unavailable when its frame capability is missing,
 but missing throughput capabilities are fatal to a normal test.
@@ -58,10 +65,11 @@ A client requests a bounded payload with the compatibility form:
 GET /__down?bytes=<decimal>&measId=<unique-id>&profile=<name>&run=<index>
 ```
 
-When transport capabilities version 1 is advertised, the request may also
-select `payload=random|zero`, `framing=fixed|chunked`, `chunkBytes=N`, and
-`flush=true|false`. Defaults remain `random`, `fixed`, and 1 MiB application
-writes, so existing clients are unchanged. The full discriminator contract is
+When transport capabilities version 1 is advertised, the Go client selects
+`payload=random|zero`, `framing=fixed|chunked`, `chunkBytes=N`, and
+`flush=true|false` using the advertised parameter names. Defaults remain
+`random`, `fixed`, and the advertised application write size, so existing
+clients are unchanged. The full discriminator contract is
 in [`HTTP_MEASUREMENT_TRANSPORT.md`](HTTP_MEASUREMENT_TRANSPORT.md).
 
 The client accepts a sample only when:
@@ -73,9 +81,12 @@ The client accepts a sample only when:
 - the body contains exactly the requested number of bytes;
 - the measured body interval is positive.
 
-`Cache-Control: no-store, no-transform` applies in both modes. The Go client
-consumes the body without retaining it. The browser uses a `ReadableStream` when
-available and otherwise refuses to materialize more than 100 MB.
+`Cache-Control: no-store, no-transform` applies in both modes. A negotiated Go
+sample additionally requires matching `X-Netspeed-Measurement`,
+`X-Netspeed-Payload`, `X-Netspeed-Framing`, and `X-Netspeed-Chunk-Bytes`
+headers. The Go client consumes the body without retaining it. The browser uses
+a `ReadableStream` when available and otherwise refuses to materialize more
+than 100 MB.
 
 ### 2.2 upload
 
@@ -184,9 +195,12 @@ a probe is a zero-body `GET` or `HEAD` to that path. Otherwise the compatibility
 fallback is `GET /__down?bytes=0`. RTT is the interval from request write
 completion to first response byte when precise timing is available.
 
-Clients warm and reuse one persistent HTTP transport so repeated DNS, TCP, QUIC,
-and TLS setup is excluded. WebSocket probing remains optional: a client may use
-it only when a path is explicitly advertised and must otherwise retain HTTP
+Capability-aware clients warm and reuse a persistent HTTP transport so repeated
+DNS, TCP, QUIC, and TLS setup is excluded. The Go client records the traced
+method, path, transport, and connection-reuse state for each latency sample. When
+the server promises warm probing, a cold attempt is discarded and retried up to
+three times; only a reused attempt becomes a sample. WebSocket probing remains
+optional: a client may use it only when a path is explicitly advertised and must otherwise retain HTTP
 fallback. Warmup removal drops the first two valid unloaded samples before
 summary statistics are computed.
 

@@ -7,37 +7,11 @@ import (
 	"strings"
 
 	"github.com/yellowman/netspeed/internal/clientaddr"
+	"github.com/yellowman/netspeed/internal/measurementhttp"
 )
 
-// MeasurementCapabilities advertises optional HTTP transport discriminators.
-// These extend, but do not replace, the strict measurement protocol contract.
-type MeasurementCapabilities struct {
-	Version                       int      `json:"version"`
-	DownloadPath                  string   `json:"downloadPath"`
-	DownloadBytesParameter        string   `json:"downloadBytesParameter"`
-	DownloadPayloadParameter      string   `json:"downloadPayloadParameter"`
-	DownloadFramingParameter      string   `json:"downloadFramingParameter"`
-	DownloadChunkBytesParameter   string   `json:"downloadChunkBytesParameter"`
-	DownloadFlushParameter        string   `json:"downloadFlushParameter"`
-	UploadPath                    string   `json:"uploadPath"`
-	UploadBytesParameter          string   `json:"uploadBytesParameter"`
-	HTTPPingPath                  string   `json:"httpPingPath"`
-	HTTPPingMethods               []string `json:"httpPingMethods"`
-	WebSocketPingPath             string   `json:"webSocketPingPath,omitempty"`
-	WarmConnectionPing            bool     `json:"warmConnectionPing"`
-	DownloadPayloads              []string `json:"downloadPayloads"`
-	DownloadFramings              []string `json:"downloadFramings"`
-	DefaultDownloadPayload        string   `json:"defaultDownloadPayload"`
-	DefaultDownloadFraming        string   `json:"defaultDownloadFraming"`
-	DefaultChunkBytes             int      `json:"defaultChunkBytes"`
-	MinimumChunkBytes             int      `json:"minimumChunkBytes"`
-	MaximumChunkBytes             int      `json:"maximumChunkBytes"`
-	UploadContentEncodings        []string `json:"uploadContentEncodings"`
-	ResponseCacheControl          string   `json:"responseCacheControl"`
-	NoTransform                   bool     `json:"noTransform"`
-	ProxyBufferSuppressionHeader  string   `json:"proxyBufferSuppressionHeader"`
-	ProxyRequestBufferingAdvisory bool     `json:"proxyRequestBufferingAdvisory"`
-}
+// MeasurementCapabilities is the shared versioned HTTP transport contract.
+type MeasurementCapabilities = measurementhttp.Capabilities
 
 // ClientMeta holds per-client metadata for the /meta endpoint.
 type ClientMeta struct {

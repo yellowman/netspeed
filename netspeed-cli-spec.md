@@ -68,6 +68,10 @@ netspeed -v
 | `--download-only` | `-d` | false | Skip upload tests |
 | `--upload-only` | `-u` | false | Skip download tests |
 | `--no-packet-loss` | | false | Skip packet loss test |
+| `--download-payload` | | `auto` | `auto`, `random`, or `zero` on an advertised Netspeed transport |
+| `--download-framing` | | `auto` | `auto`, `fixed`, or `chunked` |
+| `--download-chunk-bytes` | | `0` | Application chunk size; `0` uses the advertised default |
+| `--download-flush` | | `auto` | `auto`, `true`, or `false` per application chunk |
 | `--json` | `-j` | false | Output results as JSON |
 | `--csv` | | false | Output results as CSV |
 | `--verbose` | `-v` | false | Show detailed progress |
@@ -123,7 +127,15 @@ netspeed -v
   "maxConcurrentTransfersPerClient": 24,
   "measurementProtocolVersion": 2,
   "uploadReceiptVersion": 1,
-  "packetLossFrameVersion": 1
+  "packetLossFrameVersion": 1,
+  "measurementCapabilities": {
+    "version": 1,
+    "downloadPath": "/__down",
+    "uploadPath": "/__up",
+    "httpPingPath": "/__ping",
+    "downloadPayloads": ["random", "zero"],
+    "downloadFramings": ["fixed", "chunked"]
+  }
 }
 ```
 
@@ -134,6 +146,10 @@ netspeed -v
 - cap all request batches at `maxConcurrentTransfersPerClient` and cap sustained
   load flows at one less than that value so a loaded-latency probe has a slot;
 - fail capability negotiation when the advertised per-client ceiling is below 2;
+- validate transport endpoint paths and query names before using them;
+- reject explicit transport controls when version 1 capabilities are absent or
+  do not support the requested value;
+- expose the normalized choice in JSON as `meta.measurementSelection`;
 - display server and client info in header:
   ```
   Server: speed.example.com (PDX)
@@ -156,19 +172,36 @@ throughput or latency samples.
   - `bytes` - exact response-body length; `0` is a latency probe;
   - `measId` - unique opaque correlation id;
   - `profile` and `run` - diagnostic labels;
-  - `during` - `download`, `upload`, or omitted for unloaded probes.
+  - `during` - `download`, `upload`, or omitted for unloaded probes;
+  - advertised transport-version-1 names for payload (`random|zero`), framing
+    (`fixed|chunked`), application chunk bytes, and per-chunk flush behavior.
+
+The Go client uses the names from `measurementCapabilities`; it does not assume
+that a future daemon retains the literal keys shown above. Explicit controls
+are never sent to a legacy server.
 
 **accepted response**
 
 - status `200`;
 - `Content-Type: application/octet-stream`;
 - `Content-Length`, when present, equals the requested byte count;
-- body contains exactly the requested number of bytes.
+- body contains exactly the requested number of bytes;
+- negotiated responses carry matching measurement, payload, framing, and chunk
+  diagnostic headers plus `Cache-Control: no-store, no-transform`;
+- a streamed response has no `Content-Length`, while fixed framing has the exact
+  requested length.
 
 For throughput, the Go client consumes the body without retaining it and times
 first response byte through completed body read. For latency, RTT is
 `GotFirstResponseByte - WroteRequest`. Any status, type, length, read, or timing
 mismatch invalidates the sample.
+
+A daemon advertising `httpPingPath` is probed with its preferred supported
+`GET` or `HEAD` method and a zero-byte response. When it also advertises
+`warmConnectionPing`, the Go client traces connection acquisition, discards cold
+attempts, and reports only a reused keep-alive sample. JSON latency samples
+include `connectionReused`, `probeTransport`, `probeMethod`, and `probePath`.
+The compatibility fallback remains `GET /__down?bytes=0`.
 
 #### 2.1.3 `POST /__up` - verified upload
 
@@ -176,8 +209,10 @@ mismatch invalidates the sample.
 
 - method: `POST`
 - path: `/__up`
-- query parameters: unique `measId` plus diagnostic `profile` and `run` labels;
+- query parameters: the advertised exact byte-count key, unique `measId`, and
+  diagnostic `profile` and `run` labels;
 - `Content-Type: application/octet-stream`;
+- `Content-Encoding: identity`;
 - exact `Content-Length`;
 - a bounded streaming body, never a retained profile-sized allocation.
 
@@ -191,7 +226,8 @@ mismatch invalidates the sample.
 }
 ```
 
-The client requires status `200`, JSON content type, receipt version 1, and
+The client requires status `200`, JSON content type, receipt version 1,
+anti-transform response controls, matching upload diagnostic headers, and
 `acceptedBytes` equal to the declared and actually generated body length. The
 server body-read duration is canonical; client request-body timing is a fallback.
 A truncated, oversized, rejected, or unverifiable upload is not a sample.

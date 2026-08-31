@@ -23,7 +23,13 @@ compressed request bodies. `GET` or `HEAD /__ping` provides a dedicated
 zero-body warm-connection latency path; `GET /__down?bytes=0` remains the
 compatibility fallback.
 
-Existing Cloudflare provider mode continues to use the common default surface.
-Capability-aware selection by the Go, C, and browser clients is intentionally a
-separate adoption step; an unrecognized `measurementCapabilities` object does
-not make a protocol-v2 server incompatible.
+The strict Go Netspeed path now validates and negotiates this advertisement,
+including custom same-origin paths and parameter names, payload/framing/chunk/
+flush selection, exact diagnostic headers, identity upload encoding, and warm
+HTTP latency. Its normalized choice is exposed as `meta.measurementSelection`.
+
+Cloudflare provider mode continues to use Cloudflare's common default surface
+and rejects Netspeed-specific transport flags instead of silently ignoring them.
+The native C and browser clients remain on the compatible defaults until their
+later negotiation phases. An unrecognized `measurementCapabilities` object does
+not make a protocol-v2 server eligible for silent Cloudflare downgrade.
