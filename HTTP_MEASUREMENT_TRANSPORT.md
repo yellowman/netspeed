@@ -293,6 +293,17 @@ The Go, native C, and browser Netspeed clients:
    warm HTTP path for every later probe. HTTP samples retain the stable reason in
    `probeFallbackReason`.
 
+Firefox and privacy-hardened browsers may quantize `performance.now()` enough
+that a very fast echo begins and ends in the same visible timer tick. Such a
+message is valid rather than a transport failure. The browser preserves it as
+`rawRttMs: 0`, reports the positive statistics-compatible representation floor
+`rttMs: 0.01`, and sets `timingResolutionLimited: true` plus
+`timerRepresentationFloorMs: 0.01`. The transport evidence counts these as
+`timingResolutionLimitedMessages`. A negative or non-finite duration still
+disables WebSocket and falls back to HTTP. The browser keeps the matching
+request pending until payload and timing validation finish, ensuring any
+failure rejects the caller instead of stranding the test in the latency stage.
+
 This is an application message echo rather than an RFC 6455 control ping because
 the browser WebSocket API cannot originate control frames. The browser also
 cannot attach an `Authorization` header or exactly reproduce Fetch credential

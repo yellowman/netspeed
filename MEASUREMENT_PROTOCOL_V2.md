@@ -248,6 +248,13 @@ visible connection setup is discarded; hidden setup fields can yield
 excludes setup. Cross-origin HTTP deployments must preserve
 `Timing-Allow-Origin`.
 
+Reduced browser timer precision can make an otherwise valid, very fast
+WebSocket echo produce a raw zero-tick interval. The browser records
+`rawRttMs: 0`, `timingResolutionLimited: true`, and a documented positive
+`rttMs` representation floor of 0.01 ms so the sample remains visible to the
+positive-only statistics pipeline. Negative and non-finite intervals are still
+errors and trigger the normal permanent HTTP fallback.
+
 Accepted samples label `probeTransport`, `probeMethod`, `probePath`,
 `webSocketProtocol`, and any `probeFallbackReason`. Cloudflare compatibility
 mode remains HTTP-only and never infers the private Netspeed WebSocket path.

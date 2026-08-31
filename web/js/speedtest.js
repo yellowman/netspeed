@@ -51,6 +51,13 @@ const SpeedTest = (function() {
     const MAX_META_BODY_BYTES = 1024 * 1024;
     const MAX_LOCATIONS_BODY_BYTES = 1024 * 1024;
 
+    // Firefox and privacy-hardened browsers may quantize performance.now(). A
+    // very fast local WebSocket echo can therefore begin and end in the same
+    // clock tick. Keep that valid sample in the positive-only statistics while
+    // explicitly labeling that the numeric value is a representation floor,
+    // not a claim that the browser measured ten-microsecond precision.
+    const BROWSER_TIMER_REPRESENTATION_FLOOR_MS = 0.01;
+
     let serverMaxTransferBytes = LEGACY_SERVER_TRANSFER_LIMIT_BYTES;
     let serverMaxConcurrentTransfersPerClient = 24;
     let measurementProtocolVersion = 0;
@@ -208,7 +215,8 @@ const SpeedTest = (function() {
             intentionallyClosed: false,
             connections: 0,
             warmups: 0,
-            successfulPings: 0
+            successfulPings: 0,
+            timingResolutionLimitedMessages: 0
         };
         const WebSocketConstructor = typeof globalThis !== 'undefined' ? globalThis.WebSocket : undefined;
 
@@ -225,6 +233,15 @@ const SpeedTest = (function() {
                 pending.reject(error);
             }
             state.pending.clear();
+        }
+
+        function takePending(key) {
+            const pending = state.pending.get(key);
+            if (!pending) return null;
+            state.pending.delete(key);
+            clearTimeout(pending.timer);
+            if (pending.signal && pending.abortHandler) pending.signal.removeEventListener('abort', pending.abortHandler);
+            return pending;
         }
 
         function disable(reason) {
@@ -320,14 +337,36 @@ const SpeedTest = (function() {
                         const key = websocketPayloadKey(bytes);
                         const pending = state.pending.get(key);
                         if (!pending) throw new Error('WebSocket ping returned an unknown or stale nonce');
-                        state.pending.delete(key);
-                        clearTimeout(pending.timer);
-                        if (pending.signal && pending.abortHandler) pending.signal.removeEventListener('abort', pending.abortHandler);
                         const endedPerformance = performance.now();
                         const endedAt = Date.now();
-                        const rttMs = endedPerformance - pending.startedPerformance;
-                        if (!Number.isFinite(rttMs) || rttMs <= 0) throw new Error(`Invalid WebSocket latency duration: ${rttMs}`);
-                        pending.resolve({ rttMs, startedAt: pending.startedAt, endedAt });
+                        const rawRttMs = endedPerformance - pending.startedPerformance;
+                        if (!Number.isFinite(rawRttMs) || rawRttMs < 0) {
+                            throw new Error(`Invalid WebSocket latency duration: ${rawRttMs}`);
+                        }
+                        const timingResolutionLimited = rawRttMs === 0;
+                        const rttMs = timingResolutionLimited
+                            ? BROWSER_TIMER_REPRESENTATION_FLOOR_MS
+                            : rawRttMs;
+
+                        // Do not remove the request from state.pending until all
+                        // validation has succeeded. If parsing or timing fails,
+                        // disable() below must still be able to reject this exact
+                        // promise so the caller can fall back to HTTP instead of
+                        // hanging forever.
+                        if (takePending(key) !== pending) {
+                            throw new Error('WebSocket ping pending state changed before completion');
+                        }
+                        if (timingResolutionLimited) state.timingResolutionLimitedMessages++;
+                        pending.resolve({
+                            rttMs,
+                            rawRttMs,
+                            timingResolutionLimited,
+                            timerRepresentationFloorMs: timingResolutionLimited
+                                ? BROWSER_TIMER_REPRESENTATION_FLOOR_MS
+                                : undefined,
+                            startedAt: pending.startedAt,
+                            endedAt
+                        });
                     }).catch(error => disable(error.message || String(error)));
                 };
             }).catch(error => {
@@ -348,25 +387,22 @@ const SpeedTest = (function() {
                 const startedAt = Date.now();
                 const startedPerformance = performance.now();
                 const abortHandler = signal ? () => {
-                    const pending = state.pending.get(key);
+                    const pending = takePending(key);
                     if (!pending) return;
-                    state.pending.delete(key);
-                    clearTimeout(pending.timer);
-                    reject(errorWithName('WebSocket ping aborted', 'AbortError'));
+                    pending.reject(errorWithName('WebSocket ping aborted', 'AbortError'));
                 } : null;
                 const timer = setTimeout(() => {
-                    state.pending.delete(key);
-                    reject(disable('WebSocket ping message timed out'));
+                    const pending = takePending(key);
+                    if (!pending) return;
+                    pending.reject(disable('WebSocket ping message timed out'));
                 }, 10000);
                 state.pending.set(key, { resolve, reject, timer, signal, abortHandler, startedAt, startedPerformance });
                 if (signal && abortHandler) signal.addEventListener('abort', abortHandler, { once: true });
                 try {
                     socket.send(payload);
                 } catch (error) {
-                    state.pending.delete(key);
-                    clearTimeout(timer);
-                    if (signal && abortHandler) signal.removeEventListener('abort', abortHandler);
-                    reject(disable(`WebSocket ping send failed: ${error.message || String(error)}`));
+                    const pending = takePending(key);
+                    if (pending) pending.reject(disable(`WebSocket ping send failed: ${error.message || String(error)}`));
                 }
             });
         }
@@ -416,6 +452,9 @@ const SpeedTest = (function() {
                     startedAt: measured.startedAt,
                     endedAt: measured.endedAt,
                     rttMs: measured.rttMs,
+                    rawRttMs: measured.rawRttMs,
+                    timingResolutionLimited: measured.timingResolutionLimited,
+                    timerRepresentationFloorMs: measured.timerRepresentationFloorMs,
                     condition,
                     loadOverlapped: false,
                     timingSource: 'websocket-message',
@@ -438,6 +477,8 @@ const SpeedTest = (function() {
                     connections: state.connections,
                     warmups: state.warmups,
                     successfulPings: state.successfulPings,
+                    timingResolutionLimitedMessages: state.timingResolutionLimitedMessages,
+                    timerRepresentationFloorMs: BROWSER_TIMER_REPRESENTATION_FLOOR_MS,
                     disabled: state.disabled,
                     closeReason: state.closeReason
                 };
@@ -512,6 +553,8 @@ const SpeedTest = (function() {
                     connections: 0,
                     warmups: 0,
                     successfulPings: 0,
+                    timingResolutionLimitedMessages: 0,
+                    timerRepresentationFloorMs: BROWSER_TIMER_REPRESENTATION_FLOOR_MS,
                     disabled: false,
                     closeReason: ''
                 }

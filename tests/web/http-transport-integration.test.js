@@ -91,6 +91,20 @@ function setTiming(url, overrides = {}) {
     });
 }
 
+async function withDeadline(promise, milliseconds, message) {
+    let timer;
+    try {
+        return await Promise.race([
+            promise,
+            new Promise((_, reject) => {
+                timer = setTimeout(() => reject(new Error(message)), milliseconds);
+            })
+        ]);
+    } finally {
+        clearTimeout(timer);
+    }
+}
+
 async function testNegotiatedDownloadAndUpload() {
     hooks.setServerCapabilities(1_000_000, 1);
     const selection = hooks.setMeasurementTransport(capabilities(), {
@@ -599,6 +613,126 @@ async function testWebSocketLatencyPreferredAndPersistent() {
     hooks.closeWebSocketLatency();
 }
 
+async function testWebSocketCoarseTimerDoesNotDeadlock() {
+    hooks.setServerCapabilities(1_000_000, 1);
+    const originalNow = global.performance.now;
+    let messages = 0;
+
+    class ImmediateEchoWebSocket {
+        constructor(_url, protocol) {
+            this.protocol = protocol;
+            this.readyState = 0;
+            setImmediate(() => {
+                this.readyState = 1;
+                this.onopen?.({});
+            });
+        }
+        send(payload) {
+            messages++;
+            const copy = new Uint8Array(payload).slice();
+            setImmediate(() => this.onmessage?.({ data: copy.buffer }));
+        }
+        close(code = 1000, reason = '') {
+            if (this.readyState === 3) return;
+            this.readyState = 3;
+            setImmediate(() => this.onclose?.({ code, reason }));
+        }
+    }
+
+    try {
+        // Firefox can reduce performance.now() precision enough that a local
+        // echo starts and ends in the same timer tick.
+        global.performance.now = () => 100;
+        global.WebSocket = ImmediateEchoWebSocket;
+        global.fetch = async () => {
+            throw new Error('HTTP fallback must not run for a valid zero-tick WebSocket echo');
+        };
+
+        hooks.setMeasurementTransport(websocketCapabilities());
+        const sample = await withDeadline(
+            hooks.runLatencyProbe('unloaded', 33),
+            250,
+            'zero-tick WebSocket latency probe deadlocked'
+        );
+
+        assert.equal(sample.probeTransport, 'websocket');
+        assert.equal(sample.rawRttMs, 0);
+        assert.equal(sample.rttMs, 0.01);
+        assert.equal(sample.timingResolutionLimited, true);
+        assert.equal(sample.timerRepresentationFloorMs, 0.01);
+        assert.equal(messages, 2, 'one warmup and one measured echo expected');
+
+        const evidence = hooks.getTransportEvidence();
+        assert.equal(evidence.latency.fallbackUsed, false);
+        assert.equal(evidence.latency.webSocket.timingResolutionLimitedMessages, 2);
+        assert.equal(evidence.latency.webSocket.timerRepresentationFloorMs, 0.01);
+    } finally {
+        hooks.closeWebSocketLatency();
+        global.performance.now = originalNow;
+        delete global.WebSocket;
+    }
+}
+
+async function testWebSocketTimingFailureRejectsAndFallsBackInsteadOfHanging() {
+    hooks.setServerCapabilities(1_000_000, 1);
+    const originalNow = global.performance.now;
+    const timerValues = [100, 102, 200, 199];
+    let fallbackNow = 300;
+
+    class EchoWebSocket {
+        constructor(_url, protocol) {
+            this.protocol = protocol;
+            this.readyState = 0;
+            setImmediate(() => {
+                this.readyState = 1;
+                this.onopen?.({});
+            });
+        }
+        send(payload) {
+            const copy = new Uint8Array(payload).slice();
+            setImmediate(() => this.onmessage?.({ data: copy.buffer }));
+        }
+        close(code = 1000, reason = '') {
+            if (this.readyState === 3) return;
+            this.readyState = 3;
+            setImmediate(() => this.onclose?.({ code, reason }));
+        }
+    }
+
+    try {
+        global.performance.now = () => timerValues.length > 0 ? timerValues.shift() : (fallbackNow += 2);
+        global.WebSocket = EchoWebSocket;
+        global.fetch = async url => {
+            setTiming(url);
+            return new Response(null, {
+                status: 200,
+                headers: strictHeaders('latency', {
+                    'Content-Type': 'application/octet-stream',
+                    'Content-Length': '0'
+                })
+            });
+        };
+
+        hooks.setMeasurementTransport(websocketCapabilities());
+        const sample = await withDeadline(
+            hooks.runLatencyProbe('unloaded', 34),
+            250,
+            'invalid WebSocket timing left its pending promise unresolved'
+        );
+
+        assert.equal(sample.probeTransport, 'http');
+        assert.match(sample.probeFallbackReason, /Invalid WebSocket latency duration: -1/);
+        const evidence = hooks.getTransportEvidence();
+        assert.equal(evidence.latency.fallbackUsed, true);
+        assert.equal(evidence.latency.webSocket.disabled, true);
+        assert.match(evidence.latency.webSocket.closeReason, /Invalid WebSocket latency duration: -1/);
+    } finally {
+        hooks.closeWebSocketLatency();
+        global.performance.now = originalNow;
+        delete global.WebSocket;
+    }
+}
+
 async function testWebSocketFailurePermanentlyFallsBackToHTTP() {
     hooks.setServerCapabilities(1_000_000, 1);
     let connections = 0;
@@ -711,6 +845,8 @@ async function main() {
     await testUnobservableReuseIsNotMislabeled();
     await testUnverifiableSetupIsRejected();
     await testWebSocketLatencyPreferredAndPersistent();
+    await testWebSocketCoarseTimerDoesNotDeadlock();
+    await testWebSocketTimingFailureRejectsAndFallsBackInsteadOfHanging();
     await testWebSocketFailurePermanentlyFallsBackToHTTP();
     await testCrossOriginSameOriginCredentialsSkipBrowserWebSocket();
     await testBearerTokenSkipsBrowserWebSocket();

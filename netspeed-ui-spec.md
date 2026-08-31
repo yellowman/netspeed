@@ -491,6 +491,9 @@ jitter, and population coefficient of variation.
 type LatencySample = {
   ts: number;
   rttMs: number;
+  rawRttMs?: number;
+  timingResolutionLimited?: boolean;
+  timerRepresentationFloorMs?: number;
   condition: 'unloaded' | 'download' | 'upload';
   startedAt?: number;
   endedAt?: number;
