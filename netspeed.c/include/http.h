@@ -32,7 +32,20 @@ typedef struct {
     int status_code;
     char content_type[128];
     char cache_control[256];
+    char content_encoding[64];
+    char transfer_encoding[128];
+    char x_accel_buffering[64];
+    char measurement[32];
+    char payload[32];
+    char framing[32];
+    char upload_content_encoding[32];
+    char flush[16];
+    char http_protocol[16];
     int64_t content_length;
+    int64_t chunk_bytes;
+    int64_t expected_upload_bytes;
+    int64_t accepted_upload_bytes;
+    int64_t upload_duration_ns;
     char *body;
     size_t body_len;
     size_t body_capacity;
@@ -40,6 +53,8 @@ typedef struct {
     double request_to_first_byte_ms;
     double body_duration_ms;
     char timing_source[48];
+    bool connection_reused;
+    long new_connections;
 } http_response_t;
 
 typedef struct {
@@ -68,6 +83,8 @@ int http_post_json(http_session_t *session, const char *path,
 int http_measure_download(http_session_t *session, const char *path,
                           int64_t expected_bytes, const http_activity_t *activity,
                           http_response_t *response);
+int http_measure_empty(http_session_t *session, const char *path,
+                       const char *method, http_response_t *response);
 int http_measure_upload(http_session_t *session, const char *path,
                         int64_t bytes, const http_activity_t *activity,
                         size_t max_response, http_response_t *response);

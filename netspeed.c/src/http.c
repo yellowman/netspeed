@@ -53,6 +53,11 @@ static void response_init(http_response_t *response)
 {
     memset(response, 0, sizeof(*response));
     response->content_length = -1;
+    response->chunk_bytes = -1;
+    response->expected_upload_bytes = -1;
+    response->accepted_upload_bytes = -1;
+    response->upload_duration_ns = -1;
+    response->new_connections = -1;
     snprintf(response->timing_source, sizeof(response->timing_source), "%s", "libcurl");
 }
 
@@ -155,6 +160,40 @@ static char *trim_header_value(char *value)
     return value;
 }
 
+static void parse_nonnegative_header(const char *value, int64_t *destination)
+{
+    errno = 0;
+    char *end = NULL;
+    long long parsed = strtoll(value, &end, 10);
+    if (errno == 0 && end && *end == '\0' && parsed >= 0) {
+        *destination = (int64_t)parsed;
+    }
+}
+
+static bool append_header_value(char *destination, size_t capacity,
+                                const char *value)
+{
+    if (!destination || capacity == 0 || !value) {
+        return false;
+    }
+    size_t length = strnlen(destination, capacity);
+    if (length >= capacity) {
+        return false;
+    }
+    size_t separator = length ? 2 : 0;
+    size_t value_length = strlen(value);
+    if (separator > capacity - 1 - length ||
+        value_length > capacity - 1 - length - separator) {
+        return false;
+    }
+    if (separator) {
+        destination[length++] = ',';
+        destination[length++] = ' ';
+    }
+    memcpy(destination + length, value, value_length + 1);
+    return true;
+}
+
 static size_t header_callback(char *buffer, size_t size, size_t nitems, void *opaque)
 {
     header_state_t *state = opaque;
@@ -163,8 +202,11 @@ static size_t header_callback(char *buffer, size_t size, size_t nitems, void *op
         return 0;
     }
     size_t len = size * nitems;
-    if (len == 0 || len >= 4096) {
-        return len;
+    if (len == 0) {
+        return 0;
+    }
+    if (len >= 4096) {
+        return 0;
     }
     char line[4096];
     memcpy(line, buffer, len);
@@ -189,16 +231,45 @@ static size_t header_callback(char *buffer, size_t size, size_t nitems, void *op
     *colon = '\0';
     char *value = trim_header_value(colon + 1);
     if (strcasecmp(line, "Content-Length") == 0) {
-        errno = 0;
-        char *end = NULL;
-        long long parsed = strtoll(value, &end, 10);
-        if (errno == 0 && end && *end == '\0' && parsed >= 0) {
-            response->content_length = (int64_t)parsed;
-        }
+        parse_nonnegative_header(value, &response->content_length);
     } else if (strcasecmp(line, "Content-Type") == 0) {
         snprintf(response->content_type, sizeof(response->content_type), "%s", value);
     } else if (strcasecmp(line, "Cache-Control") == 0) {
-        snprintf(response->cache_control, sizeof(response->cache_control), "%s", value);
+        if (!append_header_value(response->cache_control,
+                                 sizeof(response->cache_control), value)) {
+            return 0;
+        }
+    } else if (strcasecmp(line, "Content-Encoding") == 0) {
+        if (!append_header_value(response->content_encoding,
+                                 sizeof(response->content_encoding), value)) {
+            return 0;
+        }
+    } else if (strcasecmp(line, "Transfer-Encoding") == 0) {
+        if (!append_header_value(response->transfer_encoding,
+                                 sizeof(response->transfer_encoding), value)) {
+            return 0;
+        }
+    } else if (strcasecmp(line, "X-Accel-Buffering") == 0) {
+        snprintf(response->x_accel_buffering, sizeof(response->x_accel_buffering), "%s", value);
+    } else if (strcasecmp(line, "X-Netspeed-Measurement") == 0) {
+        snprintf(response->measurement, sizeof(response->measurement), "%s", value);
+    } else if (strcasecmp(line, "X-Netspeed-Payload") == 0) {
+        snprintf(response->payload, sizeof(response->payload), "%s", value);
+    } else if (strcasecmp(line, "X-Netspeed-Framing") == 0) {
+        snprintf(response->framing, sizeof(response->framing), "%s", value);
+    } else if (strcasecmp(line, "X-Netspeed-Content-Encoding") == 0) {
+        snprintf(response->upload_content_encoding,
+                 sizeof(response->upload_content_encoding), "%s", value);
+    } else if (strcasecmp(line, "X-Netspeed-Flush") == 0) {
+        snprintf(response->flush, sizeof(response->flush), "%s", value);
+    } else if (strcasecmp(line, "X-Netspeed-Chunk-Bytes") == 0) {
+        parse_nonnegative_header(value, &response->chunk_bytes);
+    } else if (strcasecmp(line, "X-Netspeed-Expected-Bytes") == 0) {
+        parse_nonnegative_header(value, &response->expected_upload_bytes);
+    } else if (strcasecmp(line, "X-Netspeed-Accepted-Bytes") == 0) {
+        parse_nonnegative_header(value, &response->accepted_upload_bytes);
+    } else if (strcasecmp(line, "X-Netspeed-Upload-Duration-Ns") == 0) {
+        parse_nonnegative_header(value, &response->upload_duration_ns);
     }
     return len;
 }
@@ -266,7 +337,8 @@ static int join_url(const char *base, const char *path, char *out, size_t out_le
 }
 
 static struct curl_slist *request_headers(const http_client_t *client,
-                                          const char *content_type)
+                                          const char *content_type,
+                                          const char *content_encoding)
 {
     struct curl_slist *headers = NULL;
     headers = curl_slist_append(headers, "Accept: */*");
@@ -277,6 +349,11 @@ static struct curl_slist *request_headers(const http_client_t *client,
     if (content_type) {
         char line[192];
         snprintf(line, sizeof(line), "Content-Type: %s", content_type);
+        headers = curl_slist_append(headers, line);
+    }
+    if (content_encoding) {
+        char line[192];
+        snprintf(line, sizeof(line), "Content-Encoding: %s", content_encoding);
         headers = curl_slist_append(headers, line);
     }
     if (client->access_token[0]) {
@@ -313,6 +390,10 @@ static void configure_common(http_session_t *session, const char *url,
     curl_easy_setopt(easy, CURLOPT_CONNECTTIMEOUT_MS, 30000L);
     curl_easy_setopt(easy, CURLOPT_TIMEOUT_MS, session->client->request_timeout_ms);
     curl_easy_setopt(easy, CURLOPT_ACCEPT_ENCODING, "identity");
+    curl_easy_setopt(easy, CURLOPT_HTTP_CONTENT_DECODING, 0L);
+    curl_easy_setopt(easy, CURLOPT_FORBID_REUSE, 0L);
+    curl_easy_setopt(easy, CURLOPT_FRESH_CONNECT, 0L);
+    curl_easy_setopt(easy, CURLOPT_MAXCONNECTS, 1L);
     curl_easy_setopt(easy, CURLOPT_WRITEFUNCTION, write_callback);
     curl_easy_setopt(easy, CURLOPT_WRITEDATA, write_state);
     curl_easy_setopt(easy, CURLOPT_HEADERFUNCTION, header_callback);
@@ -350,6 +431,36 @@ static int finish_request(http_session_t *session, http_response_t *response,
     long status = 0;
     curl_easy_getinfo(session->easy, CURLINFO_RESPONSE_CODE, &status);
     response->status_code = (int)status;
+    long new_connections = -1;
+    if (curl_easy_getinfo(session->easy, CURLINFO_NUM_CONNECTS, &new_connections) == CURLE_OK) {
+        response->new_connections = new_connections;
+        response->connection_reused = new_connections == 0;
+    }
+    long http_version = 0;
+    if (curl_easy_getinfo(session->easy, CURLINFO_HTTP_VERSION, &http_version) == CURLE_OK) {
+        const char *protocol = "unknown";
+        switch (http_version) {
+        case CURL_HTTP_VERSION_1_0:
+            protocol = "HTTP/1.0";
+            break;
+        case CURL_HTTP_VERSION_1_1:
+            protocol = "HTTP/1.1";
+            break;
+#ifdef CURL_HTTP_VERSION_2_0
+        case CURL_HTTP_VERSION_2_0:
+            protocol = "HTTP/2";
+            break;
+#endif
+#ifdef CURL_HTTP_VERSION_3
+        case CURL_HTTP_VERSION_3:
+            protocol = "HTTP/3";
+            break;
+#endif
+        default:
+            break;
+        }
+        snprintf(response->http_protocol, sizeof(response->http_protocol), "%s", protocol);
+    }
     if (response->content_type[0] == '\0') {
         char *content_type = NULL;
         if (curl_easy_getinfo(session->easy, CURLINFO_CONTENT_TYPE, &content_type) == CURLE_OK && content_type) {
@@ -377,7 +488,8 @@ static int finish_request(http_session_t *session, http_response_t *response,
 }
 
 static int perform(http_session_t *session, const char *path, const char *method,
-                   const char *content_type, body_mode_t body_mode, size_t max_body,
+                   const char *content_type, const char *content_encoding,
+                   body_mode_t body_mode, size_t max_body,
                    int64_t expected_download, read_state_t *read_state,
                    const http_activity_t *activity, http_response_t *response)
 {
@@ -390,7 +502,8 @@ static int perform(http_session_t *session, const char *path, const char *method
         snprintf(session->error, sizeof(session->error), "%s", "request URL is too long");
         return ERR_ARGS;
     }
-    struct curl_slist *headers = request_headers(session->client, content_type);
+    struct curl_slist *headers = request_headers(session->client, content_type,
+                                                 content_encoding);
     if (!headers) {
         return ERR_MEMORY;
     }
@@ -416,6 +529,11 @@ static int perform(http_session_t *session, const char *path, const char *method
             curl_easy_setopt(session->easy, CURLOPT_POSTFIELDSIZE_LARGE,
                              (curl_off_t)read_state->remaining);
         }
+    } else if (strcmp(method, "HEAD") == 0) {
+        curl_easy_setopt(session->easy, CURLOPT_NOBODY, 1L);
+        curl_easy_setopt(session->easy, CURLOPT_CUSTOMREQUEST, "HEAD");
+    } else {
+        curl_easy_setopt(session->easy, CURLOPT_HTTPGET, 1L);
     }
 
     CURLcode code = curl_easy_perform(session->easy);
@@ -512,7 +630,8 @@ void http_response_free(http_response_t *response)
 int http_get_json(http_session_t *session, const char *path,
                   size_t max_body, http_response_t *response)
 {
-    return perform(session, path, "GET", NULL, BODY_BUFFER, max_body, -1, NULL, NULL, response);
+    return perform(session, path, "GET", NULL, NULL, BODY_BUFFER, max_body,
+                   -1, NULL, NULL, response);
 }
 
 int http_post_json(http_session_t *session, const char *path,
@@ -527,7 +646,7 @@ int http_post_json(http_session_t *session, const char *path,
     if (join_url(session->client->base_url, path, url, sizeof(url)) != 0) {
         return ERR_ARGS;
     }
-    struct curl_slist *headers = request_headers(session->client, "application/json");
+    struct curl_slist *headers = request_headers(session->client, "application/json", NULL);
     if (!headers) {
         return ERR_MEMORY;
     }
@@ -555,8 +674,18 @@ int http_measure_download(http_session_t *session, const char *path,
     if (expected_bytes < 0) {
         return ERR_ARGS;
     }
-    return perform(session, path, "GET", NULL, BODY_DISCARD, 0, expected_bytes,
-                   NULL, activity, response);
+    return perform(session, path, "GET", NULL, NULL, BODY_DISCARD, 0,
+                   expected_bytes, NULL, activity, response);
+}
+
+int http_measure_empty(http_session_t *session, const char *path,
+                       const char *method, http_response_t *response)
+{
+    if (!method || (strcmp(method, "GET") != 0 && strcmp(method, "HEAD") != 0)) {
+        return ERR_ARGS;
+    }
+    return perform(session, path, method, NULL, NULL, BODY_DISCARD, 0, 0,
+                   NULL, NULL, response);
 }
 
 int http_measure_upload(http_session_t *session, const char *path,
@@ -570,7 +699,7 @@ int http_measure_upload(http_session_t *session, const char *path,
         .remaining = bytes,
         .activity = activity,
     };
-    int result = perform(session, path, "POST", "application/octet-stream",
+    int result = perform(session, path, "POST", "application/octet-stream", "identity",
                          BODY_BUFFER, max_response, -1, &read_state, NULL, response);
     if (result == ERR_OK && read_state.transferred != bytes) {
         snprintf(session->error, sizeof(session->error),

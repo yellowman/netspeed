@@ -69,8 +69,8 @@ netspeed -v
 | `--download-only` | `-d` | false | Skip upload tests |
 | `--upload-only` | `-u` | false | Skip download tests |
 | `--no-packet-loss` | | false | Skip packet loss test |
-| `--download-payload` | | `auto` | Netspeed negotiated value or Go Cloudflare observed-default constraint: `auto`, `random`, or `zero` |
-| `--download-framing` | | `auto` | Netspeed negotiated value or Go Cloudflare observed-default constraint: `auto`, `fixed`, or `chunked` |
+| `--download-payload` | | `auto` | Netspeed negotiated value or native Cloudflare observed-default constraint: `auto`, `random`, or `zero` |
+| `--download-framing` | | `auto` | Netspeed negotiated value or native Cloudflare observed-default constraint: `auto`, `fixed`, or `chunked` |
 | `--download-chunk-bytes` | | `0` | Application chunk size; Cloudflare requires exact response-header evidence |
 | `--download-flush` | | `auto` | Per-chunk flush; Cloudflare requires exact response-header evidence |
 | `--json` | `-j` | false | Output results as JSON |
@@ -177,13 +177,13 @@ throughput or latency samples.
   - advertised transport-version-1 names for payload (`random|zero`), framing
     (`fixed|chunked`), application chunk bytes, and per-chunk flush behavior.
 
-The strict Go client uses the names from `measurementCapabilities`; it does not
-assume that a future daemon retains the literal keys shown above. Explicit
-controls are never sent to a legacy server.
+The strict Go and native C clients use the names from
+`measurementCapabilities`; they do not assume that a future daemon retains the
+literal keys shown above. Explicit controls are never sent to a legacy server.
 
-The Go Cloudflare adapter does not send those optional discriminator parameters.
-It first fetches 64 KiB through the common `bytes` key, classifies the
-provider-default payload and framing, and treats explicit transport flags as
+The Go and native C Cloudflare adapters do not send those optional discriminator
+parameters. They first fetch 64 KiB through the common `bytes` key, classify the
+provider-default payload and framing, and treat explicit transport flags as
 requirements on that observed behavior. Chunk size and flush settings require
 exact response-header evidence. A mismatch is an argument error rather than a
 silently ignored flag. Later downloads must retain the probed payload and
@@ -200,22 +200,22 @@ framing classification.
 - a streamed response has no `Content-Length`, while fixed framing has the exact
   requested length.
 
-For throughput, the Go client consumes the body without retaining it and times
-first response byte through completed body read. For latency, RTT is
-`GotFirstResponseByte - WroteRequest`. Any status, type, length, read, or timing
-mismatch invalidates the sample.
+For throughput, the native clients consume the body without retaining it and
+time first response byte through completed body read. For latency, each client
+uses its transport's request-complete-to-first-byte interval. Any status, type,
+length, read, or timing mismatch invalidates the sample.
 
 A daemon advertising `httpPingPath` is probed with its preferred supported
 `GET` or `HEAD` method and a zero-byte response. When it also advertises
-`warmConnectionPing`, the strict Go client traces connection acquisition,
-discards cold attempts, and reports only a reused keep-alive sample. JSON
+`warmConnectionPing`, the strict Go and native C clients observe connection
+reuse, discard cold attempts, and report only a reused keep-alive sample. JSON
 latency samples include `connectionReused`, `probeTransport`, `probeMethod`, and
 `probePath`. The compatibility fallback remains `GET /__down?bytes=0`.
 
-The Go Cloudflare adapter always uses that fallback on a dedicated transport
-limited to one connection. It primes the connection for each idle or loaded
-condition and accepts only probes with traced `GotConnInfo.Reused=true`; up to
-four cold attempts are discarded rather than reported. Its JSON result adds
+The Go and native C Cloudflare adapters always use that fallback on a dedicated
+transport limited to one connection. They prime the connection for each idle or
+loaded condition and accept only probes with observed connection reuse; up to
+four cold attempts are discarded rather than reported. Their JSON results add
 warm-sample, warmup, discarded-cold, server-timing-adjustment, and observed HTTP
 protocol evidence.
 
@@ -729,13 +729,13 @@ with `--json` flag, output matches the web client format exactly:
 ```
 
 Cloudflare provider JSON is a separate compatibility result rather than the
-strict web-result schema. The Go `cloudflare-http-v2` object includes an
+strict web-result schema. The Go and native C `cloudflare-http-v2` objects
+include an
 `httpTransport` section with behavioral-probe selection evidence and an
 `antiTransform` section. Its idle and loaded latency objects include
 `connectionReused`, `warmSamples`, `warmupRequests`,
 `discardedColdAttempts`, `serverTimingAdjustedSamples`, `probeTransport`,
-`probeMethod`, `probePath`, and `httpProtocols`. The C compatibility client
-remains `cloudflare-http-v1` until its negotiation phase.
+`probeMethod`, `probePath`, and `httpProtocols`.
 
 **when packet loss test is unavailable:**
 

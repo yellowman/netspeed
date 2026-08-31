@@ -49,13 +49,13 @@ can converge on the same behavior. `proxyRequestBufferingAdvisory` means a
 response header cannot disable buffering of an upload request body; the reverse
 proxy must be configured accordingly.
 
-### 1.1 Go client negotiation and safety
+### 1.1 Strict Go and native C client negotiation and safety
 
-The Go CLI validates the complete object before issuing a measurement request.
-Endpoint values must be clean, same-origin relative paths with no authority,
-query, fragment, traversal, or backslash form. Download query parameter names
-must be syntactically safe and distinct, so hostile or malformed metadata cannot
-redirect traffic or collapse two discriminators onto one key.
+The Go and native C CLIs validate the complete object before issuing a
+measurement request. Endpoint values must be clean, same-origin relative paths
+with no authority, query, fragment, traversal, or backslash form. Download query
+parameter names must be syntactically safe and distinct, so hostile or malformed
+metadata cannot redirect traffic or collapse two discriminators onto one key.
 
 The corresponding CLI controls are:
 
@@ -75,15 +75,18 @@ are never silently sent to a legacy endpoint.
 For every run, the normalized contract is included in JSON metadata as
 `measurementSelection`. It records the selected payload, framing, application
 chunk size, flush behavior, upload encoding, latency path and method, warm-reuse
-requirement, and whether legacy fallback was used. The Go client also verifies
-the response's measurement type, payload, framing, chunk size, exact length,
-identity content coding, and `no-store, no-transform` controls.
+requirement, and whether legacy fallback was used. Both clients also verify the
+response's measurement type, payload, framing, chunk size, exact length,
+identity content coding, and `no-store, no-transform` controls. The C process
+fixture advertises nonstandard endpoint paths and query names so qualification
+proves that the client consumes the advertisement rather than falling back to
+hard-coded routes.
 
-### 1.2 Go Cloudflare behavioral negotiation
+### 1.2 Go and native C Cloudflare behavioral negotiation
 
 Cloudflare compatibility cannot assume the daemon's capability object exists.
-The Go adapter therefore uses a bounded 64 KiB request to the common
-`/__down?bytes=N` surface and records the observed provider defaults under
+Both native adapters therefore use a bounded 64 KiB request to the common
+`/__down?bytes=N` surface and record the observed provider defaults under
 `httpTransport`:
 
 - binary zero-fill, ASCII-zero, incompressible random, or opaque payload;
@@ -91,11 +94,12 @@ The Go adapter therefore uses a bounded 64 KiB request to the common
 - optional exact chunk and flush evidence from `X-Netspeed-Chunk-Bytes` and
   `X-Netspeed-Flush`.
 
-The adapter identifies this behavior as `cloudflare-http-v2`. `auto` accepts the
+The adapters identify this behavior as `cloudflare-http-v2`. `auto` accepts the
 observed defaults. Explicit CLI values are requirements: they succeed only when
 the probe proves the endpoint already behaves that way. No `payload`, `framing`,
 `chunkBytes`, or `flush` query is sent to force an unadvertised choice. Every
-later download is checked for drift from the probe.
+later download is checked for drift from the probe using bounded evidence
+windows distributed across the body.
 
 All requests send `Accept-Encoding: identity`, `Cache-Control: no-store,
 no-transform`, and `Pragma: no-cache`; uploads also send `Content-Encoding:
@@ -103,9 +107,8 @@ identity`. Automatic decompression is disabled and any non-identity response
 coding is fatal. The probe reports, but cannot manufacture, remote response
 controls such as `no-transform` or `X-Accel-Buffering: no`.
 
-The native C and browser adoption is intentionally handled in later client
-phases; they continue to use the compatible default endpoint surface in this
-tree.
+The browser adoption is intentionally handled in a later client phase. It
+continues to use the compatible default endpoint surface in this tree.
 
 ## 2. Download endpoint
 
@@ -200,23 +203,26 @@ The endpoint has no redirect and does not request connection closure.
 
 A client should warm one persistent HTTP transport, then issue probes through the
 same connection pool. The measured interval therefore excludes repeated DNS,
-TCP, QUIC, and TLS setup. The strict Go client traces connection acquisition and,
-when `warmConnectionPing` is advertised, discards a cold probe and retries until
-the reported probe has `connectionReused=true`; it fails after three cold
-attempts rather than mislabeling handshake time as RTT. During loaded-latency
-measurement, the same endpoint is used while the client independently proves
-that directional load remained continuous for the full probe interval.
+TCP, QUIC, and TLS setup. The strict Go and native C clients observe connection
+reuse and, when `warmConnectionPing` is advertised, discard a cold probe and
+retry until the reported probe has `connectionReused=true`; they fail after
+three cold attempts rather than mislabeling handshake time as RTT. During
+loaded-latency measurement, the same endpoint is used while the client
+independently proves that directional load remained continuous for the full
+probe interval.
 
 Later Cloudflare-mode downloads retain only bounded evidence windows distributed
 across the complete response. This catches a random-looking prefix followed by a
 compressible body without adding full-stream compression work to the throughput
 measurement.
 
-The Go Cloudflare adapter always uses a dedicated one-connection pool for
-`GET /__down?bytes=0`. It primes that pool before each idle or loaded condition,
-accepts only `GotConnInfo.Reused=true`, and discards up to four cold attempts per
-sample. Its RTT interval is `GotFirstResponseByte - WroteRequest`. Server time
-follows the Cloudflare metric families: a `cfReqDur` total takes precedence,
+The Go and native C Cloudflare adapters always use a dedicated one-connection
+session for `GET /__down?bytes=0`. They prime that session before each idle or
+loaded condition, accept only observed connection reuse, and discard up to four
+cold attempts per sample. The Go implementation measures
+`GotFirstResponseByte - WroteRequest` with `httptrace`; the C implementation uses
+libcurl's pre-transfer, start-transfer, and new-connection information. Server
+time follows the Cloudflare metric families: a `cfReqDur` total takes precedence,
 otherwise `cfSpeed*` component durations are summed, with `app` as a fallback.
 JSON records warmup and discarded counts, adjustment counts, method, path,
 transport, and observed HTTP protocols.

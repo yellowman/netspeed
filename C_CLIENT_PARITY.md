@@ -17,6 +17,22 @@ The C client implements the following v2 invariants:
   `uploadReceiptVersion`, and `packetLossFrameVersion`;
 - sends the optional bearer token on metadata, transfer, latency, TURN, and
   packet-test requests;
+- validates and negotiates `measurementCapabilities` version 1, including
+  advertised endpoint paths, distinct query-parameter names, payload and
+  framing choices, chunk bounds, upload identity coding, warm HTTP ping, and
+  anti-transform controls;
+- supports `random` and `zero` download payloads, `fixed` and `chunked`
+  framing, explicit application chunk size, and per-chunk flush selection;
+- rejects explicit transport controls on legacy or incompatible servers rather
+  than silently dropping them;
+- sends `Accept-Encoding: identity`, `Cache-Control: no-store, no-transform`,
+  and `Pragma: no-cache` on every HTTP measurement request and disables
+  libcurl's automatic content decoding;
+- rejects response payload, framing, chunk, compression, cache-control,
+  proxy-buffer-suppression, upload-byte, or ingestion-duration mismatches;
+- performs strict HTTP latency through the advertised zero-byte endpoint,
+  discards cold probes when warm reuse is promised, and records the actual
+  probe path, method, transport, and connection-reuse evidence;
 - rejects non-success HTTP responses, unexpected content types, redirects,
   truncated downloads, declared-length mismatches, and non-positive timing;
 - streams upload bodies from a bounded generator rather than allocating the
@@ -83,6 +99,11 @@ The C CLI supports the Go client's principal execution and output controls:
 --download-only
 --upload-only
 --no-packet-loss
+--provider auto|netspeed|cloudflare
+--download-payload auto|random|zero
+--download-framing auto|fixed|chunked
+--download-chunk-bytes N
+--download-flush auto|true|false
 --no-color
 --timeout DURATION
 --version
@@ -109,6 +130,21 @@ endTime
 Packet fields use the same directional names as the Go client, including
 `forwardLossPercent`, `acknowledgementsSent`,
 `acknowledgementsReceived`, and `reverseAcknowledgementLossPercent`.
+
+Strict Netspeed JSON includes `meta.measurementCapabilities` and the normalized
+`meta.measurementSelection`. Each HTTP latency sample includes
+`connectionReused`, `probeTransport`, `probeMethod`, and `probePath`.
+
+Cloudflare compatibility uses the `cloudflare-http-v2` result contract. Before
+measurement, the C client fetches a bounded 64 KiB body through only the common
+`bytes` discriminator and classifies the provider-default payload and framing.
+Explicit transport options are enforced only when that probe or exact response
+headers prove the endpoint already satisfies them; the client never sends
+Netspeed-only discriminator keys to an unadvertised endpoint. Later downloads
+must preserve the observed behavior. Cloudflare latency uses dedicated
+single-connection libcurl sessions, discards cold attempts, and reports warmup,
+discarded-cold, server-timing adjustment, and HTTP protocol evidence under the
+same field names as the Go adapter.
 
 ## 4. Portable builds
 
@@ -182,7 +218,8 @@ then parses and executes the Makefiles with actual pmake.
 | `SOURCE_DATE` | deterministic build date | `unknown` |
 | `PREFIX` | install prefix | `/usr/local` |
 
-The build discovers libcurl through pkg-config or `curl-config`.
+The build requires zlib for bounded Cloudflare payload classification and
+discovers libcurl through pkg-config or `curl-config`.
 libdatachannel is discovered through pkg-config, explicit
 `WEBRTC_CFLAGS`/`WEBRTC_LIBS`, or conventional POSIX prefixes.
 
@@ -192,9 +229,15 @@ The native client release gate requires:
 
 - strict GCC and Clang builds;
 - protocol/statistics/frame unit tests;
-- process tests against a protocol-v2 HTTP fixture;
-- negative tests for old metadata, truncated downloads, and incorrect upload
-  receipts;
+- process tests against a protocol-v2 HTTP fixture with nonstandard advertised
+  endpoint paths and query names;
+- strict negative tests for old metadata, unsafe or unsupported capabilities,
+  truncated downloads, incorrect upload receipts, encoded responses,
+  transport-header mismatches, missing anti-transform controls, and connections
+  that cannot be warmed;
+- Cloudflare process tests for behavioral payload/framing selection, accepted
+  and rejected explicit controls, discriminator-query suppression, compression
+  rejection, anti-transform drift, and warm connection reuse;
 - AddressSanitizer and UndefinedBehaviorSanitizer runs;
 - a real libdatachannel build;
 - real C-client to Pion-daemon interoperability through embedded TURN;

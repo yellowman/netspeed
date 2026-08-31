@@ -79,7 +79,7 @@ fi
 
 optflags=""
 if test "${NETSPEED_DEBUG}" = yes; then optflags="-O0 -g -DDEBUG"; fi
-common_sources="src/http.c src/json.c src/output.c src/packet_loss.c src/speedtest.c src/stats.c src/timing.c src/progress.c"
+common_sources="src/http.c src/json.c src/measurement_transport.c src/output.c src/packet_loss.c src/speedtest.c src/stats.c src/timing.c src/progress.c"
 if test -n "${NETSPEED_TEST_SOURCE}"; then
   sources="${NETSPEED_TEST_SOURCE} ${common_sources}"
 else
@@ -89,6 +89,6 @@ mkdir -p "$(dirname "${TARGET}")"
 set -x
 ${CC} ${platform_cppflags} ${rtc_defs} ${CPPFLAGS} ${curl_cflags} ${webrtc_cflags} ${CSTD} ${CFLAGS} ${optflags} ${WARNFLAGS} -Iinclude \
   "-DNETSPEED_VERSION=\"${VERSION}\"" "-DNETSPEED_COMMIT=\"${COMMIT}\"" "-DNETSPEED_BUILD_DATE=\"${SOURCE_DATE}\"" \
-  ${sources} ${LDFLAGS} ${curl_libs} ${webrtc_libs} ${LDLIBS} -lpthread -lm -o "${TARGET}"
+  ${sources} ${LDFLAGS} ${curl_libs} ${webrtc_libs} ${LDLIBS} -lpthread -lm -lz -o "${TARGET}"
 set +x
 printf 'built %s (WebRTC packet test: %s)\n' "${TARGET}" "${have_webrtc}"

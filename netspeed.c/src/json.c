@@ -9,6 +9,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 #include <ctype.h>
 #include <math.h>
 
@@ -616,6 +617,107 @@ void json_kv_bool(json_writer_t *w, const char *key, bool val)
 
 /* ===================== Results Serialization ===================== */
 
+static void write_measurement_capabilities(json_writer_t *w,
+                                           const measurement_capabilities_t *capabilities)
+{
+    json_start_object(w);
+    json_kv_int(w, "version", capabilities->version);
+    json_kv_string(w, "downloadPath", capabilities->download_path);
+    json_kv_string(w, "downloadBytesParameter", capabilities->download_bytes_parameter);
+    json_kv_string(w, "downloadPayloadParameter", capabilities->download_payload_parameter);
+    json_kv_string(w, "downloadFramingParameter", capabilities->download_framing_parameter);
+    json_kv_string(w, "downloadChunkBytesParameter",
+                   capabilities->download_chunk_bytes_parameter);
+    json_kv_string(w, "downloadFlushParameter", capabilities->download_flush_parameter);
+    json_kv_string(w, "uploadPath", capabilities->upload_path);
+    json_kv_string(w, "uploadBytesParameter", capabilities->upload_bytes_parameter);
+    json_kv_string(w, "httpPingPath", capabilities->http_ping_path);
+    json_key(w, "httpPingMethods");
+    json_start_array(w);
+    if (capabilities->http_ping_get) json_string(w, "GET");
+    if (capabilities->http_ping_head) json_string(w, "HEAD");
+    json_end_array(w);
+    if (capabilities->websocket_ping_path[0]) {
+        json_kv_string(w, "webSocketPingPath", capabilities->websocket_ping_path);
+    }
+    json_kv_bool(w, "warmConnectionPing", capabilities->warm_connection_ping);
+    json_key(w, "downloadPayloads");
+    json_start_array(w);
+    if (capabilities->download_payload_random) json_string(w, "random");
+    if (capabilities->download_payload_zero) json_string(w, "zero");
+    json_end_array(w);
+    json_key(w, "downloadFramings");
+    json_start_array(w);
+    if (capabilities->download_framing_fixed) json_string(w, "fixed");
+    if (capabilities->download_framing_chunked) json_string(w, "chunked");
+    json_end_array(w);
+    json_kv_string(w, "defaultDownloadPayload", capabilities->default_download_payload);
+    json_kv_string(w, "defaultDownloadFraming", capabilities->default_download_framing);
+    json_kv_int(w, "defaultChunkBytes", capabilities->default_chunk_bytes);
+    json_kv_int(w, "minimumChunkBytes", capabilities->minimum_chunk_bytes);
+    json_kv_int(w, "maximumChunkBytes", capabilities->maximum_chunk_bytes);
+    json_key(w, "uploadContentEncodings");
+    json_start_array(w);
+    if (capabilities->upload_content_encoding_identity) json_string(w, "identity");
+    json_end_array(w);
+    json_kv_string(w, "responseCacheControl", capabilities->response_cache_control);
+    json_kv_bool(w, "noTransform", capabilities->no_transform);
+    json_kv_string(w, "proxyBufferSuppressionHeader",
+                   capabilities->proxy_buffer_suppression_header);
+    json_kv_bool(w, "proxyRequestBufferingAdvisory",
+                 capabilities->proxy_request_buffering_advisory);
+    json_end_object(w);
+}
+
+static void write_measurement_selection(json_writer_t *w,
+                                        const measurement_selection_t *selection)
+{
+    json_start_object(w);
+    json_kv_int(w, "capabilityVersion", selection->capability_version);
+    json_kv_bool(w, "legacyFallback", selection->legacy_fallback);
+    json_kv_string(w, "downloadPath", selection->download_path);
+    json_kv_string(w, "downloadBytesParameter", selection->download_bytes_parameter);
+    if (selection->download_payload_parameter[0]) {
+        json_kv_string(w, "downloadPayloadParameter",
+                       selection->download_payload_parameter);
+    }
+    if (selection->download_framing_parameter[0]) {
+        json_kv_string(w, "downloadFramingParameter",
+                       selection->download_framing_parameter);
+    }
+    if (selection->download_chunk_bytes_parameter[0]) {
+        json_kv_string(w, "downloadChunkBytesParameter",
+                       selection->download_chunk_bytes_parameter);
+    }
+    if (selection->download_flush_parameter[0]) {
+        json_kv_string(w, "downloadFlushParameter",
+                       selection->download_flush_parameter);
+    }
+    json_kv_string(w, "downloadPayload", selection->download_payload);
+    json_kv_string(w, "downloadFraming", selection->download_framing);
+    json_kv_int(w, "downloadChunkBytes", selection->download_chunk_bytes);
+    json_kv_bool(w, "downloadFlush", selection->download_flush);
+    json_kv_string(w, "uploadPath", selection->upload_path);
+    if (selection->upload_bytes_parameter[0]) {
+        json_kv_string(w, "uploadBytesParameter", selection->upload_bytes_parameter);
+    }
+    json_kv_string(w, "uploadContentEncoding", selection->upload_content_encoding);
+    json_kv_string(w, "latencyPath", selection->latency_path);
+    json_kv_string(w, "latencyMethod", selection->latency_method);
+    json_kv_bool(w, "latencyUsesDownloadEndpoint",
+                 selection->latency_uses_download_endpoint);
+    json_kv_bool(w, "warmConnectionPing", selection->warm_connection_ping);
+    json_kv_bool(w, "noTransform", selection->no_transform);
+    if (selection->response_cache_control[0]) {
+        json_kv_string(w, "responseCacheControl", selection->response_cache_control);
+    }
+    if (selection->proxy_buffer_suppression_header[0]) {
+        json_kv_string(w, "proxyBufferSuppressionHeader",
+                       selection->proxy_buffer_suppression_header);
+    }
+    json_end_object(w);
+}
+
 static void write_meta(json_writer_t *w, const meta_t *meta)
 {
     json_start_object(w);
@@ -639,6 +741,14 @@ static void write_meta(json_writer_t *w, const meta_t *meta)
     json_kv_int(w, "measurementProtocolVersion", meta->measurement_protocol_version);
     json_kv_int(w, "uploadReceiptVersion", meta->upload_receipt_version);
     json_kv_int(w, "packetLossFrameVersion", meta->packet_loss_frame_version);
+    if (meta->measurement_capabilities.present) {
+        json_key(w, "measurementCapabilities");
+        write_measurement_capabilities(w, &meta->measurement_capabilities);
+    }
+    if (meta->measurement_selection_present) {
+        json_key(w, "measurementSelection");
+        write_measurement_selection(w, &meta->measurement_selection);
+    }
     json_end_object(w);
 }
 
@@ -807,6 +917,10 @@ char *results_to_json(const results_t *results)
         if (sample->load_overlapped) json_kv_bool(&writer, "loadOverlapped", true);
         if (sample->load_tracking_accurate) json_kv_bool(&writer, "loadTrackingAccurate", true);
         if (sample->timing_source[0]) json_kv_string(&writer, "timingSource", sample->timing_source);
+        json_kv_bool(&writer, "connectionReused", sample->connection_reused);
+        if (sample->probe_transport[0]) json_kv_string(&writer, "probeTransport", sample->probe_transport);
+        if (sample->probe_method[0]) json_kv_string(&writer, "probeMethod", sample->probe_method);
+        if (sample->probe_path[0]) json_kv_string(&writer, "probePath", sample->probe_path);
         json_end_object(&writer);
     }
     json_end_array(&writer);
@@ -821,10 +935,109 @@ char *results_to_json(const results_t *results)
     return output;
 }
 
+static int copy_capability_string(json_value_t *object, const char *key,
+                                  char *destination, size_t capacity)
+{
+    json_value_t *value = json_get(object, key);
+    if (!value) {
+        return 0;
+    }
+    if (value->type != JSON_STRING || strlen(value->u.string) >= capacity) {
+        return -1;
+    }
+    snprintf(destination, capacity, "%s", value->u.string);
+    return 0;
+}
+
+static int parse_capability_tokens(json_value_t *object, const char *key,
+                                   bool *first, const char *first_name,
+                                   bool *second, const char *second_name)
+{
+    json_value_t *array = json_get(object, key);
+    if (!array) {
+        return 0;
+    }
+    if (array->type != JSON_ARRAY) {
+        return -1;
+    }
+    for (json_element_t *element = array->u.array; element; element = element->next) {
+        if (!element->value || element->value->type != JSON_STRING) {
+            return -1;
+        }
+        const char *token = element->value->u.string;
+        if (first && first_name && strcasecmp(token, first_name) == 0) {
+            *first = true;
+        } else if (second && second_name && strcasecmp(token, second_name) == 0) {
+            *second = true;
+        }
+    }
+    return 0;
+}
+
+static int parse_measurement_capabilities(json_value_t *root,
+                                          measurement_capabilities_t *capabilities)
+{
+    json_value_t *object = json_get(root, "measurementCapabilities");
+    if (!object) {
+        return 0;
+    }
+    if (object->type != JSON_OBJECT) {
+        return -1;
+    }
+    memset(capabilities, 0, sizeof(*capabilities));
+    capabilities->present = true;
+    capabilities->version = json_get_int(object, "version", 0);
+#define COPY_CAPABILITY(field, key) \
+    do { if (copy_capability_string(object, key, capabilities->field, \
+                                    sizeof(capabilities->field)) != 0) return -1; } while (0)
+    COPY_CAPABILITY(download_path, "downloadPath");
+    COPY_CAPABILITY(download_bytes_parameter, "downloadBytesParameter");
+    COPY_CAPABILITY(download_payload_parameter, "downloadPayloadParameter");
+    COPY_CAPABILITY(download_framing_parameter, "downloadFramingParameter");
+    COPY_CAPABILITY(download_chunk_bytes_parameter, "downloadChunkBytesParameter");
+    COPY_CAPABILITY(download_flush_parameter, "downloadFlushParameter");
+    COPY_CAPABILITY(upload_path, "uploadPath");
+    COPY_CAPABILITY(upload_bytes_parameter, "uploadBytesParameter");
+    COPY_CAPABILITY(http_ping_path, "httpPingPath");
+    COPY_CAPABILITY(websocket_ping_path, "webSocketPingPath");
+    COPY_CAPABILITY(default_download_payload, "defaultDownloadPayload");
+    COPY_CAPABILITY(default_download_framing, "defaultDownloadFraming");
+    COPY_CAPABILITY(response_cache_control, "responseCacheControl");
+    COPY_CAPABILITY(proxy_buffer_suppression_header, "proxyBufferSuppressionHeader");
+#undef COPY_CAPABILITY
+    if (parse_capability_tokens(object, "httpPingMethods",
+                                &capabilities->http_ping_get, "GET",
+                                &capabilities->http_ping_head, "HEAD") != 0 ||
+        parse_capability_tokens(object, "downloadPayloads",
+                                &capabilities->download_payload_random, "random",
+                                &capabilities->download_payload_zero, "zero") != 0 ||
+        parse_capability_tokens(object, "downloadFramings",
+                                &capabilities->download_framing_fixed, "fixed",
+                                &capabilities->download_framing_chunked, "chunked") != 0 ||
+        parse_capability_tokens(object, "uploadContentEncodings",
+                                &capabilities->upload_content_encoding_identity, "identity",
+                                NULL, NULL) != 0) {
+        return -1;
+    }
+    capabilities->warm_connection_ping =
+        json_get_bool(object, "warmConnectionPing", false);
+    capabilities->default_chunk_bytes = json_get_int(object, "defaultChunkBytes", 0);
+    capabilities->minimum_chunk_bytes = json_get_int(object, "minimumChunkBytes", 0);
+    capabilities->maximum_chunk_bytes = json_get_int(object, "maximumChunkBytes", 0);
+    capabilities->no_transform = json_get_bool(object, "noTransform", false);
+    capabilities->proxy_request_buffering_advisory =
+        json_get_bool(object, "proxyRequestBufferingAdvisory", false);
+    return 0;
+}
+
 int meta_from_json(const char *json_string, meta_t *meta)
 {
+    if (!meta) return -1;
     json_value_t *root = json_parse(json_string ? json_string : "");
-    if (!root) return -1;
+    if (!root || root->type != JSON_OBJECT) {
+        json_free(root);
+        return -1;
+    }
     memset(meta, 0, sizeof(*meta));
     const char *value;
 #define COPY_STRING(field, key) do { \
@@ -850,6 +1063,8 @@ int meta_from_json(const char *json_string, meta_t *meta)
     meta->measurement_protocol_version = json_get_int(root, "measurementProtocolVersion", 0);
     meta->upload_receipt_version = json_get_int(root, "uploadReceiptVersion", 0);
     meta->packet_loss_frame_version = json_get_int(root, "packetLossFrameVersion", 0);
+    int capability_status = parse_measurement_capabilities(
+        root, &meta->measurement_capabilities);
     json_free(root);
-    return 0;
+    return capability_status;
 }

@@ -420,20 +420,20 @@ Important CLI flags:
 | `-d, --download-only` | skip upload |
 | `-u, --upload-only` | skip download |
 | `--no-packet-loss` | skip WebRTC packet test |
-| `--download-payload` | `auto`, `random`, or `zero`; negotiated by Netspeed or enforced as an observed-default constraint by the Go Cloudflare adapter |
+| `--download-payload` | `auto`, `random`, or `zero`; negotiated by Netspeed or enforced as an observed-default constraint by the native Cloudflare adapters |
 | `--download-framing` | `auto`, `fixed`, or `chunked`; Cloudflare mode never sends an unadvertised framing query |
 | `--download-chunk-bytes` | application chunk size; `0` is automatic, while Cloudflare requires exact response-header evidence |
 | `--download-flush` | `auto`, `true`, or `false`; Cloudflare requires exact response-header evidence |
 | `--no-color` | disable terminal colors |
 | `-t, --timeout` | overall test timeout, default 60 seconds |
 
-The strict Go client validates `measurementCapabilities` before using it,
-follows only same-origin relative endpoint paths, and records the normalized
-choice as `meta.measurementSelection` in JSON output. The Go Cloudflare adapter
-instead behaviorally probes the common endpoint surface, records the evidence in
-`httpTransport`, and treats explicit controls as requirements on the observed
-provider defaults. It never sends Netspeed-only discriminator keys to an
-endpoint that did not advertise them.
+The strict Go and native C clients validate `measurementCapabilities` before
+using it, follow only same-origin relative endpoint paths, and record the
+normalized choice as `meta.measurementSelection` in JSON output. Their
+Cloudflare adapters instead behaviorally probe the common endpoint surface,
+record the evidence in `httpTransport`, and treat explicit controls as
+requirements on the observed provider defaults. They never send Netspeed-only
+discriminator keys to an endpoint that did not advertise them.
 
 what it measures
 ----------------
@@ -519,13 +519,12 @@ upload evidence as client-observed, never as a Netspeed receipt. `auto` selects
 Cloudflare only after a positive hostname or response-header fingerprint;
 recognizable incompatible Netspeed metadata is never downgraded.
 
-The Go Cloudflare path uses the `cloudflare-http-v2` contract. It probes and
-labels the provider-default download payload and framing, disables HTTP content
-decoding, sends `no-store, no-transform`, rejects encoded responses, and reports
-only warm latency samples whose keep-alive connection reuse was observed through
-`httptrace`. Explicit transport flags constrain the observed defaults; no
-Netspeed-only discriminator query parameters are sent. The native C path remains
-on `cloudflare-http-v1` until its transport-negotiation phase.
+The Go and native C Cloudflare paths use the `cloudflare-http-v2` contract. They
+probe and label the provider-default download payload and framing, disable HTTP
+content decoding, send `no-store, no-transform`, reject encoded responses, and
+report only warm latency samples whose keep-alive connection reuse was observed.
+Explicit transport flags constrain the observed defaults; no Netspeed-only
+discriminator query parameters are sent.
 
 Cloudflare-compatible TURN loopback requires usable TURN credentials, supplied
 with `--turn-credentials-url` or `--turn-url`, `--turn-username`, and

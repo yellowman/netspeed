@@ -25,12 +25,12 @@ TURN credentials may be supplied as a Cloudflare Realtime-style `iceServers`
 object, `urls`, or the `server`/`username`/`credential` form. Native clients also
 accept direct TURN options.
 
-## Go Cloudflare HTTP contract v2
+## Native-client Cloudflare HTTP contract v2
 
-The Go compatibility adapter identifies its strengthened HTTP behavior as
-`cloudflare-http-v2`. It does not assume that Cloudflare's common endpoint
-supports Netspeed's optional `payload`, `framing`, `chunkBytes`, or `flush`
-query parameters.
+The Go and native C compatibility adapters identify their strengthened HTTP
+behavior as `cloudflare-http-v2`. They do not assume that Cloudflare's common
+endpoint supports Netspeed's optional `payload`, `framing`, `chunkBytes`, or
+`flush` query parameters.
 
 Before a run, the client requests a bounded 64 KiB download using only the
 common `bytes` discriminator and observes the endpoint's provider defaults:
@@ -56,9 +56,9 @@ The four transport CLI options work as constraints in Cloudflare mode:
 continues only when the probe proves that the endpoint already behaves that
 way. Otherwise the command exits with code 2. The adapter never tries to force
 the choice by sending Netspeed-only query keys to an endpoint that did not
-advertise them. Every later download is checked for payload and framing drift using bounded
-windows distributed across the complete response; verified chunk/flush evidence
-must remain stable as well.
+advertise them. Every later download is checked for payload and framing drift
+using bounded windows distributed across the complete response; verified
+chunk/flush evidence must remain stable as well.
 
 JSON output records this under `httpTransport`, including:
 
@@ -71,7 +71,7 @@ JSON output records this under `httpTransport`, including:
 
 ## Compression and proxy controls
 
-Every Go Cloudflare measurement request sends:
+Every native Cloudflare measurement request sends:
 
 ```http
 Accept-Encoding: identity
@@ -88,7 +88,7 @@ Content-Length: <exact bytes>
 ```
 
 Automatic HTTP decompression is disabled. A response carrying a non-identity
-`Content-Encoding`, or one already transparently decompressed by the Go
+`Content-Encoding`, or one already transparently decompressed by the HTTP
 transport, is rejected rather than used for throughput. The probe records
 whether the endpoint itself returned `no-store`, `no-transform`, and
 `X-Accel-Buffering: no`. Their absence is reported as missing evidence because a
@@ -106,11 +106,14 @@ limited to one connection. Each idle, download-loaded, and upload-loaded
 session:
 
 1. issues an unreported warmup request;
-2. traces connection acquisition, request completion, and first response byte
-   with `net/http/httptrace`;
-3. accepts only a probe whose `GotConnInfo.Reused` value is true;
+2. observes request completion, first response byte, and whether the request
+   opened a new connection (`net/http/httptrace` in Go and libcurl connection
+   information in C);
+3. accepts only a probe whose connection was reused;
 4. discards and retries cold attempts up to four times;
-5. computes RTT as `GotFirstResponseByte - WroteRequest`;
+5. computes the request-to-first-byte interval: Go uses
+   `GotFirstResponseByte - WroteRequest`, while C uses libcurl's
+   pre-transfer-to-start-transfer interval;
 6. prefers a Cloudflare `cfReqDur` total, otherwise sums `cfSpeed*`
    components, with a generic `app` duration only as a final fallback.
 
@@ -135,12 +138,10 @@ compressed request bodies. `GET` or `HEAD /__ping` provides a dedicated
 zero-body warm-connection path; `GET /__down?bytes=0` remains the compatibility
 fallback.
 
-The strict Go Netspeed path validates and negotiates that advertisement,
-including custom same-origin paths and parameter names. Its normalized choice
-is exposed as `meta.measurementSelection`.
+The strict Go and native C Netspeed paths validate and negotiate that
+advertisement, including custom same-origin paths and parameter names. Their
+normalized choice is exposed as `meta.measurementSelection`.
 
-The native C and browser clients remain on their compatible defaults until
-their later negotiation phases. The C Cloudflare result therefore remains
-`cloudflare-http-v1` in this phase. An unrecognized
-`measurementCapabilities` object does not make a protocol-v2 server eligible
-for silent Cloudflare downgrade.
+The browser client remains on its compatible defaults until its later
+negotiation phase. An unrecognized `measurementCapabilities` object does not
+make a protocol-v2 server eligible for silent Cloudflare downgrade.

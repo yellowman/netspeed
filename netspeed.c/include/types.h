@@ -34,6 +34,13 @@
 #define MAX_ICE_SERVER_LEN 512
 #define MAX_JSON_BODY (1024 * 1024)
 #define MAX_ERROR_LEN 512
+#define MAX_MEASUREMENT_PATH 512
+#define MAX_QUERY_PARAMETER 64
+#define MAX_TRANSPORT_TOKEN 32
+#define MAX_HEADER_VALUE 256
+
+#define NETSPEED_HTTP_TRANSPORT_VERSION 1
+#define NETSPEED_DEFAULT_CHUNK_BYTES (1 * 1024 * 1024)
 
 #define LATENCY_PROBES_FULL 20
 #define LATENCY_PROBES_QUICK 5
@@ -76,6 +83,10 @@ typedef struct {
     bool load_overlapped;
     bool load_tracking_accurate;
     char timing_source[48];
+    bool connection_reused;
+    char probe_transport[16];
+    char probe_method[16];
+    char probe_path[MAX_MEASUREMENT_PATH];
 } latency_sample_t;
 
 /* A single baseline request or fixed-duration aggregate window. */
@@ -177,6 +188,64 @@ typedef struct {
     int warning_count;
 } test_confidence_t;
 
+
+typedef struct {
+    bool present;
+    int version;
+    char download_path[MAX_MEASUREMENT_PATH];
+    char download_bytes_parameter[MAX_QUERY_PARAMETER];
+    char download_payload_parameter[MAX_QUERY_PARAMETER];
+    char download_framing_parameter[MAX_QUERY_PARAMETER];
+    char download_chunk_bytes_parameter[MAX_QUERY_PARAMETER];
+    char download_flush_parameter[MAX_QUERY_PARAMETER];
+    char upload_path[MAX_MEASUREMENT_PATH];
+    char upload_bytes_parameter[MAX_QUERY_PARAMETER];
+    char http_ping_path[MAX_MEASUREMENT_PATH];
+    bool http_ping_get;
+    bool http_ping_head;
+    char websocket_ping_path[MAX_MEASUREMENT_PATH];
+    bool warm_connection_ping;
+    bool download_payload_random;
+    bool download_payload_zero;
+    bool download_framing_fixed;
+    bool download_framing_chunked;
+    char default_download_payload[MAX_TRANSPORT_TOKEN];
+    char default_download_framing[MAX_TRANSPORT_TOKEN];
+    int default_chunk_bytes;
+    int minimum_chunk_bytes;
+    int maximum_chunk_bytes;
+    bool upload_content_encoding_identity;
+    char response_cache_control[MAX_HEADER_VALUE];
+    bool no_transform;
+    char proxy_buffer_suppression_header[MAX_HEADER_VALUE];
+    bool proxy_request_buffering_advisory;
+} measurement_capabilities_t;
+
+typedef struct {
+    int capability_version;
+    bool legacy_fallback;
+    char download_path[MAX_MEASUREMENT_PATH];
+    char download_bytes_parameter[MAX_QUERY_PARAMETER];
+    char download_payload_parameter[MAX_QUERY_PARAMETER];
+    char download_framing_parameter[MAX_QUERY_PARAMETER];
+    char download_chunk_bytes_parameter[MAX_QUERY_PARAMETER];
+    char download_flush_parameter[MAX_QUERY_PARAMETER];
+    char download_payload[MAX_TRANSPORT_TOKEN];
+    char download_framing[MAX_TRANSPORT_TOKEN];
+    int download_chunk_bytes;
+    bool download_flush;
+    char upload_path[MAX_MEASUREMENT_PATH];
+    char upload_bytes_parameter[MAX_QUERY_PARAMETER];
+    char upload_content_encoding[MAX_TRANSPORT_TOKEN];
+    char latency_path[MAX_MEASUREMENT_PATH];
+    char latency_method[16];
+    bool latency_uses_download_endpoint;
+    bool warm_connection_ping;
+    bool no_transform;
+    char response_cache_control[MAX_HEADER_VALUE];
+    char proxy_buffer_suppression_header[MAX_HEADER_VALUE];
+} measurement_selection_t;
+
 typedef struct {
     char hostname[MAX_HOSTNAME_LEN];
     char client_ip[64];
@@ -196,6 +265,9 @@ typedef struct {
     int measurement_protocol_version;
     int upload_receipt_version;
     int packet_loss_frame_version;
+    measurement_capabilities_t measurement_capabilities;
+    measurement_selection_t measurement_selection;
+    bool measurement_selection_present;
 } meta_t;
 
 typedef struct {
@@ -230,6 +302,10 @@ typedef struct {
     bool skip_packet_loss;
     bool no_color;
     int64_t timeout_ms;
+    char download_payload[MAX_TRANSPORT_TOKEN];
+    char download_framing[MAX_TRANSPORT_TOKEN];
+    int download_chunk_bytes;
+    char download_flush[MAX_TRANSPORT_TOKEN];
 } config_t;
 
 typedef enum {

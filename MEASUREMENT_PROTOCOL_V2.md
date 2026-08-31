@@ -44,18 +44,18 @@ A version-2 client starts with `GET /meta` and requires these fields:
   and anti-transform/proxy-buffer headers. Its complete schema is defined in
   [`HTTP_MEASUREMENT_TRANSPORT.md`](HTTP_MEASUREMENT_TRANSPORT.md).
 
-The strict Go CLI validates and negotiates this object, uses its advertised paths
-and parameter names, and publishes the normalized choice as
+The strict Go and native C CLIs validate and negotiate this object, use its
+advertised paths and parameter names, and publish the normalized choice as
 `meta.measurementSelection`. Explicit transport controls fail against an absent,
 unsafe, incomplete, or unsupported advertisement.
 
-The Go Cloudflare compatibility path has no authority to invent that
-advertisement. Its `cloudflare-http-v2` contract behaviorally probes the common
-`/__down?bytes=N` surface, records the observed provider-default payload and
-framing under `httpTransport`, and treats explicit transport flags as
-constraints. It never sends Netspeed-only discriminator keys merely because a
-CLI flag was present. The native C and browser clients retain the compatible
-defaults until their negotiation phases are implemented.
+The Go and native C Cloudflare compatibility paths have no authority to invent
+that advertisement. Their `cloudflare-http-v2` contract behaviorally probes the
+common `/__down?bytes=N` surface, records the observed provider-default payload
+and framing under `httpTransport`, and treats explicit transport flags as
+constraints. Neither sends Netspeed-only discriminator keys merely because a
+CLI flag was present. The browser client retains the compatible defaults until
+its negotiation phase is implemented.
 
 A v2 client does not silently fall back to pre-v2 measurement methodology. A
 packet test may be reported as unavailable when its frame capability is missing,
@@ -71,7 +71,7 @@ A client requests a bounded payload with the compatibility form:
 GET /__down?bytes=<decimal>&measId=<unique-id>&profile=<name>&run=<index>
 ```
 
-When transport capabilities version 1 is advertised, the Go client selects
+When transport capabilities version 1 is advertised, the Go and native C clients select
 `payload=random|zero`, `framing=fixed|chunked`, `chunkBytes=N`, and
 `flush=true|false` using the advertised parameter names. Defaults remain
 `random`, `fixed`, and the advertised application write size, so existing
@@ -88,13 +88,13 @@ The client accepts a sample only when:
 - the measured body interval is positive.
 
 `Cache-Control: no-store, no-transform` applies in both modes. A negotiated
-strict-Go sample additionally requires matching `X-Netspeed-Measurement`,
+strict-native sample additionally requires matching `X-Netspeed-Measurement`,
 `X-Netspeed-Payload`, `X-Netspeed-Framing`, and `X-Netspeed-Chunk-Bytes`
-headers. The Go Cloudflare adapter sends `Accept-Encoding: identity`, disables
-automatic decompression, rejects non-identity response coding, and verifies that
-every throughput body retains the payload/framing behavior observed by its
-bounded preflight probe. The Go client consumes the body without retaining it
-beyond bounded windows distributed across the response. The browser uses
+headers. The Go and native C Cloudflare adapters send `Accept-Encoding:
+identity`, disable automatic decompression, reject non-identity response coding,
+and verify that every throughput body retains the payload/framing behavior
+observed by the bounded preflight probe. Native clients consume the body without
+retaining it beyond bounded windows distributed across the response. The browser uses
 a `ReadableStream` when available and otherwise refuses to materialize more
 than 100 MB.
 
@@ -132,7 +132,8 @@ fallback only when the receipt duration is unavailable. Successful and error
 responses use `Cache-Control: no-store, no-transform` and advertise identity
 content handling through diagnostic headers.
 
-The Go client generates upload bytes from a bounded streaming reader. A browser
+The Go and native C clients generate upload bytes from bounded streaming
+generators. A browser
 with request-stream support emits 64 KiB chunks. Other browsers reuse one payload
 no larger than 8 MiB and use XHR upload events to track the outbound interval.
 
@@ -206,7 +207,7 @@ fallback is `GET /__down?bytes=0`. RTT is the interval from request write
 completion to first response byte when precise timing is available.
 
 Capability-aware clients warm and reuse a persistent HTTP transport so repeated
-DNS, TCP, QUIC, and TLS setup is excluded. The Go client records the traced
+DNS, TCP, QUIC, and TLS setup is excluded. The Go and native C clients record the
 method, path, transport, and connection-reuse state for each latency sample. When
 the server promises warm probing, a cold attempt is discarded and retried up to
 three times; only a reused attempt becomes a sample. WebSocket probing remains

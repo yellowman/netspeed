@@ -4,6 +4,7 @@
 #include "speedtest.h"
 
 #include "json.h"
+#include "measurement_transport.h"
 #include "packet_loss.h"
 #include "stats.h"
 #include "timing.h"
@@ -174,63 +175,94 @@ static int validate_status(speedtest_t *test, http_session_t *session,
     return ERR_HTTP;
 }
 
-static void make_measurement_path(char *buffer, size_t capacity, const char *endpoint,
-                                  int64_t bytes, const char *profile, int run,
-                                  const char *condition)
-{
-    int64_t id = timing_now_ms();
-    if (strcmp(endpoint, "/__down") == 0) {
-        snprintf(buffer, capacity,
-                 "/__down?bytes=%" PRId64 "&measId=%" PRId64 "-%s-%d&profile=%s&run=%d&during=%s&seq=%d",
-                 bytes, id, profile, run, profile, run, condition ? condition : "", run);
-    } else {
-        snprintf(buffer, capacity,
-                 "/__up?measId=%" PRId64 "-%s-%d&profile=%s&run=%d",
-                 id, profile, run, profile, run);
-    }
-}
-
 static int measure_latency_with_session(speedtest_t *test, http_session_t *session,
                                         const char *condition, int sequence,
                                         latency_sample_t *sample)
 {
     if (test_expired(test)) {
-    ns_progress("latency probes");
+        ns_progress("latency probes");
         return ERR_TIMEOUT;
     }
-    char path[768];
-    make_measurement_path(path, sizeof(path), "/__down", 0, "latency", sequence, condition);
-    int64_t started = timing_now_ms();
-    http_response_t response;
-    int error = http_measure_download(session, path, 0, NULL, &response);
-    int64_t ended = timing_now_ms();
-    if (error != ERR_OK) {
-        set_error(test, "latency request failed: %s", http_session_error(session));
-        http_response_free(&response);
-        return error;
-    }
-    error = validate_status(test, session, &response, 200, "latency request");
-    if (error == ERR_OK && response.transferred_bytes != 0) {
-        set_error(test, "latency response contained %" PRId64 " bytes; expected 0",
-                  response.transferred_bytes);
-        error = ERR_PROTOCOL;
-    }
-    if (error == ERR_OK && response.request_to_first_byte_ms <= 0) {
-        set_error(test, "latency request produced invalid timing %.3f ms",
-                  response.request_to_first_byte_ms);
-        error = ERR_PROTOCOL;
-    }
-    if (error == ERR_OK) {
+    const measurement_selection_t *selection =
+        &test->results.meta.measurement_selection;
+    int attempts = selection->warm_connection_ping ? 3 : 1;
+    for (int attempt = 0; attempt < attempts; attempt++) {
+        char path[MAX_URL_LEN];
+        int error = measurement_build_latency_path(session, selection, condition,
+                                                   sequence, attempt, path,
+                                                   sizeof(path));
+        if (error != ERR_OK) {
+            set_error(test, "latency measurement path exceeded the safe request limit");
+            return error;
+        }
+        int64_t started = timing_now_ms();
+        http_response_t response;
+        if (selection->latency_uses_download_endpoint) {
+            error = http_measure_download(session, path, 0, NULL, &response);
+        } else {
+            error = http_measure_empty(session, path, selection->latency_method,
+                                       &response);
+        }
+        int64_t ended = timing_now_ms();
+        if (error != ERR_OK) {
+            set_error(test, "latency request failed: %s", http_session_error(session));
+            http_response_free(&response);
+            return error;
+        }
+        error = validate_status(test, session, &response, 200, "latency request");
+        if (error == ERR_OK) {
+            char transport_error[MAX_ERROR_LEN] = {0};
+            error = selection->latency_uses_download_endpoint
+                        ? measurement_verify_download(selection, &response, 0,
+                                                      "latency", transport_error,
+                                                      sizeof(transport_error))
+                        : measurement_verify_latency(selection, &response,
+                                                     transport_error,
+                                                     sizeof(transport_error));
+            if (error != ERR_OK) {
+                set_error(test, "latency response contract failed: %s", transport_error);
+            }
+        }
+        if (error == ERR_OK && response.transferred_bytes != 0) {
+            set_error(test, "latency response contained %" PRId64 " bytes; expected 0",
+                      response.transferred_bytes);
+            error = ERR_PROTOCOL;
+        }
+        if (error == ERR_OK && response.request_to_first_byte_ms <= 0) {
+            set_error(test, "latency request produced invalid timing %.3f ms",
+                      response.request_to_first_byte_ms);
+            error = ERR_PROTOCOL;
+        }
+        if (error != ERR_OK) {
+            http_response_free(&response);
+            return error;
+        }
+        if (selection->warm_connection_ping && !response.connection_reused) {
+            http_response_free(&response);
+            continue;
+        }
+
         memset(sample, 0, sizeof(*sample));
         sample->ts = ended;
         sample->started_at = started;
         sample->ended_at = ended;
         sample->rtt_ms = response.request_to_first_byte_ms;
         snprintf(sample->condition, sizeof(sample->condition), "%s", condition);
-        snprintf(sample->timing_source, sizeof(sample->timing_source), "%s", "libcurl");
+        snprintf(sample->timing_source, sizeof(sample->timing_source), "%s",
+                 "libcurl-first-byte");
+        sample->connection_reused = response.connection_reused;
+        snprintf(sample->probe_transport, sizeof(sample->probe_transport), "%s", "http");
+        snprintf(sample->probe_method, sizeof(sample->probe_method), "%s",
+                 selection->latency_method);
+        snprintf(sample->probe_path, sizeof(sample->probe_path), "%s",
+                 selection->latency_path);
+        http_response_free(&response);
+        return ERR_OK;
     }
-    http_response_free(&response);
-    return error;
+    set_error(test,
+              "server advertised warm connection latency but %s %s was not reused after %d probes",
+              selection->latency_method, selection->latency_path, attempts);
+    return ERR_PROTOCOL;
 }
 
 static int measure_download_with_session(speedtest_t *test, http_session_t *session,
@@ -244,8 +276,14 @@ static int measure_download_with_session(speedtest_t *test, http_session_t *sess
                   bytes, test->results.meta.max_transfer_bytes);
         return ERR_PROTOCOL;
     }
-    char path[768];
-    make_measurement_path(path, sizeof(path), "/__down", bytes, profile, run, "");
+    char path[MAX_URL_LEN];
+    int path_error = measurement_build_download_path(
+        session, &test->results.meta.measurement_selection, bytes, profile, run, "",
+        path, sizeof(path));
+    if (path_error != ERR_OK) {
+        set_error(test, "download measurement path exceeded the safe request limit");
+        return path_error;
+    }
     http_response_t response;
     int error = http_measure_download(session, path, bytes, activity, &response);
     if (error != ERR_OK) {
@@ -257,6 +295,15 @@ static int measure_download_with_session(speedtest_t *test, http_session_t *sess
     if (error == ERR_OK && !content_type_prefix(response.content_type, "application/octet-stream")) {
         set_error(test, "download returned unexpected content type %s", response.content_type);
         error = ERR_PROTOCOL;
+    }
+    if (error == ERR_OK) {
+        char transport_error[MAX_ERROR_LEN] = {0};
+        error = measurement_verify_download(
+            &test->results.meta.measurement_selection, &response, bytes, "download",
+            transport_error, sizeof(transport_error));
+        if (error != ERR_OK) {
+            set_error(test, "download response contract failed: %s", transport_error);
+        }
     }
     if (error == ERR_OK && response.content_length >= 0 && response.content_length != bytes) {
         set_error(test, "download Content-Length was %" PRId64 "; expected %" PRId64,
@@ -319,8 +366,14 @@ static int measure_upload_with_session(speedtest_t *test, http_session_t *sessio
                   bytes, test->results.meta.max_transfer_bytes);
         return ERR_PROTOCOL;
     }
-    char path[768];
-    make_measurement_path(path, sizeof(path), "/__up", bytes, profile, run, "");
+    char path[MAX_URL_LEN];
+    int path_error = measurement_build_upload_path(
+        session, &test->results.meta.measurement_selection, bytes, profile, run,
+        path, sizeof(path));
+    if (path_error != ERR_OK) {
+        set_error(test, "upload measurement path exceeded the safe request limit");
+        return path_error;
+    }
     http_response_t response;
     int error = http_measure_upload(session, path, bytes, activity, RECEIPT_BODY_LIMIT, &response);
     if (error != ERR_OK) {
@@ -332,6 +385,15 @@ static int measure_upload_with_session(speedtest_t *test, http_session_t *sessio
     if (error == ERR_OK && !content_type_prefix(response.content_type, "application/json")) {
         set_error(test, "upload receipt returned unexpected content type %s", response.content_type);
         error = ERR_PROTOCOL;
+    }
+    if (error == ERR_OK) {
+        char transport_error[MAX_ERROR_LEN] = {0};
+        error = measurement_verify_upload(
+            &test->results.meta.measurement_selection, &response, bytes,
+            transport_error, sizeof(transport_error));
+        if (error != ERR_OK) {
+            set_error(test, "upload response contract failed: %s", transport_error);
+        }
     }
     int64_t accepted = 0;
     int64_t duration_ns = 0;
@@ -1036,6 +1098,17 @@ int speedtest_fetch_meta(speedtest_t *test)
                   NETSPEED_UPLOAD_RECEIPT_VERSION);
         return ERR_PROTOCOL;
     }
+    char transport_error[MAX_ERROR_LEN] = {0};
+    int transport_status = measurement_negotiate(
+        &meta->measurement_capabilities, test->config,
+        &test->results.meta.measurement_selection, transport_error,
+        sizeof(transport_error));
+    if (transport_status != ERR_OK) {
+        set_error(test, "HTTP measurement transport negotiation failed: %s",
+                  transport_error);
+        return transport_status;
+    }
+    test->results.meta.measurement_selection_present = true;
     return ERR_OK;
 }
 

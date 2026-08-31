@@ -9,6 +9,7 @@
 
 #include <ctype.h>
 #include <errno.h>
+#include <limits.h>
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -40,6 +41,14 @@ static void usage(const char *program)
     fprintf(stderr, "  -d, --download-only    Skip upload tests\n");
     fprintf(stderr, "  -u, --upload-only      Skip download tests\n");
     fprintf(stderr, "      --no-packet-loss   Skip the WebRTC packet test\n");
+    fprintf(stderr, "      --download-payload MODE\n");
+    fprintf(stderr, "                           auto, random, or zero\n");
+    fprintf(stderr, "      --download-framing MODE\n");
+    fprintf(stderr, "                           auto, fixed, or chunked\n");
+    fprintf(stderr, "      --download-chunk-bytes N\n");
+    fprintf(stderr, "                           application stream chunk size; 0=auto\n");
+    fprintf(stderr, "      --download-flush MODE\n");
+    fprintf(stderr, "                           auto, true, or false\n");
     fprintf(stderr, "      --turn-credentials-url URL\n");
     fprintf(stderr, "                           TURN credential endpoint for Cloudflare mode\n");
     fprintf(stderr, "      --turn-url URL     Direct TURN URL for Cloudflare loopback\n");
@@ -102,6 +111,9 @@ static int parse_args(int argc, char **argv, config_t *config)
     memset(config, 0, sizeof(*config));
     snprintf(config->server_url, sizeof(config->server_url), "%s", DEFAULT_SERVER_URL);
     config->timeout_ms = DEFAULT_TEST_TIMEOUT_MS;
+    snprintf(config->download_payload, sizeof(config->download_payload), "%s", "auto");
+    snprintf(config->download_framing, sizeof(config->download_framing), "%s", "auto");
+    snprintf(config->download_flush, sizeof(config->download_flush), "%s", "auto");
     bool server_set = false;
 
     for (int index = 1; index < argc; index++) {
@@ -135,6 +147,45 @@ static int parse_args(int argc, char **argv, config_t *config)
             config->upload_only = true;
         } else if (strcmp(argument, "--no-packet-loss") == 0) {
             config->skip_packet_loss = true;
+        } else if (strcmp(argument, "--download-payload") == 0) {
+            if (++index >= argc ||
+                copy_argument(config->download_payload, sizeof(config->download_payload),
+                              argv[index], "download payload") != 0) return -1;
+        } else if (strncmp(argument, "--download-payload=", 19) == 0) {
+            if (copy_argument(config->download_payload, sizeof(config->download_payload),
+                              argument + 19, "download payload") != 0) return -1;
+        } else if (strcmp(argument, "--download-framing") == 0) {
+            if (++index >= argc ||
+                copy_argument(config->download_framing, sizeof(config->download_framing),
+                              argv[index], "download framing") != 0) return -1;
+        } else if (strncmp(argument, "--download-framing=", 19) == 0) {
+            if (copy_argument(config->download_framing, sizeof(config->download_framing),
+                              argument + 19, "download framing") != 0) return -1;
+        } else if (strcmp(argument, "--download-flush") == 0) {
+            if (++index >= argc ||
+                copy_argument(config->download_flush, sizeof(config->download_flush),
+                              argv[index], "download flush") != 0) return -1;
+        } else if (strncmp(argument, "--download-flush=", 17) == 0) {
+            if (copy_argument(config->download_flush, sizeof(config->download_flush),
+                              argument + 17, "download flush") != 0) return -1;
+        } else if (strcmp(argument, "--download-chunk-bytes") == 0 ||
+                   strncmp(argument, "--download-chunk-bytes=", 23) == 0) {
+            const char *value = NULL;
+            if (argument[22] == '=') {
+                value = argument + 23;
+            } else if (++index < argc) {
+                value = argv[index];
+            }
+            errno = 0;
+            char *end = NULL;
+            long parsed = value ? strtol(value, &end, 10) : -1;
+            if (!value || !*value || errno != 0 || !end || *end != '\0' ||
+                parsed < 0 || parsed > INT_MAX) {
+                fprintf(stderr, "Error: invalid download chunk size %s\n",
+                        value ? value : "<missing>");
+                return -1;
+            }
+            config->download_chunk_bytes = (int)parsed;
         } else if (strcmp(argument, "--no-color") == 0) {
             config->no_color = true;
         } else if (strcmp(argument, "-t") == 0 || strcmp(argument, "--timeout") == 0) {
@@ -173,6 +224,24 @@ static int parse_args(int argc, char **argv, config_t *config)
     size_t server_length = strlen(config->server_url);
     while (server_length > 8 && config->server_url[server_length - 1] == '/') {
         config->server_url[--server_length] = '\0';
+    }
+    if (strcasecmp(config->download_payload, "auto") != 0 &&
+        strcasecmp(config->download_payload, "random") != 0 &&
+        strcasecmp(config->download_payload, "zero") != 0) {
+        fprintf(stderr, "Error: --download-payload must be auto, random, or zero\n");
+        return -1;
+    }
+    if (strcasecmp(config->download_framing, "auto") != 0 &&
+        strcasecmp(config->download_framing, "fixed") != 0 &&
+        strcasecmp(config->download_framing, "chunked") != 0) {
+        fprintf(stderr, "Error: --download-framing must be auto, fixed, or chunked\n");
+        return -1;
+    }
+    if (strcasecmp(config->download_flush, "auto") != 0 &&
+        strcasecmp(config->download_flush, "true") != 0 &&
+        strcasecmp(config->download_flush, "false") != 0) {
+        fprintf(stderr, "Error: --download-flush must be auto, true, or false\n");
+        return -1;
     }
     if (config->download_only && config->upload_only) {
         fprintf(stderr, "Error: --download-only and --upload-only are mutually exclusive\n");
@@ -223,7 +292,7 @@ static int netspeed_strict_main(int argc, char **argv)
         output_error(&output, speedtest_error(&test));
         speedtest_cleanup(&test);
         http_global_cleanup();
-        return 1;
+        return status == ERR_ARGS ? 2 : 1;
     }
     const results_t *results = speedtest_results(&test);
     if (config.json_output) {
