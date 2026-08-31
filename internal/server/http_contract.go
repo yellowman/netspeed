@@ -87,6 +87,7 @@ func (s *Server) corsMiddleware(next http.Handler) http.Handler {
 		w.Header().Set("Timing-Allow-Origin", allowOrigin)
 		w.Header().Set("Access-Control-Expose-Headers", strings.Join([]string{
 			"CDN-Cache-Control",
+			"Content-Encoding",
 			"Content-Length",
 			"Retry-After",
 			"Surrogate-Control",
@@ -97,6 +98,7 @@ func (s *Server) corsMiddleware(next http.Handler) http.Handler {
 			"X-Netspeed-Content-Encoding",
 			"X-Netspeed-Expected-Bytes",
 			"X-Netspeed-Framing",
+			"X-Netspeed-Flush",
 			"X-Netspeed-Measurement",
 			"X-Netspeed-Payload",
 			"X-Netspeed-Quota-Remaining-Bytes",
@@ -125,7 +127,7 @@ func (s *Server) corsMiddleware(next http.Handler) http.Handler {
 			addVary(w.Header(), "Access-Control-Request-Method")
 			addVary(w.Header(), "Access-Control-Request-Headers")
 			w.Header().Set("Access-Control-Allow-Methods", "GET, HEAD, POST, OPTIONS")
-			w.Header().Set("Access-Control-Allow-Headers", "Accept, Authorization, Cache-Control, Content-Type, Pragma, X-Requested-With")
+			w.Header().Set("Access-Control-Allow-Headers", "Accept, Authorization, Cache-Control, Content-Encoding, Content-Type, Pragma, X-Requested-With")
 			w.Header().Set("Access-Control-Max-Age", "86400")
 			w.WriteHeader(http.StatusNoContent)
 			return

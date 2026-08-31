@@ -54,8 +54,11 @@ HTTP and deployment normative addendum
 The implemented daemon uses a header-only server timeout plus endpoint-specific
 control and transfer deadlines; it does not use whole-request `ReadTimeout` or
 `WriteTimeout`. The browser supports a validated `apiBaseUrl`, path prefixes,
-and one Fetch/XHR credentials mode. Allowed origins receive matching CORS and
-`Timing-Allow-Origin` headers; disallowed browser origins receive `403`.
+one Fetch/XHR credentials mode, and strict negotiation of advertised measurement
+paths and
+discriminators. Allowed origins receive matching CORS and
+`Timing-Allow-Origin` headers plus exposed content-coding and transport
+diagnostics; disallowed browser origins receive `403`.
 
 The daemon advertises pseudorandom and zero-fill payloads, fixed and streamed
 framing, identity-only uploads, and warm zero-body HTTP ping. Measurement
@@ -157,8 +160,9 @@ fail; clients never accept a short response. Pseudorandom mode generates a
 nonrepeating per-request stream, while zero-fill minimizes generator CPU.
 
 Every response carries `Cache-Control: no-store, no-transform`, CDN/surrogate
-cache suppression, `X-Accel-Buffering: no`, and diagnostic payload/framing/chunk
-headers. The complete query, status, and response contract is in
+cache suppression, `X-Accel-Buffering: no`, and diagnostic
+payload/framing/chunk/flush headers. The complete query, status, and response
+contract is in
 [`HTTP_MEASUREMENT_TRANSPORT.md`](HTTP_MEASUREMENT_TRANSPORT.md).
 
 ---
@@ -192,10 +196,13 @@ returns success for truncated or silently limited input.
 
 ### 1.1.4 `GET` or `HEAD /__ping` - warm HTTP latency
 
-The endpoint returns `200`, `Content-Length: 0`, and no body. Clients reuse one
-persistent HTTP connection so probe timing excludes repeated connection and TLS
-setup. `GET /__down?bytes=0` remains the compatibility fallback. A WebSocket
-latency path is optional and must not be assumed unless `/meta` advertises it.
+The endpoint returns `200`, `Content-Length: 0`, and no body. Native clients
+reuse one persistent HTTP connection. The browser warms its origin pool and uses
+Resource Timing to reject observed connection setup or an unverifiable manual
+fallback, while labeling hidden reuse evidence as unknown when the measured
+request-start interval still excludes setup. `GET /__down?bytes=0` remains the
+compatibility fallback. A WebSocket latency path is optional and must not be
+assumed unless `/meta` advertises it.
 
 ### 1.1.5 `GET /locations` - colo list
 
@@ -556,20 +563,25 @@ if `EnableCORS` is `true`:
 
     ```http
     Access-Control-Allow-Origin: <origin or *>
+    Timing-Allow-Origin: <origin or *>
     Access-Control-Allow-Methods: GET, HEAD, POST, OPTIONS
-    Access-Control-Allow-Headers: Content-Type, X-Requested-With
+    Access-Control-Allow-Headers: Accept, Authorization, Cache-Control, Content-Encoding, Content-Type, Pragma, X-Requested-With
     Access-Control-Max-Age: 86400
     ```
 
-- for actual `GET` / `POST` responses, add:
+- for actual `GET`, `HEAD`, and `POST` responses, add:
 
   ```http
   Access-Control-Allow-Origin: <origin or *>
+  Timing-Allow-Origin: <origin or *>
+  Access-Control-Expose-Headers: Content-Encoding, Content-Length, Server-Timing, X-Accel-Buffering, X-Netspeed-*
   ```
 
 The implemented CORS middleware validates origins at startup and at request
 time. Allowed origins receive `Access-Control-Allow-Origin` and matching
-`Timing-Allow-Origin`; credentialed CORS requires explicit origins. Both
+`Timing-Allow-Origin`; credentialed CORS requires explicit origins. The actual
+exposure list names each measurement, receipt, quota, timing, and metadata
+header rather than using the illustrative `X-Netspeed-*` shorthand above. Both
 preflight and actual requests with a disallowed `Origin` receive `403` so an
 unapproved page cannot consume measurement bandwidth blindly. Requests without
 an `Origin` header are unaffected.
@@ -948,7 +960,9 @@ the client's aggregate window bytes.
 ### 2.3 continuous loaded latency
 
 Clients issue zero-byte `/__ping` probes when advertised, falling back to
-`/__down?bytes=0`, while one selected throughput window is active. A probe is
+`/__down?bytes=0`, while one selected throughput window is active. The browser
+caps load at five workers to reserve one conventional HTTP/1.1 origin
+connection for the probe. A probe is
 retained only if at least one transfer body remains active for
 the entire probe. Upload receipt wait does not count as outbound load. The daemon
 accepts opaque `during`/`measId` labels for logging but does not claim overlap on

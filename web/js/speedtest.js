@@ -6,6 +6,10 @@
 const SpeedTest = (function() {
     'use strict';
 
+    const HTTPTransport = (typeof globalThis !== 'undefined' && globalThis.NetspeedHTTPTransport)
+        || (typeof require === 'function' ? require('./http_transport.js') : null);
+    if (!HTTPTransport) throw new Error('NetspeedHTTPTransport must be loaded before speedtest.js');
+
     // Small verified baselines estimate capacity. Headline throughput comes
     // from repeated bounded requests inside fixed-duration windows; no profile
     // can request or allocate gigabytes merely because the baseline was fast.
@@ -53,6 +57,8 @@ const SpeedTest = (function() {
     let uploadReceiptVersion = 0;
     let packetLossFrameVersion = 0;
     let requestStreamingSupport;
+    let measurementSelection = HTTPTransport.legacySelection();
+    let transportEvidence = null;
 
     // Active plans are exposed for diagnostics. They contain bounded chunks and
     // concurrency rather than the former giant profile table.
@@ -131,6 +137,63 @@ const SpeedTest = (function() {
         const token = accessToken();
         if (token) headers.Authorization = `Bearer ${token}`;
         return headers;
+    }
+
+    function measurementHeaders(base = {}, upload = false) {
+        return authenticatedHeaders(HTTPTransport.measurementRequestHeaders(base, upload));
+    }
+
+    function configuredTransportPreferences() {
+        const config = typeof globalThis !== 'undefined' ? globalThis.NETSPEED_CONFIG : undefined;
+        return HTTPTransport.preferencesFromConfig(config);
+    }
+
+    function createTransportEvidence(selection) {
+        return {
+            contract: selection.legacyFallback ? 'measurement-protocol-v2-legacy-http' : 'netspeed-http-v1',
+            capabilitySource: selection.legacyFallback ? 'legacy-defaults' : 'measurementCapabilities',
+            selection: HTTPTransport.cloneSelection(selection),
+            requestControls: {
+                cacheControl: HTTPTransport.CACHE_CONTROL,
+                pragma: 'no-cache',
+                uploadContentEncoding: 'identity',
+                acceptEncoding: 'browser-managed',
+                acceptEncodingNote: 'Fetch does not permit script control of Accept-Encoding; response Content-Encoding is verified instead.'
+            },
+            responseVerifications: {
+                download: 0,
+                upload: 0,
+                latency: 0,
+                lastDownload: null,
+                lastUpload: null,
+                lastLatency: null
+            },
+            latency: {
+                probeTransport: 'http',
+                probeMethod: selection.latencyMethod,
+                probePath: selection.latencyPath,
+                warmConnectionAdvertised: selection.warmConnectionPing,
+                warmupRequests: 0,
+                discardedColdAttempts: 0,
+                discardedUnverifiableAttempts: 0,
+                verifiedReusedSamples: 0,
+                unobservableReuseSamples: 0,
+                nextHopProtocols: []
+            }
+        };
+    }
+
+    function noteResponseVerification(kind, evidence) {
+        if (!transportEvidence || !transportEvidence.responseVerifications) return;
+        transportEvidence.responseVerifications[kind]++;
+        const key = `last${kind[0].toUpperCase()}${kind.slice(1)}`;
+        transportEvidence.responseVerifications[key] = evidence ? { ...evidence } : null;
+    }
+
+    function noteNextHopProtocol(protocol) {
+        if (!transportEvidence || !protocol) return;
+        const protocols = transportEvidence.latency.nextHopProtocols;
+        if (!protocols.includes(protocol)) protocols.push(protocol);
     }
 
     function supportsStreamingResponseBodies() {
@@ -213,6 +276,127 @@ const SpeedTest = (function() {
         return received;
     }
 
+    function createPayloadInspector(expectedPayload, expectedBytes) {
+        if (expectedBytes <= 0 || (expectedPayload !== 'random' && expectedPayload !== 'zero')) return null;
+        const sampleBudget = Math.min(expectedBytes, 16 * 1024);
+        // Small responses fit inside the entire bounded sample budget, so
+        // inspect all of them. Larger responses use four windows spread across
+        // the body so a valid-looking prefix cannot hide a compressible or
+        // corrupt tail.
+        const windowBytes = expectedBytes <= sampleBudget
+            ? sampleBudget
+            : Math.min(4096, sampleBudget);
+        const starts = expectedBytes <= sampleBudget
+            ? [0]
+            : [
+                0,
+                Math.floor((expectedBytes - windowBytes) / 3),
+                Math.floor((expectedBytes - windowBytes) * 2 / 3),
+                expectedBytes - windowBytes
+            ];
+        const intervals = [];
+        for (const start of starts.sort((a, b) => a - b)) {
+            const end = Math.min(expectedBytes, start + windowBytes);
+            const previous = intervals[intervals.length - 1];
+            if (previous && start <= previous.end) previous.end = Math.max(previous.end, end);
+            else intervals.push({ start, end });
+        }
+
+        let sampledBytes = 0;
+        let nonZeroBytes = 0;
+        const observedValues = new Uint8Array(256);
+        return {
+            consume(chunk, absoluteOffset) {
+                const chunkEnd = absoluteOffset + chunk.byteLength;
+                for (const interval of intervals) {
+                    const start = Math.max(interval.start, absoluteOffset);
+                    const end = Math.min(interval.end, chunkEnd);
+                    if (end <= start) continue;
+                    const localStart = start - absoluteOffset;
+                    const localEnd = end - absoluteOffset;
+                    for (let i = localStart; i < localEnd; i++) {
+                        const value = chunk[i];
+                        sampledBytes++;
+                        if (value !== 0) nonZeroBytes++;
+                        observedValues[value] = 1;
+                    }
+                }
+            },
+            finish() {
+                let distinctValues = 0;
+                for (const seen of observedValues) distinctValues += seen;
+                if (expectedPayload === 'zero' && nonZeroBytes !== 0) {
+                    throw new Error(`zero-fill download contained ${nonZeroBytes} nonzero bytes in ${sampledBytes} sampled bytes`);
+                }
+                let verified = expectedPayload === 'zero' && nonZeroBytes === 0;
+                let verification = expectedPayload === 'zero' ? 'distributed-zero-sample' : 'sample-too-small';
+                if (expectedPayload === 'random' && sampledBytes >= 256) {
+                    if (distinctValues < 64) {
+                        throw new Error(`pseudorandom download exposed only ${distinctValues} distinct byte values across ${sampledBytes} sampled bytes`);
+                    }
+                    verified = true;
+                    verification = 'distributed-byte-diversity';
+                }
+                return {
+                    expectedPayload,
+                    sampledBytes,
+                    nonZeroBytes,
+                    distinctValues,
+                    verified,
+                    verification
+                };
+            }
+        };
+    }
+
+    async function consumeMeasuredResponseBody(response, expectedBytes, expectedPayload) {
+        if (!Number.isSafeInteger(expectedBytes) || expectedBytes < 0) {
+            throw new Error(`Invalid expected response size: ${expectedBytes}`);
+        }
+        const inspector = createPayloadInspector(expectedPayload, expectedBytes);
+        let received = 0;
+        let readChunks = 0;
+        let minimumReadChunkBytes = 0;
+        let maximumReadChunkBytes = 0;
+
+        const consume = chunk => {
+            const bytes = chunk instanceof Uint8Array ? chunk : new Uint8Array(chunk);
+            if (inspector) inspector.consume(bytes, received);
+            received += bytes.byteLength;
+            readChunks++;
+            minimumReadChunkBytes = minimumReadChunkBytes === 0
+                ? bytes.byteLength
+                : Math.min(minimumReadChunkBytes, bytes.byteLength);
+            maximumReadChunkBytes = Math.max(maximumReadChunkBytes, bytes.byteLength);
+        };
+
+        if (!response.body || typeof response.body.getReader !== 'function') {
+            if (expectedBytes > WEB_DOWNLOAD_FALLBACK_MEMORY_LIMIT_BYTES) {
+                throw new Error(`Streaming response bodies are unavailable; refusing to buffer ${expectedBytes} bytes`);
+            }
+            consume(new Uint8Array(await response.arrayBuffer()));
+        } else {
+            const reader = response.body.getReader();
+            while (true) {
+                const { done, value } = await reader.read();
+                if (done) break;
+                consume(value);
+                if (received > expectedBytes) {
+                    await reader.cancel('response exceeded expected length');
+                    break;
+                }
+            }
+        }
+
+        return {
+            received,
+            readChunks,
+            minimumReadChunkBytes,
+            maximumReadChunkBytes,
+            payloadEvidence: inspector ? inspector.finish() : null
+        };
+    }
+
     async function readJSONBody(response, maxBytes) {
         if (!Number.isSafeInteger(maxBytes) || maxBytes <= 0) {
             throw new Error(`Invalid JSON response limit: ${maxBytes}`);
@@ -267,6 +451,7 @@ const SpeedTest = (function() {
         throughputSamples: [],
         latencySamples: [],
         packetLoss: null,
+        httpTransport: null,
         startTime: null,
         endTime: null,
         // New enhanced fields
@@ -498,6 +683,9 @@ const SpeedTest = (function() {
             xhr.withCredentials = requestCredentialsMode() === 'include';
             xhr.responseType = 'arraybuffer';
             xhr.setRequestHeader('Content-Type', 'application/octet-stream');
+            xhr.setRequestHeader('Content-Encoding', 'identity');
+            xhr.setRequestHeader('Cache-Control', HTTPTransport.CACHE_CONTROL);
+            xhr.setRequestHeader('Pragma', 'no-cache');
             const tokenValue = accessToken();
             if (tokenValue) xhr.setRequestHeader('Authorization', `Bearer ${tokenValue}`);
             xhr.upload.onloadstart = () => {
@@ -505,7 +693,11 @@ const SpeedTest = (function() {
             };
             xhr.onload = () => {
                 finishActivity();
-                resolve(responseFromXHR(xhr));
+                try {
+                    resolve(responseFromXHR(xhr));
+                } catch (err) {
+                    reject(err);
+                }
             };
             xhr.onerror = () => {
                 finishActivity();
@@ -540,12 +732,20 @@ const SpeedTest = (function() {
         }
 
         const measId = `${Date.now()}-${Math.random().toString(36).slice(2, 11)}`;
-        let url = `/__down?bytes=${bytes}&measId=${measId}&profile=${encodeURIComponent(profile)}&run=${runIndex}`;
-        if (condition) url += `&during=${encodeURIComponent(condition)}`;
-        url = apiURL(url);
+        const path = HTTPTransport.buildDownloadPath(measurementSelection, bytes, {
+            measId,
+            profile,
+            run: runIndex,
+            during: condition
+        });
+        const url = apiURL(path);
 
         const manualStart = performance.now();
-        const response = await fetch(url, requestOptions({ cache: 'no-store', signal: abortController?.signal, headers: authenticatedHeaders() }));
+        const response = await fetch(url, requestOptions({
+            cache: 'no-store',
+            signal: abortController?.signal,
+            headers: measurementHeaders({ Accept: 'application/octet-stream' })
+        }));
         if (!response.ok) {
             const detail = (await response.text()).trim();
             throw new Error(`Download failed: HTTP ${response.status}${detail ? `: ${detail}` : ''}`);
@@ -554,20 +754,34 @@ const SpeedTest = (function() {
         if (!contentType.startsWith('application/octet-stream')) {
             throw new Error(`Download returned unexpected content type: ${contentType || 'missing'}`);
         }
-        const contentLength = response.headers.get('Content-Length');
-        if (contentLength !== null && Number(contentLength) !== bytes) {
-            throw new Error(`Download Content-Length ${contentLength}; expected ${bytes}`);
+        if (measurementSelection.legacyFallback) {
+            const contentLength = response.headers.get('Content-Length');
+            if (contentLength !== null && Number(contentLength) !== bytes) {
+                throw new Error(`Download Content-Length ${contentLength}; expected ${bytes}`);
+            }
         }
+        const responseEvidence = HTTPTransport.verifyDownloadResponse(
+            response,
+            measurementSelection,
+            bytes,
+            bytes === 0 ? 'latency' : 'download'
+        );
+        noteResponseVerification(bytes === 0 ? 'latency' : 'download', responseEvidence);
 
         const responseStreaming = Boolean(response.body && typeof response.body.getReader === 'function');
         const token = activity?.begin(responseStreaming);
-        let received;
+        let bodyEvidence;
         try {
-            received = await consumeResponseBody(response, bytes);
+            bodyEvidence = await consumeMeasuredResponseBody(
+                response,
+                bytes,
+                measurementSelection.legacyFallback ? null : measurementSelection.downloadPayload
+            );
         } finally {
             if (activity) activity.end(token);
         }
         const manualEnd = performance.now();
+        const received = bodyEvidence.received;
         if (received !== bytes) throw new Error(`Download received ${received} bytes; expected ${bytes}`);
 
         let durationMs;
@@ -609,7 +823,15 @@ const SpeedTest = (function() {
             mbps: (received * 8) / (durationMs / 1000) / 1e6,
             profile,
             runIndex,
-            timingSource
+            timingSource,
+            transportPayload: measurementSelection.downloadPayload,
+            transportFraming: measurementSelection.downloadFraming,
+            transportChunkBytes: measurementSelection.downloadChunkBytes,
+            transportFlush: measurementSelection.downloadFlush,
+            responseReadChunks: bodyEvidence.readChunks,
+            minimumResponseReadChunkBytes: bodyEvidence.minimumReadChunkBytes,
+            maximumResponseReadChunkBytes: bodyEvidence.maximumReadChunkBytes,
+            payloadEvidence: bodyEvidence.payloadEvidence
         };
     }
 
@@ -629,13 +851,18 @@ const SpeedTest = (function() {
         }
 
         const measId = `${Date.now()}-${Math.random().toString(36).slice(2, 11)}`;
-        let url = `/__up?measId=${measId}&profile=${encodeURIComponent(profile)}&run=${runIndex}`;
-        if (condition) url += `&during=${encodeURIComponent(condition)}`;
-        url = apiURL(url);
+        const path = HTTPTransport.buildUploadPath(measurementSelection, bytes, {
+            measId,
+            profile,
+            run: runIndex,
+            during: condition
+        });
+        const url = apiURL(path);
 
         let descriptor = null;
         if (typeof bodySource === 'function') descriptor = bodySource(activity);
         const body = descriptor?.body || bodySource || new Uint8Array(bytes);
+        const expectedFraming = descriptor ? 'chunked' : 'fixed';
         let token = null;
 
         try {
@@ -647,7 +874,7 @@ const SpeedTest = (function() {
                 const options = {
                     method: 'POST',
                     body,
-                    headers: authenticatedHeaders({ 'Content-Type': 'application/octet-stream' }),
+                    headers: measurementHeaders({ Accept: 'application/json' }, true),
                     cache: 'no-store',
                     signal: abortController?.signal
                 };
@@ -663,6 +890,13 @@ const SpeedTest = (function() {
             if (!contentType.startsWith('application/json')) {
                 throw new Error(`Upload returned unexpected content type: ${contentType || 'missing'}`);
             }
+            const responseEvidence = HTTPTransport.verifyUploadResponse(
+                response,
+                measurementSelection,
+                bytes,
+                expectedFraming
+            );
+            noteResponseVerification('upload', responseEvidence);
 
             let receipt;
             try {
@@ -678,6 +912,9 @@ const SpeedTest = (function() {
             if (!Number.isFinite(durationMs) || durationMs <= 0) {
                 throw new Error(`Invalid server upload duration: ${receipt.serverDurationNs}`);
             }
+            if (!measurementSelection.legacyFallback && responseEvidence.durationNs !== Number(receipt.serverDurationNs)) {
+                throw new Error(`Upload duration header ${responseEvidence.durationNs} does not match receipt ${receipt.serverDurationNs}`);
+            }
 
             return {
                 ts: Date.now(),
@@ -687,7 +924,10 @@ const SpeedTest = (function() {
                 mbps: (receipt.acceptedBytes * 8) / (durationMs / 1000) / 1e6,
                 profile,
                 runIndex,
-                timingSource: 'server-receipt'
+                timingSource: 'server-receipt',
+                transportPayload: 'binary-zero',
+                transportFraming: expectedFraming,
+                transportContentEncoding: 'identity'
             };
         } finally {
             if (descriptor?.finish) descriptor.finish();
@@ -695,48 +935,83 @@ const SpeedTest = (function() {
         }
     }
 
-    /**
-     * Run a latency probe
-     * Uses Resource Timing API when available for more accurate cross-browser measurements
-     */
-    async function runLatencyProbe(condition, seq) {
-        const measId = `${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
-        const url = apiURL(`/__down?bytes=0&measId=${measId}&during=${condition}&seq=${seq}`);
+    function connectionReuseEvidence(timing) {
+        if (!timing) {
+            return {
+                connectionReused: null,
+                connectionSetupMs: null,
+                connectionReuseEvidence: 'resource-timing-unavailable',
+                nextHopProtocol: ''
+            };
+        }
+        const nextHopProtocol = typeof timing.nextHopProtocol === 'string' ? timing.nextHopProtocol : '';
+        const connectStart = Number(timing.connectStart);
+        const connectEnd = Number(timing.connectEnd);
+        if (Number.isFinite(connectStart) && Number.isFinite(connectEnd) && connectStart > 0 && connectEnd >= connectStart) {
+            const connectionSetupMs = connectEnd - connectStart;
+            const connectionReused = connectionSetupMs <= 0.01;
+            return {
+                connectionReused,
+                connectionSetupMs,
+                connectionReuseEvidence: connectionReused
+                    ? 'resource-timing-no-connection-setup'
+                    : 'resource-timing-connection-setup-observed',
+                nextHopProtocol
+            };
+        }
+        return {
+            connectionReused: null,
+            connectionSetupMs: null,
+            connectionReuseEvidence: 'resource-timing-connection-fields-unavailable',
+            nextHopProtocol
+        };
+    }
+
+    async function runLatencyAttempt(condition, seq, attempt = 0) {
+        const measId = `${Date.now()}-${Math.random().toString(36).slice(2, 11)}-${attempt}`;
+        const request = HTTPTransport.buildLatencyRequest(measurementSelection, {
+            measId,
+            during: condition,
+            seq
+        });
+        const url = apiURL(request.path);
 
         const startedAt = Date.now();
         const manualStart = performance.now();
         const response = await fetch(url, requestOptions({
+            method: request.method,
             cache: 'no-store',
             signal: abortController?.signal,
-            headers: authenticatedHeaders()
+            headers: measurementHeaders({ Accept: 'application/octet-stream' })
         }));
 
         if (!response.ok) {
             const detail = (await response.text()).trim();
             throw new Error(`Latency probe failed: HTTP ${response.status}${detail ? `: ${detail}` : ''}`);
         }
+        const responseEvidence = measurementSelection.latencyUsesDownloadEndpoint
+            ? HTTPTransport.verifyDownloadResponse(response, measurementSelection, 0, 'latency')
+            : HTTPTransport.verifyDedicatedLatencyResponse(response, measurementSelection);
+        noteResponseVerification('latency', responseEvidence);
+
         const received = await consumeResponseBody(response, 0);
         if (received !== 0) throw new Error(`Latency response contained ${received} bytes; expected 0`);
         const manualEnd = performance.now();
 
-        // Try to get more accurate timing from Resource Timing API
-        // requestStart to responseStart is closest to actual network RTT
+        // requestStart to responseStart excludes response-body transfer and is
+        // the browser's closest available approximation of request/response RTT.
         const timing = await getResourceTiming(url);
         let rttMs;
         let timingSource;
-
         if (timing && timing.requestStart > 0 && timing.responseStart > 0) {
-            // Network time: from request sent to first byte received
             rttMs = timing.responseStart - timing.requestStart;
             timingSource = 'resource-timing';
             resourceTimingUsed = true;
         } else if (timing && timing.fetchStart > 0 && timing.responseEnd > 0) {
-            // Fallback: total fetch time (includes more overhead but still from timing API)
             rttMs = timing.responseEnd - timing.fetchStart;
             timingSource = 'fetch-timing';
             resourceTimingUsed = true;
         } else {
-            // Last resort: manual timing
             rttMs = manualEnd - manualStart;
             timingSource = 'manual';
             timingFallbackCount++;
@@ -744,13 +1019,16 @@ const SpeedTest = (function() {
                 callbacks.onTimingWarning('latency', 'Resource Timing API unavailable');
             }
         }
-
-        // Log first few probes to debug timing source
-        if (seq < 3) {
-            console.warn(`LATENCY PROBE ${seq}: ${rttMs.toFixed(2)}ms source=${timingSource}`,
-                timing ? { requestStart: timing.requestStart, responseStart: timing.responseStart } : 'no timing');
+        if (!Number.isFinite(rttMs) || rttMs <= 0) {
+            throw new Error(`Invalid latency duration: ${rttMs}`);
         }
 
+        const reuse = connectionReuseEvidence(timing);
+        // requestStart-to-responseStart excludes DNS/TCP/TLS setup even when
+        // browser privacy controls hide the connection fields. A manual or
+        // fetchStart fallback does not, unless reuse itself was observed.
+        const connectionSetupExcluded = timingSource === 'resource-timing' || reuse.connectionReused === true;
+        noteNextHopProtocol(reuse.nextHopProtocol);
         const endedAt = Date.now();
         return {
             ts: endedAt,
@@ -759,8 +1037,76 @@ const SpeedTest = (function() {
             rttMs,
             condition,
             loadOverlapped: false,
-            timingSource
+            timingSource,
+            connectionReused: reuse.connectionReused,
+            connectionSetupMs: reuse.connectionSetupMs,
+            connectionReuseEvidence: reuse.connectionReuseEvidence,
+            connectionSetupExcluded,
+            probeTransport: 'http',
+            probeMethod: request.method,
+            probePath: measurementSelection.latencyPath,
+            nextHopProtocol: reuse.nextHopProtocol || undefined
         };
+    }
+
+    /**
+     * Run a latency probe on the warmed browser connection pool. Resource
+     * Timing cannot identify a socket, but it can prove that a sample incurred
+     * connection setup. Such cold samples are discarded when the server
+     * advertises warm-connection latency. When connection fields are hidden,
+     * requestStart-to-responseStart remains usable because it excludes setup;
+     * manual/fetchStart fallbacks are rejected rather than mislabeled as warm.
+     */
+    async function runLatencyProbe(condition, seq) {
+        const attempts = measurementSelection.warmConnectionPing ? 3 : 1;
+        let lastRejected = null;
+        for (let attempt = 0; attempt < attempts; attempt++) {
+            const sample = await runLatencyAttempt(condition, seq, attempt);
+            if (measurementSelection.warmConnectionPing && sample.connectionReused === false) {
+                lastRejected = { sample, reason: 'cold' };
+                if (transportEvidence) transportEvidence.latency.discardedColdAttempts++;
+                continue;
+            }
+            if (measurementSelection.warmConnectionPing && sample.connectionReused === null && !sample.connectionSetupExcluded) {
+                lastRejected = { sample, reason: 'unverifiable' };
+                if (transportEvidence) transportEvidence.latency.discardedUnverifiableAttempts++;
+                continue;
+            }
+            if (transportEvidence) {
+                if (sample.connectionReused === true) transportEvidence.latency.verifiedReusedSamples++;
+                else if (sample.connectionReused === null) transportEvidence.latency.unobservableReuseSamples++;
+            }
+            return sample;
+        }
+        const rejected = lastRejected?.sample;
+        const method = rejected?.probeMethod || measurementSelection.latencyMethod;
+        const path = rejected?.probePath || measurementSelection.latencyPath;
+        if (lastRejected?.reason === 'unverifiable') {
+            throw new Error(`Server advertised warm connection latency but ${method} ${path} could not exclude connection setup after ${attempts} probes; expose Resource Timing with Timing-Allow-Origin`);
+        }
+        throw new Error(`Server advertised warm connection latency but ${method} ${path} incurred connection setup after ${attempts} probes`);
+    }
+
+    async function warmLatencyConnection(condition) {
+        if (transportEvidence) transportEvidence.latency.warmupRequests++;
+        try {
+            const sample = await runLatencyAttempt(condition, 'warmup', 0);
+            if (transportEvidence) {
+                transportEvidence.latency.lastWarmup = {
+                    connectionReused: sample.connectionReused,
+                    connectionSetupMs: sample.connectionSetupMs,
+                    connectionReuseEvidence: sample.connectionReuseEvidence,
+                    connectionSetupExcluded: sample.connectionSetupExcluded,
+                    nextHopProtocol: sample.nextHopProtocol || ''
+                };
+            }
+            return sample;
+        } catch (err) {
+            if (err?.name === 'AbortError') throw err;
+            if (transportEvidence) transportEvidence.latency.lastWarmupError = err.message || String(err);
+            console.warn(`Latency warmup failed for ${condition}:`, err);
+            return null;
+        }
     }
 
     /**
@@ -805,16 +1151,8 @@ const SpeedTest = (function() {
     async function quickBandwidthEstimate() {
         try {
             const bytes = 100 * 1000; // 100KB
-            const url = apiURL(`/__down?bytes=${bytes}&measId=bw-check-${Date.now()}`);
-            const start = performance.now();
-            const response = await fetch(url, requestOptions({ cache: 'no-store', signal: abortController?.signal, headers: authenticatedHeaders() }));
-            if (!response.ok) return 0;
-            const received = await consumeResponseBody(response, bytes);
-            if (received !== bytes) return 0;
-            const durationMs = performance.now() - start;
-            if (durationMs <= 0) return 0;
-            const mbps = (received * 8) / (durationMs * 1000);
-            return mbps;
+            const sample = await runDownload(bytes, 'bw-check', 0);
+            return Number.isFinite(sample.mbps) ? sample.mbps : 0;
         } catch {
             return 0;
         }
@@ -962,7 +1300,12 @@ const SpeedTest = (function() {
         // Reserve one transfer slot for the loaded-latency probe that runs
         // concurrently with the sustained load.
         const maxLoadConcurrency = Math.max(1, serverMaxConcurrentTransfersPerClient - 1);
-        concurrency = Math.min(concurrency, MAX_BROWSER_CONCURRENCY, maxLoadConcurrency);
+        // HTTP/1.1 browsers commonly cap an origin at six connections. Leave
+        // one browser-side slot free as well, otherwise a latency request can
+        // wait behind the throughput workers and report client-pool queueing as
+        // network bufferbloat.
+        const maxBrowserLoadConcurrency = Math.max(1, MAX_BROWSER_CONCURRENCY - 1);
+        concurrency = Math.min(concurrency, maxBrowserLoadConcurrency, maxLoadConcurrency);
 
         const target = estimatedMbps * 1e6 / 8 * (TARGET_REQUEST_DURATION_MS / 1000) / concurrency;
         let chunkBytes = Math.ceil(target / 65536) * 65536;
@@ -1103,6 +1446,7 @@ const SpeedTest = (function() {
             }
         })());
 
+        if (withLoadedLatency) await warmLatencyConnection(direction);
         const windowStart = performance.now();
         releaseWorkers();
         let probes = [];
@@ -2195,6 +2539,8 @@ const SpeedTest = (function() {
         abortController = new AbortController();
         timingFallbackCount = 0;
         resourceTimingUsed = false;
+        measurementSelection = HTTPTransport.legacySelection();
+        transportEvidence = null;
         delete DOWNLOAD_PROFILES.window;
         delete UPLOAD_PROFILES.window;
 
@@ -2214,6 +2560,7 @@ const SpeedTest = (function() {
             throughputSamples: [],
             latencySamples: [],
             packetLoss: null,
+            httpTransport: null,
             startTime: Date.now(),
             endTime: null,
             lossPattern: null,
@@ -2262,6 +2609,14 @@ const SpeedTest = (function() {
                 throw new Error(`Server does not support verified upload receipts (need version ${REQUIRED_UPLOAD_RECEIPT_VERSION})`);
             }
 
+            measurementSelection = HTTPTransport.negotiate(
+                meta.measurementCapabilities,
+                configuredTransportPreferences()
+            );
+            transportEvidence = createTransportEvidence(measurementSelection);
+            results.httpTransport = transportEvidence;
+            meta.measurementSelection = HTTPTransport.cloneSelection(measurementSelection);
+
             if (callbacks.onMetaReceived) {
                 callbacks.onMetaReceived(meta, locations);
             }
@@ -2270,6 +2625,7 @@ const SpeedTest = (function() {
             // Run unloaded latency baseline.
             emitStageChange('latency', 'running');
             if (callbacks.onProgress) callbacks.onProgress('latency', 0);
+            await warmLatencyConnection('unloaded');
             await runUnloadedLatency();
             emitStageChange('latency', 'succeeded');
 
@@ -2425,6 +2781,7 @@ const SpeedTest = (function() {
             throughputSamples: results.throughputSamples,
             latencySamples: results.latencySamples,
             packetLoss: results.packetLoss,
+            httpTransport: results.httpTransport,
             bandwidthEstimate: results.bandwidthEstimate,
             networkQualityScore: results.networkQualityScore,
             testConfidence: results.testConfidence,
@@ -2465,6 +2822,10 @@ const SpeedTest = (function() {
             xhrCanHonorCredentials,
             runDownload,
             runUpload,
+            runLatencyProbe,
+            runLatencyAttempt,
+            warmLatencyConnection,
+            connectionReuseEvidence,
             selectWindowPlan,
             createLoadActivity,
             createStreamingUploadBody,
@@ -2484,6 +2845,13 @@ const SpeedTest = (function() {
             failRunningStages,
             getStageOutcomes,
             setResults(value) { results = value; },
+            setMeasurementTransport(capabilities, preferences = {}) {
+                measurementSelection = HTTPTransport.negotiate(capabilities, preferences);
+                transportEvidence = createTransportEvidence(measurementSelection);
+                return HTTPTransport.cloneSelection(measurementSelection);
+            },
+            getMeasurementTransport() { return HTTPTransport.cloneSelection(measurementSelection); },
+            getTransportEvidence() { return transportEvidence ? JSON.parse(JSON.stringify(transportEvidence)) : null; },
             resetRequestStreamingSupport() { requestStreamingSupport = undefined; },
             setServerCapabilities(maxBytes, receiptVersion, protocolVersion = 2, frameVersion = 1, maxClientTransfers = 24) {
                 serverMaxTransferBytes = maxBytes;

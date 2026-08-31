@@ -211,6 +211,7 @@ func SetDownloadHeaders(header http.Header, options DownloadOptions) {
 	header.Set("X-Netspeed-Payload", string(options.Payload))
 	header.Set("X-Netspeed-Framing", string(options.Framing))
 	header.Set("X-Netspeed-Chunk-Bytes", strconv.Itoa(options.ChunkBytes))
+	header.Set("X-Netspeed-Flush", strconv.FormatBool(options.Flush))
 	if options.Framing == FramingFixed {
 		header.Set("Content-Length", strconv.FormatInt(options.Bytes, 10))
 	} else {

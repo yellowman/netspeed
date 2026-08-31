@@ -61,14 +61,14 @@ func TestParseUploadExpectedBytesAndEncoding(t *testing.T) {
 func TestMeasurementHeadersAndFraming(t *testing.T) {
 	header := make(http.Header)
 	SetResponseHeaders(header, "download")
-	SetDownloadHeaders(header, DownloadOptions{Bytes: 10, Payload: PayloadZero, Framing: FramingFixed, ChunkBytes: 4096})
+	SetDownloadHeaders(header, DownloadOptions{Bytes: 10, Payload: PayloadZero, Framing: FramingFixed, ChunkBytes: 4096, Flush: false})
 	if header.Get("Cache-Control") != CacheControl || header.Get("X-Accel-Buffering") != "no" ||
 		header.Get("CDN-Cache-Control") != "no-store" || header.Get("Surrogate-Control") != "no-store" ||
-		header.Get("Content-Length") != "10" {
+		header.Get("Content-Length") != "10" || header.Get("X-Netspeed-Flush") != "false" {
 		t.Fatalf("unexpected fixed headers: %v", header)
 	}
-	SetDownloadHeaders(header, DownloadOptions{Bytes: 10, Payload: PayloadRandom, Framing: FramingChunked, ChunkBytes: 4096})
-	if header.Get("Content-Length") != "" || header.Get("X-Netspeed-Framing") != "chunked" {
+	SetDownloadHeaders(header, DownloadOptions{Bytes: 10, Payload: PayloadRandom, Framing: FramingChunked, ChunkBytes: 4096, Flush: true})
+	if header.Get("Content-Length") != "" || header.Get("X-Netspeed-Framing") != "chunked" || header.Get("X-Netspeed-Flush") != "true" {
 		t.Fatalf("unexpected chunked headers: %v", header)
 	}
 }

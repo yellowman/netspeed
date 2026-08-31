@@ -69,6 +69,14 @@ for (const pageName of ['index.html', 'alternate.html', 'phosphor.html']) {
         assert.match(html, new RegExp(`data-interface-link="${name}"`),
             `${pageName} must expose the ${name} presentation link`);
     }
+
+    const transportIndex = html.indexOf('js/http_transport.js');
+    const speedtestIndex = html.indexOf('js/speedtest.js');
+    assert.notEqual(transportIndex, -1, `${pageName} must load the HTTP transport contract`);
+    assert.equal((html.match(/js\/http_transport\.js/g) || []).length, 1,
+        `${pageName} must load the HTTP transport contract exactly once`);
+    assert.ok(transportIndex < speedtestIndex,
+        `${pageName} must load http_transport.js before speedtest.js`);
 }
 
 {

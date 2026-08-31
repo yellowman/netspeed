@@ -54,9 +54,10 @@ capabilities
 - The C client is a supported peer of the Go client. A complete build uses
   libdatachannel for relay-only packet testing and daemon-counter
   reconciliation.
-- The browser UI supports streamed downloads, streamed uploads where available,
-  bounded fallbacks, quality views, a configurable API base URL, and explicit
-  credential handling.
+- The browser UI negotiates the daemon's HTTP transport contract, supports
+  selectable pseudorandom or zero-fill downloads and fixed or streamed framing,
+  verifies anti-transformation diagnostics, uses warm HTTP latency evidence,
+  and retains bounded streaming fallbacks and explicit credential handling.
 - Three browser presentations share the same measurement engine and result
   contract: [`web/index.html`](web/index.html) is the standard interface,
   [`web/alternate.html`](web/alternate.html) is a progressive observatory with
@@ -270,9 +271,16 @@ The browser engine reads a configuration object defined before `speedtest.js`:
     // Omit apiBaseUrl for same-origin deployment.
     apiBaseUrl: "https://speed-api.example.com/",
     credentials: "omit",
-    accessToken: "replace-with-a-deployment-token"
+    accessToken: "replace-with-a-deployment-token",
+    measurementTransport: {
+      downloadPayload: "auto",       // auto | random | zero
+      downloadFraming: "auto",       // auto | fixed | chunked
+      downloadChunkBytes: 0,          // advertised default
+      downloadFlush: "auto"           // auto | true | false
+    }
   };
 </script>
+<script src="js/http_transport.js"></script>
 <script src="js/speedtest.js"></script>
 ```
 
@@ -316,7 +324,8 @@ measurement work.
 | metrics | disabled and token-required |
 
 `/meta` advertises the per-client transfer ceiling. The CLI and browser scale
-their flow counts down and reserve one slot for loaded-latency probes.
+their flow counts down and reserve one server admission slot for loaded-latency
+probes; the browser also reserves one conventional per-origin connection slot.
 
 See [`SERVICE_HARDENING.md`](SERVICE_HARDENING.md) for all flags, environment
 variables, status codes, quota semantics, and operational limitations.
@@ -489,7 +498,8 @@ running the UI separately
 -------------------------
 
 Same-origin deployment needs no browser configuration. For a separately hosted
-UI, set `globalThis.NETSPEED_CONFIG.apiBaseUrl` before loading `speedtest.js` and
+UI, set `globalThis.NETSPEED_CONFIG.apiBaseUrl` before loading the browser
+measurement scripts, load `http_transport.js` before `speedtest.js`, and
 configure `NETSPEEDD_ALLOWED_ORIGINS` on the daemon. The API base may include a
 path prefix. The daemon returns matching CORS and `Timing-Allow-Origin` headers,
 and rejects browser requests from unapproved origins.

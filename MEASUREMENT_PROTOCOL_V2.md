@@ -44,18 +44,21 @@ A version-2 client starts with `GET /meta` and requires these fields:
   and anti-transform/proxy-buffer headers. Its complete schema is defined in
   [`HTTP_MEASUREMENT_TRANSPORT.md`](HTTP_MEASUREMENT_TRANSPORT.md).
 
-The strict Go and native C CLIs validate and negotiate this object, use its
-advertised paths and parameter names, and publish the normalized choice as
-`meta.measurementSelection`. Explicit transport controls fail against an absent,
-unsafe, incomplete, or unsupported advertisement.
+The strict Go CLI, native C CLI, and browser validate and negotiate this
+object, use its advertised paths and parameter names, and publish the normalized
+choice as `meta.measurementSelection`. The browser also publishes transport
+request, response, payload, and latency evidence under `httpTransport`.
+Explicit transport controls fail against an absent, unsafe, incomplete, or
+unsupported advertisement.
 
 The Go and native C Cloudflare compatibility paths have no authority to invent
 that advertisement. Their `cloudflare-http-v2` contract behaviorally probes the
 common `/__down?bytes=N` surface, records the observed provider-default payload
 and framing under `httpTransport`, and treats explicit transport flags as
 constraints. Neither sends Netspeed-only discriminator keys merely because a
-CLI flag was present. The browser client retains the compatible defaults until
-its negotiation phase is implemented.
+CLI flag was present. The browser's Netspeed path uses the advertised strict
+contract; it does not interpret a missing or malformed advertisement as
+permission to switch to Cloudflare behavior.
 
 A v2 client does not silently fall back to pre-v2 measurement methodology. A
 packet test may be reported as unavailable when its frame capability is missing,
@@ -71,9 +74,9 @@ A client requests a bounded payload with the compatibility form:
 GET /__down?bytes=<decimal>&measId=<unique-id>&profile=<name>&run=<index>
 ```
 
-When transport capabilities version 1 is advertised, the Go and native C clients select
-`payload=random|zero`, `framing=fixed|chunked`, `chunkBytes=N`, and
-`flush=true|false` using the advertised parameter names. Defaults remain
+When transport capabilities version 1 is advertised, the Go, native C, and
+browser clients select `payload=random|zero`, `framing=fixed|chunked`,
+`chunkBytes=N`, and `flush=true|false` using the advertised parameter names. Defaults remain
 `random`, `fixed`, and the advertised application write size, so existing
 clients are unchanged. The full discriminator contract is
 in [`HTTP_MEASUREMENT_TRANSPORT.md`](HTTP_MEASUREMENT_TRANSPORT.md).
@@ -88,15 +91,21 @@ The client accepts a sample only when:
 - the measured body interval is positive.
 
 `Cache-Control: no-store, no-transform` applies in both modes. A negotiated
-strict-native sample additionally requires matching `X-Netspeed-Measurement`,
-`X-Netspeed-Payload`, `X-Netspeed-Framing`, and `X-Netspeed-Chunk-Bytes`
-headers. The Go and native C Cloudflare adapters send `Accept-Encoding:
-identity`, disable automatic decompression, reject non-identity response coding,
-and verify that every throughput body retains the payload/framing behavior
-observed by the bounded preflight probe. Native clients consume the body without
-retaining it beyond bounded windows distributed across the response. The browser uses
-a `ReadableStream` when available and otherwise refuses to materialize more
-than 100 MB.
+strict sample additionally requires matching `X-Netspeed-Measurement`,
+`X-Netspeed-Payload`, `X-Netspeed-Framing`, `X-Netspeed-Chunk-Bytes`, and
+`X-Netspeed-Flush` headers plus the advertised proxy-buffer suppression value.
+The Go and native C clients request `Accept-Encoding: identity` and disable
+automatic decompression. Browser scripts cannot set that forbidden request
+header, so the browser instead rejects a visible non-identity
+`Content-Encoding` and requires the daemon to expose it through CORS.
+
+The Go and native C Cloudflare adapters verify that every throughput body
+retains the payload/framing behavior observed by the bounded preflight probe.
+Native clients consume bodies without retaining them beyond bounded evidence
+windows distributed across the response. The browser uses a `ReadableStream`
+when available, samples distributed windows to distinguish zero-fill from
+low-diversity data mislabeled as pseudorandom, and otherwise refuses to
+materialize more than 100 MB.
 
 ### 2.2 upload
 
@@ -172,12 +181,14 @@ loaded-latency probe always has an admission slot:
 | below 100 Mbps | 1 | 1 |
 | 100–499 Mbps | 2 | 2 |
 | 500–1,999 Mbps | 4 | 4 |
-| 2–9.999 Gbps | 8 | 6 |
-| 10 Gbps or more | 16 | 6 |
+| 2–9.999 Gbps | 8 | 5 |
+| 10 Gbps or more | 16 | 5 |
 
 The browser limit is intentionally lower to control connection and main-thread
-pressure. Each worker repeatedly performs complete, independently verified
-requests until the window owner stops it.
+pressure and to leave one of the conventional six HTTP/1.1 per-origin
+connections available for the loaded-latency probe. Each worker repeatedly
+performs complete, independently verified requests until the window owner stops
+it.
 
 ### 3.3 fixed-duration windows
 
@@ -206,21 +217,30 @@ a probe is a zero-body `GET` or `HEAD` to that path. Otherwise the compatibility
 fallback is `GET /__down?bytes=0`. RTT is the interval from request write
 completion to first response byte when precise timing is available.
 
-Capability-aware clients warm and reuse a persistent HTTP transport so repeated
-DNS, TCP, QUIC, and TLS setup is excluded. The Go and native C clients record the
-method, path, transport, and connection-reuse state for each latency sample. When
-the server promises warm probing, a cold attempt is discarded and retried up to
-three times; only a reused attempt becomes a sample. WebSocket probing remains
-optional: a client may use it only when a path is explicitly advertised and must otherwise retain HTTP
-fallback. Warmup removal drops the first two valid unloaded samples before
-summary statistics are computed.
+Capability-aware clients warm and reuse a persistent HTTP transport so
+repeated DNS, TCP, QUIC, and TLS setup is excluded. The Go and native C clients
+record the method, path, transport, and observed connection reuse. When the
+server promises warm probing, a cold attempt is discarded and retried up to
+three times; only a reused attempt becomes a native sample.
+
+The browser warms its origin pool and uses Resource Timing. It discards probes
+that visibly establish a connection. When connection fields are hidden, a
+`requestStart`-to-`responseStart` sample may remain valid because the interval
+itself excludes setup, but it is labeled `connectionReused: null`. A manual or
+`fetchStart` fallback whose reuse is unobservable is rejected when warm probing
+was promised. Cross-origin deployments must preserve `Timing-Allow-Origin`.
+
+WebSocket probing remains optional: a client may use it only when a path is
+explicitly advertised and must otherwise retain HTTP fallback. Warmup removal
+drops the first two valid unloaded samples before summary statistics are
+computed.
 
 ### 4.2 loaded latency
 
 The middle throughput window owns the loaded-latency probes in a normal run. The
 single quick-mode window owns them in quick mode.
 
-Both clients maintain an aggregate active-transfer count and a monotonically
+All supported clients maintain an aggregate active-transfer count and a monotonically
 increasing gap generation. A loaded probe is accepted only when:
 
 1. at least one measured transfer is active before the probe starts;

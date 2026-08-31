@@ -49,13 +49,14 @@ can converge on the same behavior. `proxyRequestBufferingAdvisory` means a
 response header cannot disable buffering of an upload request body; the reverse
 proxy must be configured accordingly.
 
-### 1.1 Strict Go and native C client negotiation and safety
+### 1.1 Strict Netspeed client negotiation and safety
 
-The Go and native C CLIs validate the complete object before issuing a
-measurement request. Endpoint values must be clean, same-origin relative paths
-with no authority, query, fragment, traversal, or backslash form. Download query
-parameter names must be syntactically safe and distinct, so hostile or malformed
-metadata cannot redirect traffic or collapse two discriminators onto one key.
+The Go CLI, native C CLI, and browser validate the complete object before
+issuing a measurement request. Endpoint values must be clean, same-origin
+relative paths with no authority, query, fragment, traversal, or backslash form.
+Download query parameter names must be syntactically safe and distinct, so
+hostile or malformed metadata cannot redirect traffic or collapse two
+discriminators onto one key.
 
 The corresponding CLI controls are:
 
@@ -72,15 +73,43 @@ framing and disabled for fixed framing. Explicit choices fail negotiation when
 the daemon does not advertise transport version 1 or the selected value. They
 are never silently sent to a legacy endpoint.
 
-For every run, the normalized contract is included in JSON metadata as
-`measurementSelection`. It records the selected payload, framing, application
-chunk size, flush behavior, upload encoding, latency path and method, warm-reuse
-requirement, and whether legacy fallback was used. Both clients also verify the
-response's measurement type, payload, framing, chunk size, exact length,
-identity content coding, and `no-store, no-transform` controls. The C process
-fixture advertises nonstandard endpoint paths and query names so qualification
-proves that the client consumes the advertisement rather than falling back to
-hard-coded routes.
+The browser exposes the same choices through configuration loaded before the
+measurement engine:
+
+```html
+<script>
+  globalThis.NETSPEED_CONFIG = {
+    measurementTransport: {
+      downloadPayload: "auto",       // auto | random | zero
+      downloadFraming: "auto",       // auto | fixed | chunked
+      downloadChunkBytes: 0,          // 0 uses the advertised default
+      downloadFlush: "auto"           // auto | true | false
+    }
+  };
+</script>
+<script src="js/http_transport.js"></script>
+<script src="js/speedtest.js"></script>
+```
+
+For every run, the normalized contract is included in result metadata as
+`measurementSelection`. The browser also publishes it under
+`httpTransport.selection`. It records the selected payload, framing,
+application chunk size, flush behavior, upload encoding, latency path and
+method, warm-reuse requirement, and whether legacy fallback was used. All three
+clients verify the response's measurement type, payload, framing, chunk size,
+flush value, exact length, identity content coding, and `no-store,
+no-transform` controls. The native C process fixture and browser integration
+tests advertise nonstandard endpoint paths and query names so qualification proves
+that clients
+consume the advertisement rather than falling back to hard-coded routes.
+
+Browser scripts cannot set the forbidden `Accept-Encoding` request header. The
+browser instead requests `no-store, no-transform`, sends
+`Content-Encoding: identity` on uploads, requires `Content-Encoding` to be
+absent or `identity` on measurement responses, and records this limitation in
+`httpTransport.requestControls`. It samples bounded windows across download
+bodies to verify zero-fill exactly and reject low-diversity data mislabeled as
+pseudorandom without retaining the complete transfer.
 
 ### 1.2 Go and native C Cloudflare behavioral negotiation
 
@@ -107,8 +136,9 @@ identity`. Automatic decompression is disabled and any non-identity response
 coding is fatal. The probe reports, but cannot manufacture, remote response
 controls such as `no-transform` or `X-Accel-Buffering: no`.
 
-The browser adoption is intentionally handled in a later client phase. It
-continues to use the compatible default endpoint surface in this tree.
+The browser's strict Netspeed path now uses the advertised transport contract.
+A browser Cloudflare behavioral adapter is a separate compatibility concern and
+is not inferred from a missing or malformed Netspeed advertisement.
 
 ## 2. Download endpoint
 
@@ -155,6 +185,7 @@ Content-Length: <requested bytes>
 X-Netspeed-Payload: random|zero
 X-Netspeed-Framing: fixed
 X-Netspeed-Chunk-Bytes: <application chunk bytes>
+X-Netspeed-Flush: true|false
 ```
 
 A successful streamed response has the same diagnostic headers, except
@@ -201,15 +232,28 @@ included.
 body. Arbitrary query labels such as `measId`, `during`, and `seq` are accepted.
 The endpoint has no redirect and does not request connection closure.
 
-A client should warm one persistent HTTP transport, then issue probes through the
-same connection pool. The measured interval therefore excludes repeated DNS,
-TCP, QUIC, and TLS setup. The strict Go and native C clients observe connection
-reuse and, when `warmConnectionPing` is advertised, discard a cold probe and
-retry until the reported probe has `connectionReused=true`; they fail after
-three cold attempts rather than mislabeling handshake time as RTT. During
-loaded-latency measurement, the same endpoint is used while the client
+A client should warm one persistent HTTP transport, then issue probes through
+the same connection pool. The measured interval therefore excludes repeated
+DNS, TCP, QUIC, and TLS setup. The strict Go and native C clients observe
+connection reuse and, when `warmConnectionPing` is advertised, discard a cold
+probe and retry until the reported probe has `connectionReused=true`; they fail
+after three cold attempts rather than mislabeling handshake time as RTT.
+
+The browser cannot bind Fetch to a named socket. It warms the origin pool, uses
+unique URLs plus Resource Timing, and discards attempts that visibly incurred
+connection setup. `requestStart` to `responseStart` remains usable when browser
+privacy controls hide the connection fields because that interval excludes
+connection establishment. A manual or `fetchStart` fallback with unobservable
+reuse is rejected when warm probing was promised; cross-origin deployments must
+therefore preserve `Timing-Allow-Origin`. Browser results label reuse as true,
+false, or unobservable, record discarded attempts and observed HTTP protocol,
+and never turn unobservable evidence into a claim of socket reuse.
+
+During loaded-latency measurement, the same endpoint is used while the client
 independently proves that directional load remained continuous for the full
-probe interval.
+probe interval. The browser also reserves one of the conventional six
+HTTP/1.1 per-origin connection slots so the probe is not queued behind its own
+throughput workers.
 
 Later Cloudflare-mode downloads retain only bounded evidence windows distributed
 across the complete response. This catches a random-looking prefix followed by a

@@ -49,7 +49,7 @@ async function testBoundedWindowPlans() {
     hooks.resetRequestStreamingSupport();
     const download = hooks.selectWindowPlan(1_000_000, 1 << 30, 'download');
     assert.equal(download.chunkBytes, 256 * 1024 * 1024);
-    assert.equal(download.concurrency, 6);
+    assert.equal(download.concurrency, 5);
     assert.equal(download.windows, 3);
     assert.equal(download.loadedWindow, 1);
 
@@ -59,7 +59,7 @@ async function testBoundedWindowPlans() {
         hooks.resetRequestStreamingSupport();
         const upload = hooks.selectWindowPlan(1_000_000, 1 << 30, 'upload');
         assert.equal(upload.chunkBytes, 8 * 1024 * 1024);
-        assert.equal(upload.concurrency, 6);
+        assert.equal(upload.concurrency, 5);
     } finally {
         global.ReadableStream = originalReadableStream;
         hooks.resetRequestStreamingSupport();

@@ -96,6 +96,9 @@ func (c *Client) verifyDownloadMeasurementResponse(response *http.Response, expe
 	if chunkBytes != int64(selection.DownloadChunkBytes) {
 		return fmt.Errorf("download response chunk size %d; expected %d", chunkBytes, selection.DownloadChunkBytes)
 	}
+	if got := strings.TrimSpace(response.Header.Get("X-Netspeed-Flush")); !strings.EqualFold(got, strconv.FormatBool(selection.DownloadFlush)) {
+		return fmt.Errorf("download response flush %q; expected %t", got, selection.DownloadFlush)
+	}
 	switch selection.DownloadFraming {
 	case measurementhttp.FramingFixed:
 		if response.ContentLength != expectedBytes {

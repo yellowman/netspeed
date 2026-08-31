@@ -138,6 +138,7 @@ func TestNegotiatedDownloadAndUploadVerifyTransportContract(t *testing.T) {
 			writer.Header().Set("X-Netspeed-Payload", "zero")
 			writer.Header().Set("X-Netspeed-Framing", "chunked")
 			writer.Header().Set("X-Netspeed-Chunk-Bytes", "4096")
+			writer.Header().Set("X-Netspeed-Flush", "false")
 			writer.WriteHeader(http.StatusOK)
 			if flusher, ok := writer.(http.Flusher); ok {
 				flusher.Flush()
@@ -255,6 +256,7 @@ func TestNegotiatedResponseRejectsTransformationOrWrongDiscriminator(t *testing.
 	response.Header.Set("X-Netspeed-Payload", "random")
 	response.Header.Set("X-Netspeed-Framing", "chunked")
 	response.Header.Set("X-Netspeed-Chunk-Bytes", "4096")
+	response.Header.Set("X-Netspeed-Flush", "false")
 	response.ContentLength = -1
 	response.ProtoMajor = 1
 	response.TransferEncoding = []string{"chunked"}

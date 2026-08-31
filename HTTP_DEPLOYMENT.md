@@ -59,9 +59,16 @@ Define `globalThis.NETSPEED_CONFIG` before loading `speedtest.js`:
   globalThis.NETSPEED_CONFIG = {
     apiBaseUrl: "https://speed-api.example.com/",
     credentials: "omit",
-    accessToken: "optional-deployment-token"
+    accessToken: "optional-deployment-token",
+    measurementTransport: {
+      downloadPayload: "auto",
+      downloadFraming: "auto",
+      downloadChunkBytes: 0,
+      downloadFlush: "auto"
+    }
   };
 </script>
+<script src="js/http_transport.js"></script>
 <script src="js/speedtest.js"></script>
 ```
 
@@ -82,6 +89,12 @@ authentication and the daemon is configured for credentialed CORS.
 A bearer token configured as `accessToken` is sent in the `Authorization`
 header. A token embedded in browser JavaScript is visible to that browser and
 is not a secret from the user.
+
+`measurementTransport` selects the version-1 HTTP discriminators after `/meta`
+validation. Its fields accept `auto|random|zero`, `auto|fixed|chunked`, a chunk
+size where `0` means the advertised default, and `auto|true|false` for flushing.
+An explicit value is a requirement and fails against a legacy, unsafe, or
+unsupported advertisement. `http_transport.js` must load before `speedtest.js`.
 
 ## 3. CORS and Resource Timing
 
@@ -108,17 +121,23 @@ For an allowed origin the daemon returns:
 - `Access-Control-Allow-Origin`;
 - `Access-Control-Allow-Credentials: true` when enabled;
 - `Timing-Allow-Origin` with the same origin decision;
-- `Access-Control-Expose-Headers` for measurement, quota, timing, and metadata
-  headers;
-- explicit preflight methods and headers.
+- `Access-Control-Expose-Headers` for content coding, measurement
+  discriminators and receipts, proxy-buffer evidence, quota, timing, and
+  metadata headers;
+- `GET`, `HEAD`, `POST`, and `OPTIONS` preflight methods;
+- request-header permission for `Cache-Control`, `Pragma`, and upload
+  `Content-Encoding: identity`.
 
 Both preflight and actual requests carrying a disallowed `Origin` receive
 `403 Forbidden`. Requests without an `Origin` header, including the Go CLI,
 remain unaffected.
 
 `Timing-Allow-Origin` is required for a separately hosted browser to inspect
-cross-origin Resource Timing fields. Without it, the browser falls back to less
-precise application timestamps and marks timing confidence accordingly.
+cross-origin Resource Timing fields. When warm probing is advertised, the
+browser rejects a manual or `fetchStart` latency fallback that cannot exclude
+connection setup. A deployment that strips `Timing-Allow-Origin` can therefore
+make strict browser latency unavailable instead of silently adding DNS/TCP/TLS
+time to RTT.
 
 ## 4. Reverse proxying
 

@@ -111,6 +111,7 @@ It must be set before `speedtest.js` loads:
     accessToken: "replace-with-a-deployment-token"
   };
 </script>
+<script src="js/http_transport.js"></script>
 <script src="js/speedtest.js"></script>
 ```
 

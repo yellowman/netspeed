@@ -205,6 +205,8 @@ func TestHandleDownSupportsPayloadAndFramingDiscriminators(t *testing.T) {
 		zeroRecorder.Header().Get("X-Accel-Buffering") != "no" ||
 		zeroRecorder.Header().Get("X-Netspeed-Payload") != "zero" ||
 		zeroRecorder.Header().Get("X-Netspeed-Framing") != "fixed" ||
+		zeroRecorder.Header().Get("X-Netspeed-Chunk-Bytes") != "4096" ||
+		zeroRecorder.Header().Get("X-Netspeed-Flush") != "false" ||
 		zeroRecorder.Header().Get("Content-Length") != "8192" {
 		t.Fatalf("zero headers=%v", zeroRecorder.Header())
 	}
@@ -215,7 +217,11 @@ func TestHandleDownSupportsPayloadAndFramingDiscriminators(t *testing.T) {
 	if randomRecorder.Code != http.StatusOK || randomRecorder.Body.Len() != 8192 {
 		t.Fatalf("random status=%d length=%d", randomRecorder.Code, randomRecorder.Body.Len())
 	}
-	if randomRecorder.Header().Get("Content-Length") != "" || !randomRecorder.Flushed {
+	if randomRecorder.Header().Get("Content-Length") != "" || !randomRecorder.Flushed ||
+		randomRecorder.Header().Get("X-Netspeed-Payload") != "random" ||
+		randomRecorder.Header().Get("X-Netspeed-Framing") != "chunked" ||
+		randomRecorder.Header().Get("X-Netspeed-Chunk-Bytes") != "4096" ||
+		randomRecorder.Header().Get("X-Netspeed-Flush") != "false" {
 		t.Fatalf("chunked headers=%v flushed=%v", randomRecorder.Header(), randomRecorder.Flushed)
 	}
 	body := randomRecorder.Body.Bytes()

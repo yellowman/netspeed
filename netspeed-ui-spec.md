@@ -42,10 +42,15 @@ non-streaming same-origin `omit` case uses Fetch and marks upload-load timing
 imprecise. `include` requires an explicit daemon origin with credentialed CORS;
 wildcard credentialed CORS is invalid.
 
-All metadata, location, throughput, latency, TURN, offer, and report requests go
-through the same URL and credential helpers. Cross-origin timing requires the
-daemon's matching `Timing-Allow-Origin` response. Disallowed browser origins
-receive `403`. See `HTTP_DEPLOYMENT.md`.
+All metadata, location, throughput, latency, TURN, offer, and report requests
+go through the same URL and credential helpers. `web/js/http_transport.js` must
+load before `web/js/speedtest.js`. `NETSPEED_CONFIG.measurementTransport`
+accepts payload `auto|random|zero`, framing `auto|fixed|chunked`, a chunk byte
+count where zero selects the daemon default, and flush `auto|true|false`.
+Explicit values fail rather than leaking private query keys to a legacy server.
+
+Cross-origin timing requires the daemon's matching `Timing-Allow-Origin`
+response. Disallowed browser origins receive `403`. See `HTTP_DEPLOYMENT.md`.
 
 ## 1. backend api surface (from the frontend's point of view)
 
@@ -81,7 +86,32 @@ receive `403`. See `HTTP_DEPLOYMENT.md`.
   "maxConcurrentTransfersPerClient": 24,
   "measurementProtocolVersion": 2,
   "uploadReceiptVersion": 1,
-  "packetLossFrameVersion": 1
+  "packetLossFrameVersion": 1,
+  "measurementCapabilities": {
+    "version": 1,
+    "downloadPath": "/__down",
+    "downloadBytesParameter": "bytes",
+    "downloadPayloadParameter": "payload",
+    "downloadFramingParameter": "framing",
+    "downloadChunkBytesParameter": "chunkBytes",
+    "downloadFlushParameter": "flush",
+    "uploadPath": "/__up",
+    "uploadBytesParameter": "bytes",
+    "httpPingPath": "/__ping",
+    "httpPingMethods": ["GET", "HEAD"],
+    "warmConnectionPing": true,
+    "downloadPayloads": ["random", "zero"],
+    "downloadFramings": ["fixed", "chunked"],
+    "defaultDownloadPayload": "random",
+    "defaultDownloadFraming": "fixed",
+    "defaultChunkBytes": 1048576,
+    "minimumChunkBytes": 4096,
+    "maximumChunkBytes": 1048576,
+    "uploadContentEncodings": ["identity"],
+    "responseCacheControl": "no-store, no-transform",
+    "noTransform": true,
+    "proxyBufferSuppressionHeader": "X-Accel-Buffering: no"
+  }
 }
 ```
 
@@ -90,9 +120,12 @@ receive `403`. See `HTTP_DEPLOYMENT.md`.
 - when `globalThis.NETSPEED_CONFIG.accessToken` contains a nonblank token, send
   `Authorization: Bearer <token>` on metadata, transfer, ICE, signaling, and
   packet-report requests;
+- validate `measurementCapabilities`, negotiate its advertised same-origin
+  endpoint paths and discriminator names, and expose the normalized selection;
 - cap request batches at `maxConcurrentTransfersPerClient` and sustained load
   flows at one less than that value, reserving one admission slot for a
-  loaded-latency probe;
+  loaded-latency probe; reserve one conventional browser-origin connection slot
+  as well;
 - reject a server ceiling below 2 rather than attempting an invalid loaded test;
 - populate **server location** card:
   - “Server location: `<city>`”
@@ -109,21 +142,30 @@ is visible to clients and is not a secret-storage mechanism.
 
 #### 1.1.2 `GET /__down` — download / latency
 
-The browser requests an exact byte count plus unique `measId` and diagnostic
-`profile`, `run`, and `during` labels. It accepts only status `200`, binary
-content type, a matching supplied `Content-Length`, an exact body byte count,
-and a positive duration.
+The compatibility path is `/__down?bytes=N`, but a capability-aware browser
+uses the advertised path and parameter names and sends selected
+`random|zero`, `fixed|chunked`, chunk-size, and flush discriminators. Every
+request also carries unique `measId` and diagnostic `profile`, `run`, and
+`during` labels plus `Cache-Control: no-store, no-transform` and
+`Pragma: no-cache`.
 
-Streaming response bodies are consumed incrementally. Where response streaming
-is unavailable, the browser limits a materialized fallback to 100 MB. Throughput
+The browser accepts only status `200`, binary content type, matching transport
+diagnostic headers, the advertised proxy-buffer suppression value, an absent or
+identity response content coding, the framing-appropriate `Content-Length`, an
+exact body byte count, and a positive duration. Streaming response bodies are
+consumed incrementally. Bounded windows across the full body verify zero-fill
+or sufficient pseudorandom byte diversity. Where response streaming is
+unavailable, the browser limits a materialized fallback to 100 MB. Throughput
 request timing uses Resource Timing when available; aggregate fixed-window speed
-uses verified bytes over the window wall-clock interval. A zero-byte request is
-a latency probe.
+uses verified bytes over the window wall-clock interval.
 
 #### 1.1.3 `POST /__up` — verified upload
 
-The browser sends an exact-length binary body with unique `measId` and diagnostic
-`profile` and `run` labels. A successful response is receipt version 1:
+The browser uses the advertised upload path and byte parameter, sends an
+exact-length binary zero body with unique `measId`, `profile`, and `run` labels,
+and includes `Content-Encoding: identity`, `Cache-Control: no-store,
+no-transform`, and `Pragma: no-cache`. A successful response is receipt version
+1:
 
 ```json
 {
@@ -133,13 +175,27 @@ The browser sends an exact-length binary body with unique `measId` and diagnosti
 }
 ```
 
-The sample is retained only when status and JSON type are correct and
-`acceptedBytes` equals the intended body length. The daemon duration is
-canonical. A streaming-capable browser emits 64 KiB request chunks. Other
-browsers reuse a payload no larger than 8 MiB and use XHR request lifecycle events.
-Upload activity remains active through verified receipt completion.
+The sample is retained only when status and JSON type are correct,
+measurement/payload/framing/encoding diagnostic headers match, expected and
+accepted byte headers equal the intended body length, the duration header equals
+the receipt, and `acceptedBytes` is exact. The daemon duration is canonical. A
+streaming-capable browser emits 64 KiB request chunks. Other browsers reuse a
+payload no larger than 8 MiB and use XHR request lifecycle events. Upload
+activity remains active through verified receipt completion.
 
-#### 1.1.4 `GET /locations` — test locations
+#### 1.1.4 `GET` or `HEAD /__ping` — warm HTTP latency
+
+The browser prefers the advertised zero-body ping path and method and falls back
+to the advertised download endpoint with zero bytes only when no dedicated path
+exists. It warms the browser origin pool before unloaded and loaded probes.
+Resource Timing identifies attempts that performed connection setup; those are
+discarded when `warmConnectionPing` is true. A request-start interval may be
+kept with `connectionReused: null` when connection fields are hidden but setup
+is excluded from the measured interval. Manual/fetch-start timing that cannot
+exclude setup is rejected. Results record method, path, protocol, reuse evidence,
+and discarded attempts.
+
+#### 1.1.5 `GET /locations` — test locations
 
 **request**
 
@@ -352,10 +408,11 @@ The browser executes:
 The median 1 MB baseline selects a request chunk intended to last about 250 ms
 per flow. The chunk is 100,000 bytes through 256 MiB and is always capped by
 `maxTransferBytes` and browser fallback limits. Flow count rises from 1 to 2, 4,
-or 6 as the estimate increases, then is capped at
+or 5 as the estimate increases, then is capped at
 `maxConcurrentTransfersPerClient - 1` so a loaded-latency probe keeps one server
-admission slot. Each worker repeatedly completes exact verified requests until
-the window owner stops it.
+admission slot. Five is also the browser ceiling so a typical six-connection
+HTTP/1.1 origin retains one slot for the probe. Each worker repeatedly completes
+exact verified requests until the window owner stops it.
 
 A window sample is completed verified bytes divided by elapsed wall-clock time.
 Baseline requests tune the plan but are excluded from headline throughput when
@@ -368,10 +425,9 @@ when at least one transfer is active before and after the probe and no zero-load
 gap occurs between those observations. A rejected probe is retried.
 
 Download activity spans response-body reads. Upload activity begins with request
-body production and remains active through verified receipt completion. XHR tracks
-the complete request lifecycle; buffered fetch fallback is marked imprecise for
-confidence purposes.
-Normal mode targets five probes and requires at least three accepted probes for
+body production and remains active through verified receipt completion. XHR
+tracks the complete request lifecycle; buffered fetch fallback is marked
+imprecise for confidence purposes. Normal mode targets five probes and requires at least three accepted probes for
 each enabled direction. The window timer stops new requests and further probe
 retries, then drains requests already in flight. When the timer expires, a
 loaded-latency result is retained only if its accepted-probe quorum has already
@@ -403,11 +459,19 @@ type LatencySample = {
   ts: number;
   rttMs: number;
   condition: 'unloaded' | 'download' | 'upload';
-  probeStartedAt?: number;
-  probeFinishedAt?: number;
+  startedAt?: number;
+  endedAt?: number;
   loadOverlapped?: boolean;
   loadTrackingAccurate?: boolean;
   timingSource?: string;
+  connectionReused?: boolean | null;
+  connectionSetupMs?: number | null;
+  connectionSetupExcluded?: boolean;
+  connectionReuseEvidence?: string;
+  probeTransport?: 'http' | 'websocket';
+  probeMethod?: string;
+  probePath?: string;
+  nextHopProtocol?: string;
 };
 
 type ThroughputSample = {
@@ -423,6 +487,15 @@ type ThroughputSample = {
   chunkBytes?: number;
   requestCount?: number;
   timingSource?: string;
+  transportPayload?: 'random' | 'zero' | 'binary-zero';
+  transportFraming?: 'fixed' | 'chunked';
+  transportChunkBytes?: number;
+  transportFlush?: boolean;
+  transportContentEncoding?: 'identity';
+  responseReadChunks?: number;
+  minimumResponseReadChunkBytes?: number;
+  maximumResponseReadChunkBytes?: number;
+  payloadEvidence?: Record<string, unknown> | null;
 };
 
 type PacketLossResult = {

@@ -142,6 +142,9 @@ The strict Go and native C Netspeed paths validate and negotiate that
 advertisement, including custom same-origin paths and parameter names. Their
 normalized choice is exposed as `meta.measurementSelection`.
 
-The browser client remains on its compatible defaults until its later
-negotiation phase. An unrecognized `measurementCapabilities` object does not
-make a protocol-v2 server eligible for silent Cloudflare downgrade.
+The browser Netspeed client validates and consumes this same advertisement,
+including custom paths and parameter names, and exposes its normalized choice
+under `meta.measurementSelection` and `httpTransport`. Browser Cloudflare
+behavioral probing is not inferred from a missing or malformed Netspeed
+advertisement; an unrecognized object never makes a protocol-v2 server eligible
+for silent downgrade.
