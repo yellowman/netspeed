@@ -45,7 +45,12 @@ type options struct {
 	TurnURL            string
 	TurnUsername       string
 	TurnCredential     string
+	DownloadPayload    string
+	DownloadFraming    string
+	DownloadChunkBytes int
+	DownloadFlush      string
 	TransportControls  bool
+	Transport          *cloudflareTransportSummary
 }
 
 type probeResult struct {
@@ -66,12 +71,21 @@ type sampleSummary struct {
 }
 
 type latencySummary struct {
-	Available bool      `json:"available"`
-	MedianMS  *float64  `json:"medianMs,omitempty"`
-	P90MS     *float64  `json:"p90Ms,omitempty"`
-	JitterMS  *float64  `json:"jitterMs,omitempty"`
-	SamplesMS []float64 `json:"samplesMs,omitempty"`
-	Error     string    `json:"error,omitempty"`
+	Available                   bool      `json:"available"`
+	MedianMS                    *float64  `json:"medianMs,omitempty"`
+	P90MS                       *float64  `json:"p90Ms,omitempty"`
+	JitterMS                    *float64  `json:"jitterMs,omitempty"`
+	SamplesMS                   []float64 `json:"samplesMs,omitempty"`
+	ConnectionReused            bool      `json:"connectionReused"`
+	WarmSamples                 int       `json:"warmSamples"`
+	WarmupRequests              int       `json:"warmupRequests"`
+	DiscardedColdAttempts       int       `json:"discardedColdAttempts"`
+	ServerTimingAdjustedSamples int       `json:"serverTimingAdjustedSamples"`
+	ProbeTransport              string    `json:"probeTransport,omitempty"`
+	ProbeMethod                 string    `json:"probeMethod,omitempty"`
+	ProbePath                   string    `json:"probePath,omitempty"`
+	HTTPProtocols               []string  `json:"httpProtocols,omitempty"`
+	Error                       string    `json:"error,omitempty"`
 }
 
 type packetSummary struct {
@@ -89,19 +103,20 @@ type packetSummary struct {
 }
 
 type result struct {
-	Provider            string         `json:"provider"`
-	MeasurementContract string         `json:"measurementContract"`
-	UploadEvidence      string         `json:"uploadEvidence"`
-	PacketTopology      string         `json:"packetTopology"`
-	Server              string         `json:"server"`
-	StartedAt           time.Time      `json:"startedAt"`
-	FinishedAt          time.Time      `json:"finishedAt"`
-	Latency             latencySummary `json:"latency"`
-	Download            sampleSummary  `json:"download"`
-	Upload              sampleSummary  `json:"upload"`
-	DownloadLoaded      latencySummary `json:"downloadLoadedLatency"`
-	UploadLoaded        latencySummary `json:"uploadLoadedLatency"`
-	PacketLoss          packetSummary  `json:"packetLoss"`
+	Provider            string                     `json:"provider"`
+	MeasurementContract string                     `json:"measurementContract"`
+	UploadEvidence      string                     `json:"uploadEvidence"`
+	PacketTopology      string                     `json:"packetTopology"`
+	Server              string                     `json:"server"`
+	StartedAt           time.Time                  `json:"startedAt"`
+	FinishedAt          time.Time                  `json:"finishedAt"`
+	Latency             latencySummary             `json:"latency"`
+	Download            sampleSummary              `json:"download"`
+	Upload              sampleSummary              `json:"upload"`
+	DownloadLoaded      latencySummary             `json:"downloadLoadedLatency"`
+	UploadLoaded        latencySummary             `json:"uploadLoadedLatency"`
+	PacketLoss          packetSummary              `json:"packetLoss"`
+	HTTPTransport       cloudflareTransportSummary `json:"httpTransport"`
 }
 
 // Dispatch selects the Cloudflare-compatible engine when requested or when an
@@ -123,10 +138,6 @@ func Dispatch(args []string) (bool, int) {
 		setIdentity(providerNetspeed, "netspeed-verified-v2", "server-peer")
 		return false, 0
 	case providerCloudflare:
-		if opts.TransportControls {
-			fmt.Fprintln(os.Stderr, "netspeed: download transport discriminator flags currently require --provider netspeed")
-			return true, 2
-		}
 		return true, runCloudflare(opts)
 	case providerAuto:
 		p, err := probeProvider(opts)
@@ -141,10 +152,6 @@ func Dispatch(args []string) (bool, int) {
 			return false, 0
 		}
 		if p.Cloudflare {
-			if opts.TransportControls {
-				fmt.Fprintln(os.Stderr, "netspeed: download transport discriminator flags currently require a Netspeed server advertising measurementCapabilities")
-				return true, 2
-			}
 			return true, runCloudflare(opts)
 		}
 		setIdentity(providerNetspeed, "netspeed-verified-v2", "server-peer")
@@ -172,15 +179,6 @@ func setIdentity(provider, contract, topology string) {
 	_ = os.Setenv("NETSPEED_PACKET_TOPOLOGY", topology)
 }
 
-func transportControlIsExplicit(name, value string) bool {
-	value = strings.TrimSpace(value)
-	if name == "--download-chunk-bytes" {
-		parsed, err := strconv.Atoi(value)
-		return err != nil || parsed != 0
-	}
-	return value != "" && !strings.EqualFold(value, "auto")
-}
-
 func hasHelpOrVersion(args []string) bool {
 	for _, a := range args {
 		if a == "-h" || a == "--help" || a == "-version" || a == "--version" {
@@ -191,7 +189,14 @@ func hasHelpOrVersion(args []string) bool {
 }
 
 func parseOptions(args []string) (options, []string, error) {
-	o := options{Provider: providerAuto, Server: "http://localhost:8080", Timeout: 30 * time.Second}
+	o := options{
+		Provider:        providerAuto,
+		Server:          "http://localhost:8080",
+		Timeout:         30 * time.Second,
+		DownloadPayload: "auto",
+		DownloadFraming: "auto",
+		DownloadFlush:   "auto",
+	}
 	stripped := make([]string, 0, len(args))
 	serverExplicit := false
 	positionalServer := false
@@ -298,8 +303,20 @@ func parseOptions(args []string) (options, []string, error) {
 					return o, nil, err
 				}
 			}
-			if transportControlIsExplicit(key, val) {
-				o.TransportControls = true
+			normalized := strings.ToLower(strings.TrimSpace(val))
+			switch key {
+			case "--download-payload":
+				o.DownloadPayload = normalized
+			case "--download-framing":
+				o.DownloadFraming = normalized
+			case "--download-chunk-bytes":
+				parsed, err := strconv.Atoi(normalized)
+				if err != nil || parsed < 0 {
+					return o, nil, fmt.Errorf("invalid --download-chunk-bytes %q: want a non-negative integer", val)
+				}
+				o.DownloadChunkBytes = parsed
+			case "--download-flush":
+				o.DownloadFlush = normalized
 			}
 			stripped = append(stripped, a)
 			if !hasEq {
@@ -370,6 +387,22 @@ func parseOptions(args []string) (options, []string, error) {
 	if o.TurnCredential == "" {
 		o.TurnCredential = os.Getenv("NETSPEED_TURN_CREDENTIAL")
 	}
+	switch o.DownloadPayload {
+	case "auto", "random", "zero":
+	default:
+		return o, nil, fmt.Errorf("invalid --download-payload %q: want auto, random, or zero", o.DownloadPayload)
+	}
+	switch o.DownloadFraming {
+	case "auto", "fixed", "chunked":
+	default:
+		return o, nil, fmt.Errorf("invalid --download-framing %q: want auto, fixed, or chunked", o.DownloadFraming)
+	}
+	switch o.DownloadFlush {
+	case "auto", "true", "false":
+	default:
+		return o, nil, fmt.Errorf("invalid --download-flush %q: want auto, true, or false", o.DownloadFlush)
+	}
+	o.TransportControls = o.DownloadPayload != "auto" || o.DownloadFraming != "auto" || o.DownloadChunkBytes != 0 || o.DownloadFlush != "auto"
 	if o.DownloadOnly && o.UploadOnly {
 		return o, nil, errors.New("--download-only and --upload-only are mutually exclusive")
 	}
@@ -392,11 +425,17 @@ func parseOptions(args []string) (options, []string, error) {
 	return o, stripped, nil
 }
 
+func newHTTPTransport(o options) *http.Transport {
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport.TLSClientConfig = &tls.Config{MinVersion: tls.VersionTLS12, InsecureSkipVerify: o.Insecure} // #nosec G402 -- explicit CLI option
+	transport.DisableCompression = true
+	transport.MaxIdleConns = 64
+	transport.MaxIdleConnsPerHost = 16
+	return transport
+}
+
 func newHTTPClient(o options) *http.Client {
-	tr := http.DefaultTransport.(*http.Transport).Clone()
-	tr.TLSClientConfig = &tls.Config{MinVersion: tls.VersionTLS12, InsecureSkipVerify: o.Insecure} // #nosec G402 -- explicit CLI option
-	tr.DisableCompression = true
-	return &http.Client{Transport: tr, Timeout: o.Timeout}
+	return &http.Client{Transport: newHTTPTransport(o), Timeout: o.Timeout}
 }
 
 func endpoint(base, path string, q url.Values) (string, error) {
@@ -425,13 +464,16 @@ func request(ctx context.Context, client *http.Client, o options, method, path s
 	if n >= 0 {
 		req.ContentLength = n
 	}
+	req.Header.Set("Accept-Encoding", "identity")
 	req.Header.Set("Cache-Control", "no-store, no-transform")
+	req.Header.Set("Pragma", "no-cache")
 	req.Header.Set("Accept", "application/json, */*")
 	if o.Token != "" {
 		req.Header.Set("Authorization", "Bearer "+o.Token)
 	}
 	if method == http.MethodPost {
 		req.Header.Set("Content-Type", "application/octet-stream")
+		req.Header.Set("Content-Encoding", "identity")
 	}
 	return client.Do(req)
 }
@@ -500,13 +542,32 @@ func minDuration(a, b time.Duration) time.Duration {
 func runCloudflare(o options) int {
 	_netspeedProgress := nsBeginProgress("speed test")
 	defer _netspeedProgress.Done("complete")
-	setIdentity(providerCloudflare, "cloudflare-http-v1", "turn-loopback")
-	r := result{Provider: providerCloudflare, MeasurementContract: "cloudflare-http-v1", UploadEvidence: "client-observed-complete-body", PacketTopology: "turn-loopback", Server: o.Server, StartedAt: time.Now()}
+	setIdentity(providerCloudflare, "cloudflare-http-v2", "turn-loopback")
+	r := result{
+		Provider:            providerCloudflare,
+		MeasurementContract: "cloudflare-http-v2",
+		UploadEvidence:      "client-observed-complete-body",
+		PacketTopology:      "turn-loopback",
+		Server:              o.Server,
+		StartedAt:           time.Now(),
+	}
 	client := newHTTPClient(o)
 	ctx, cancel := context.WithTimeout(context.Background(), maxDuration(o.Timeout, 45*time.Second))
 	defer cancel()
 
-	r.Latency = measureIdleLatency(ctx, client, o)
+	transport, err := probeAndNegotiateCloudflareTransport(ctx, client, o)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "netspeed:", err)
+		var controlErr *transportControlError
+		if errors.As(err, &controlErr) {
+			return 2
+		}
+		return 1
+	}
+	o.Transport = &transport
+	r.HTTPTransport = transport
+
+	r.Latency = measureIdleLatency(ctx, o)
 	if !o.UploadOnly {
 		r.Download, r.DownloadLoaded = measureDirection(ctx, client, o, false)
 	}
@@ -528,6 +589,7 @@ func runCloudflare(o options) int {
 	}
 	return 0
 }
+
 func maxDuration(a, b time.Duration) time.Duration {
 	if a <= 0 {
 		return b
@@ -538,68 +600,33 @@ func maxDuration(a, b time.Duration) time.Duration {
 	return b
 }
 
-func measureIdleLatency(ctx context.Context, client *http.Client, o options) latencySummary {
+func measureIdleLatency(ctx context.Context, o options) latencySummary {
 	_netspeedProgress := nsBeginProgress("latency probes")
 	defer _netspeedProgress.Done("complete")
 	count := 10
 	if o.Quick {
 		count = 5
 	}
-	vals := make([]float64, 0, count)
-	for i := 0; i < count; i++ {
-		d, err := latencyProbe(ctx, client, o, "idle")
-		if err == nil {
-			vals = append(vals, d)
-		}
+	session := newCloudflareLatencySession(o)
+	defer session.Close()
+	if err := session.Prime(ctx, "idle"); err != nil {
+		return session.Summarize(nil, 3, err.Error())
 	}
-	return summarizeLatency(vals, 3, "insufficient valid latency probes")
-}
-
-func latencyProbe(ctx context.Context, client *http.Client, o options, during string) (float64, error) {
-	_netspeedProgress := nsBeginProgress("latency probes")
-	defer _netspeedProgress.Done("complete")
-	q := url.Values{"bytes": {"0"}, "during": {during}, "id": {strconv.FormatInt(time.Now().UnixNano(), 10)}}
-	start := time.Now()
-	resp, err := request(ctx, client, o, http.MethodGet, "/__down", q, nil, -1)
-	if err != nil {
-		return 0, err
-	}
-	_, readErr := io.Copy(io.Discard, io.LimitReader(resp.Body, 1<<20))
-	resp.Body.Close()
-	if readErr != nil {
-		return 0, readErr
-	}
-	if resp.StatusCode/100 != 2 {
-		return 0, fmt.Errorf("latency HTTP %d", resp.StatusCode)
-	}
-	ms := float64(time.Since(start)) / float64(time.Millisecond)
-	if sd := serverDurationMS(resp.Header.Get("Server-Timing")); sd > 0 && sd < ms {
-		ms -= sd
-	}
-	if ms <= 0 {
-		return 0, errors.New("non-positive latency")
-	}
-	return ms, nil
-}
-
-func serverDurationMS(h string) float64 {
-	var sum float64
-	for _, entry := range strings.Split(h, ",") {
-		lower := strings.ToLower(strings.TrimSpace(entry))
-		if !(strings.HasPrefix(lower, "cfreq") || strings.HasPrefix(lower, "cfspeed") || strings.HasPrefix(lower, "app")) {
+	values := make([]float64, 0, count)
+	var lastErr error
+	for sequence := 0; sequence < count; sequence++ {
+		measurement, err := session.Probe(ctx, "idle", sequence)
+		if err != nil {
+			lastErr = err
 			continue
 		}
-		if i := strings.Index(lower, "dur="); i >= 0 {
-			v := lower[i+4:]
-			if j := strings.IndexAny(v, "; "); j >= 0 {
-				v = v[:j]
-			}
-			if f, e := strconv.ParseFloat(v, 64); e == nil {
-				sum += f
-			}
-		}
+		values = append(values, measurement)
 	}
-	return sum
+	errorText := "insufficient valid warm latency probes"
+	if lastErr != nil {
+		errorText += ": " + lastErr.Error()
+	}
+	return session.Summarize(values, 3, errorText)
 }
 
 type zeroReader struct {
@@ -624,43 +651,63 @@ func (z *zeroReader) Read(p []byte) (int, error) {
 }
 
 func transferOnce(ctx context.Context, client *http.Client, o options, upload bool, size int64) (int64, time.Duration, error) {
-	q := url.Values{"bytes": {strconv.FormatInt(size, 10)}, "id": {strconv.FormatInt(time.Now().UnixNano(), 10)}}
+	query := url.Values{"bytes": {strconv.FormatInt(size, 10)}, "id": {strconv.FormatInt(time.Now().UnixNano(), 10)}}
 	start := time.Now()
 	if upload {
-		zr := &zeroReader{remaining: size}
-		resp, err := request(ctx, client, o, http.MethodPost, "/__up", q, zr, size)
+		// Cloudflare's reference client uses ASCII '0' for upload bodies. Preserve
+		// that provider contract while explicitly forbidding content coding.
+		reader := &zeroReader{remaining: size}
+		response, err := request(ctx, client, o, http.MethodPost, "/__up", query, reader, size)
 		if err != nil {
 			return 0, 0, err
 		}
-		_, rerr := io.Copy(io.Discard, io.LimitReader(resp.Body, 4<<20))
-		resp.Body.Close()
-		if rerr != nil {
-			return 0, 0, rerr
+		_, readErr := io.Copy(io.Discard, io.LimitReader(response.Body, 4<<20))
+		closeErr := response.Body.Close()
+		if readErr != nil {
+			return 0, 0, readErr
 		}
-		if resp.StatusCode/100 != 2 {
-			return 0, 0, fmt.Errorf("upload HTTP %d", resp.StatusCode)
+		if closeErr != nil {
+			return 0, 0, closeErr
 		}
-		if zr.read != size {
-			return 0, 0, fmt.Errorf("transport consumed %d of %d upload bytes", zr.read, size)
+		if response.StatusCode/100 != 2 {
+			return 0, 0, fmt.Errorf("upload HTTP %d", response.StatusCode)
+		}
+		if err := verifyCloudflareIdentityResponse(response); err != nil {
+			return 0, 0, err
+		}
+		if reader.read != size {
+			return 0, 0, fmt.Errorf("transport consumed %d of %d upload bytes", reader.read, size)
 		}
 		return size, time.Since(start), nil
 	}
-	resp, err := request(ctx, client, o, http.MethodGet, "/__down", q, nil, -1)
+
+	response, err := request(ctx, client, o, http.MethodGet, "/__down", query, nil, -1)
 	if err != nil {
 		return 0, 0, err
 	}
-	n, rerr := io.Copy(io.Discard, resp.Body)
-	resp.Body.Close()
-	if rerr != nil {
-		return 0, 0, rerr
+	capture := newDistributedCapture(size, cloudflareTransportProbeBytes)
+	received, readErr := io.Copy(io.MultiWriter(io.Discard, capture), io.LimitReader(response.Body, size+1))
+	closeErr := response.Body.Close()
+	if readErr != nil {
+		return 0, 0, readErr
 	}
-	if resp.StatusCode/100 != 2 {
-		return 0, 0, fmt.Errorf("download HTTP %d", resp.StatusCode)
+	if closeErr != nil {
+		return 0, 0, closeErr
 	}
-	if n != size {
-		return 0, 0, fmt.Errorf("download returned %d of %d bytes", n, size)
+	if response.StatusCode/100 != 2 {
+		return 0, 0, fmt.Errorf("download HTTP %d", response.StatusCode)
 	}
-	return n, time.Since(start), nil
+	if received != size {
+		return 0, 0, fmt.Errorf("download returned %d of %d bytes", received, size)
+	}
+	evidence, err := capture.Bytes()
+	if err != nil {
+		return 0, 0, err
+	}
+	if err := verifyCloudflareDownloadSelection(response, evidence, size, o.Transport); err != nil {
+		return 0, 0, err
+	}
+	return received, time.Since(start), nil
 }
 
 func measureDirection(ctx context.Context, client *http.Client, o options, upload bool) (sampleSummary, latencySummary) {
@@ -668,20 +715,20 @@ func measureDirection(ctx context.Context, client *http.Client, o options, uploa
 	if upload {
 		warmSize = 512 << 10
 	}
-	n, d, err := transferOnce(ctx, client, o, upload, warmSize)
+	n, duration, err := transferOnce(ctx, client, o, upload, warmSize)
 	if err != nil {
 		return sampleSummary{Available: false, Error: err.Error()}, latencySummary{Available: false, Error: err.Error()}
 	}
-	estimate := float64(n*8) / d.Seconds()
+	estimate := float64(n*8) / duration.Seconds()
 	concurrency := 4
-	duration := 1800 * time.Millisecond
-	probes := 8
+	windowDuration := 1800 * time.Millisecond
+	probeCount := 8
 	if o.Quick {
 		concurrency = 2
-		duration = 900 * time.Millisecond
-		probes = 4
+		windowDuration = 900 * time.Millisecond
+		probeCount = 4
 	}
-	chunk := int64(estimate * duration.Seconds() / 8 / float64(concurrency))
+	chunk := int64(estimate * windowDuration.Seconds() / 8 / float64(concurrency))
 	if chunk < 256<<10 {
 		chunk = 256 << 10
 	}
@@ -689,60 +736,94 @@ func measureDirection(ctx context.Context, client *http.Client, o options, uploa
 		chunk = 32 << 20
 	}
 
+	condition := map[bool]string{true: "upload", false: "download"}[upload]
+	latencySession := newCloudflareLatencySession(o)
+	defer latencySession.Close()
+	latencyPrimeErr := latencySession.Prime(ctx, condition)
+
 	runCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
-	deadline := time.Now().Add(duration)
+	deadline := time.Now().Add(windowDuration)
 	var total atomic.Int64
-	samplesCh := make(chan float64, 65536) /* continuously drained; large guard for compatibility fixtures */
-	var wg sync.WaitGroup
+	samplesCh := make(chan float64, concurrency*4)
+	values := make([]float64, 0, 128)
+	var collector sync.WaitGroup
+	collector.Add(1)
+	go func() {
+		defer collector.Done()
+		for value := range samplesCh {
+			values = append(values, value)
+		}
+	}()
+	var workers sync.WaitGroup
 	ready := make(chan struct{}, concurrency)
-	for i := 0; i < concurrency; i++ {
-		wg.Add(1)
+	for worker := 0; worker < concurrency; worker++ {
+		workers.Add(1)
 		go func() {
-			defer wg.Done()
+			defer workers.Done()
 			ready <- struct{}{}
 			for time.Now().Before(deadline) {
-				n, d, e := transferOnce(runCtx, client, o, upload, chunk)
-				if e != nil {
+				transferred, elapsed, transferErr := transferOnce(runCtx, client, o, upload, chunk)
+				if transferErr != nil {
 					if runCtx.Err() != nil {
 						return
 					}
 					continue
 				}
-				total.Add(n)
-				samplesCh <- float64(n*8) / d.Seconds() / 1e6
+				total.Add(transferred)
+				samplesCh <- float64(transferred*8) / elapsed.Seconds() / 1e6
 			}
 		}()
 	}
-	for i := 0; i < concurrency; i++ {
+	for worker := 0; worker < concurrency; worker++ {
 		<-ready
 	}
-	latVals := make([]float64, 0, probes)
-	for i := 0; i < probes && time.Now().Before(deadline); i++ {
-		if v, e := latencyProbe(runCtx, client, o, map[bool]string{true: "upload", false: "download"}[upload]); e == nil {
-			latVals = append(latVals, v)
+
+	latencyValues := make([]float64, 0, probeCount)
+	var latencyErr error
+	if latencyPrimeErr != nil {
+		latencyErr = latencyPrimeErr
+	} else {
+		for sequence := 0; sequence < probeCount && time.Now().Before(deadline); sequence++ {
+			value, probeErr := latencySession.Probe(runCtx, condition, sequence)
+			if probeErr != nil {
+				latencyErr = probeErr
+			} else {
+				latencyValues = append(latencyValues, value)
+			}
+			select {
+			case <-time.After(40 * time.Millisecond):
+			case <-runCtx.Done():
+			}
 		}
-		time.Sleep(40 * time.Millisecond)
 	}
-	if rem := time.Until(deadline); rem > 0 {
+	if remaining := time.Until(deadline); remaining > 0 {
 		select {
-		case <-time.After(rem):
+		case <-time.After(remaining):
 		case <-ctx.Done():
 		}
 	}
 	cancel()
-	wg.Wait()
+	workers.Wait()
 	close(samplesCh)
-	vals := make([]float64, 0, len(samplesCh))
-	for v := range samplesCh {
-		vals = append(vals, v)
+	collector.Wait()
+	latencyErrorText := "insufficient warm loaded-latency probes"
+	if latencyErr != nil {
+		latencyErrorText += ": " + latencyErr.Error()
 	}
-	if len(vals) == 0 || total.Load() == 0 {
-		return sampleSummary{Available: false, Error: "no complete transfer samples"}, summarizeLatency(latVals, 3, "insufficient loaded probes")
+	loadedLatency := latencySession.Summarize(latencyValues, 3, latencyErrorText)
+	if len(values) == 0 || total.Load() == 0 {
+		return sampleSummary{Available: false, Error: "no complete transfer samples"}, loadedLatency
 	}
-	p := percentile(vals, 0.90)
-	bps := p * 1e6
-	return sampleSummary{Available: true, BPS: &bps, Mbps: &p, Samples: vals, Evidence: map[bool]string{true: "client-observed-complete-body", false: "exact-response-byte-count"}[upload]}, summarizeLatency(latVals, 3, "insufficient loaded probes")
+	p90 := percentile(values, 0.90)
+	bps := p90 * 1e6
+	return sampleSummary{
+		Available: true,
+		BPS:       &bps,
+		Mbps:      &p90,
+		Samples:   values,
+		Evidence:  map[bool]string{true: "client-observed-complete-body", false: "exact-response-byte-count"}[upload],
+	}, loadedLatency
 }
 
 func summarizeLatency(vals []float64, min int, errText string) latencySummary {
@@ -796,8 +877,10 @@ func renderResult(r result, o options) error {
 		fmt.Printf("%s %s %s %s %s\n", pfloat(r.Download.Mbps), pfloat(r.Upload.Mbps), pfloat(r.Latency.MedianMS), pfloat(r.PacketLoss.TransactionLossPercent), r.Provider)
 		return nil
 	}
-	fmt.Printf("Provider:            %s\n", r.Provider)
+	fmt.Printf("Provider:             %s\n", r.Provider)
 	fmt.Printf("Measurement contract: %s\n", r.MeasurementContract)
+	fmt.Printf("HTTP download mode:   %s / %s (%s)\n", r.HTTPTransport.Selection.DownloadPayload, r.HTTPTransport.Selection.DownloadFraming, r.HTTPTransport.CapabilitySource)
+	fmt.Printf("Latency connection:   reused=%t; warm=%d; discarded-cold=%d\n", r.Latency.ConnectionReused, r.Latency.WarmSamples, r.Latency.DiscardedColdAttempts)
 	fmt.Printf("Packet topology:      %s\n", r.PacketTopology)
 	fmt.Printf("Latency:              %s ms\n", pfloat(r.Latency.MedianMS))
 	fmt.Printf("Download:             %s Mbps\n", pfloat(r.Download.Mbps))

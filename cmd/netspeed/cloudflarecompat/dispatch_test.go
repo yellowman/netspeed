@@ -143,8 +143,16 @@ func TestCloudflareRunEmitsIdentifiedResult(t *testing.T) {
 	if err := json.Unmarshal(body, &got); err != nil {
 		t.Fatalf("invalid JSON: %v: %s", err, body)
 	}
-	if got["provider"] != "cloudflare" || got["measurementContract"] != "cloudflare-http-v1" || got["packetTopology"] != "turn-loopback" {
+	if got["provider"] != "cloudflare" || got["measurementContract"] != "cloudflare-http-v2" || got["packetTopology"] != "turn-loopback" {
 		t.Fatalf("missing provider identity: %#v", got)
+	}
+	transport, ok := got["httpTransport"].(map[string]any)
+	if !ok || transport["capabilitySource"] != "behavioral-probe" || transport["queryDiscriminatorsSent"] != false {
+		t.Fatalf("missing transport evidence: %#v", got["httpTransport"])
+	}
+	latency, ok := got["latency"].(map[string]any)
+	if !ok || latency["connectionReused"] != true || latency["probePath"] != "/__down" {
+		t.Fatalf("missing warm latency evidence: %#v", got["latency"])
 	}
 }
 
@@ -271,8 +279,8 @@ func TestParseOptionsPreservesStrictTransportControls(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parseOptions: %v", err)
 	}
-	if !o.TransportControls || o.Server != "https://strict.example" {
-		t.Fatalf("options = %+v; want transport controls and positional server", o)
+	if !o.TransportControls || o.Server != "https://strict.example" || o.DownloadPayload != "zero" || o.DownloadFraming != "chunked" || o.DownloadChunkBytes != 4096 || o.DownloadFlush != "false" {
+		t.Fatalf("options = %+v; want parsed transport controls and positional server", o)
 	}
 	joined := strings.Join(stripped, " ")
 	for _, expected := range []string{
@@ -303,7 +311,32 @@ func TestParseOptionsTreatsAutomaticTransportValuesAsNoOp(t *testing.T) {
 	}
 }
 
-func TestDispatchRejectsStrictTransportControlsInCloudflareMode(t *testing.T) {
+func TestParseOptionsRejectsInvalidTransportControls(t *testing.T) {
+	for _, args := range [][]string{
+		{"--download-payload", "compressible"},
+		{"--download-framing", "h2"},
+		{"--download-chunk-bytes", "-1"},
+		{"--download-flush", "sometimes"},
+	} {
+		if _, _, err := parseOptions(args); err == nil {
+			t.Fatalf("parseOptions(%v) unexpectedly succeeded", args)
+		}
+	}
+}
+
+func TestDispatchCloudflareTransportControlMismatchIsArgumentError(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if request.URL.Path != "/__down" {
+			http.NotFound(writer, request)
+			return
+		}
+		var count int64
+		fmtSscanf(request.URL.Query().Get("bytes"), &count)
+		writer.Header().Set("Content-Length", request.URL.Query().Get("bytes"))
+		_, _ = writer.Write(make([]byte, count))
+	}))
+	defer server.Close()
+
 	oldArgs := os.Args
 	oldStderr := os.Stderr
 	defer func() {
@@ -317,7 +350,7 @@ func TestDispatchRejectsStrictTransportControlsInCloudflareMode(t *testing.T) {
 	}
 	os.Stderr = writer
 	os.Args = []string{"netspeed"}
-	handled, code := Dispatch([]string{"--provider", "cloudflare", "--download-payload", "zero"})
+	handled, code := Dispatch([]string{"--provider", "cloudflare", "--server", server.URL, "--download-payload", "random", "--download-only", "--quick", "--no-packet-loss"})
 	_ = writer.Close()
 	body, _ := io.ReadAll(reader)
 	_ = reader.Close()
@@ -325,7 +358,7 @@ func TestDispatchRejectsStrictTransportControlsInCloudflareMode(t *testing.T) {
 	if !handled || code != 2 {
 		t.Fatalf("handled=%v code=%d; want handled argument error", handled, code)
 	}
-	if !strings.Contains(string(body), "require --provider netspeed") {
-		t.Fatalf("stderr = %q; want explicit provider guidance", body)
+	if !strings.Contains(string(body), "provider-default payload") || !strings.Contains(string(body), "cannot be honored") {
+		t.Fatalf("stderr = %q; want observed-default mismatch guidance", body)
 	}
 }

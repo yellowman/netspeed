@@ -62,16 +62,17 @@ netspeed -v
 
 | Flag | Short | Default | Description |
 |------|-------|---------|-------------|
+| `--provider` | | `auto` | `auto`, `netspeed`, or `cloudflare` |
 | `--server` | `-s` | `http://localhost:8080` | Server URL |
 | `--token` | | `NETSPEED_TOKEN` | Shared bearer token for protected servers |
 | `--quick` | `-q` | false | Quick test mode (fewer samples) |
 | `--download-only` | `-d` | false | Skip upload tests |
 | `--upload-only` | `-u` | false | Skip download tests |
 | `--no-packet-loss` | | false | Skip packet loss test |
-| `--download-payload` | | `auto` | `auto`, `random`, or `zero` on an advertised Netspeed transport |
-| `--download-framing` | | `auto` | `auto`, `fixed`, or `chunked` |
-| `--download-chunk-bytes` | | `0` | Application chunk size; `0` uses the advertised default |
-| `--download-flush` | | `auto` | `auto`, `true`, or `false` per application chunk |
+| `--download-payload` | | `auto` | Netspeed negotiated value or Go Cloudflare observed-default constraint: `auto`, `random`, or `zero` |
+| `--download-framing` | | `auto` | Netspeed negotiated value or Go Cloudflare observed-default constraint: `auto`, `fixed`, or `chunked` |
+| `--download-chunk-bytes` | | `0` | Application chunk size; Cloudflare requires exact response-header evidence |
+| `--download-flush` | | `auto` | Per-chunk flush; Cloudflare requires exact response-header evidence |
 | `--json` | `-j` | false | Output results as JSON |
 | `--csv` | | false | Output results as CSV |
 | `--verbose` | `-v` | false | Show detailed progress |
@@ -176,9 +177,17 @@ throughput or latency samples.
   - advertised transport-version-1 names for payload (`random|zero`), framing
     (`fixed|chunked`), application chunk bytes, and per-chunk flush behavior.
 
-The Go client uses the names from `measurementCapabilities`; it does not assume
-that a future daemon retains the literal keys shown above. Explicit controls
-are never sent to a legacy server.
+The strict Go client uses the names from `measurementCapabilities`; it does not
+assume that a future daemon retains the literal keys shown above. Explicit
+controls are never sent to a legacy server.
+
+The Go Cloudflare adapter does not send those optional discriminator parameters.
+It first fetches 64 KiB through the common `bytes` key, classifies the
+provider-default payload and framing, and treats explicit transport flags as
+requirements on that observed behavior. Chunk size and flush settings require
+exact response-header evidence. A mismatch is an argument error rather than a
+silently ignored flag. Later downloads must retain the probed payload and
+framing classification.
 
 **accepted response**
 
@@ -198,10 +207,17 @@ mismatch invalidates the sample.
 
 A daemon advertising `httpPingPath` is probed with its preferred supported
 `GET` or `HEAD` method and a zero-byte response. When it also advertises
-`warmConnectionPing`, the Go client traces connection acquisition, discards cold
-attempts, and reports only a reused keep-alive sample. JSON latency samples
-include `connectionReused`, `probeTransport`, `probeMethod`, and `probePath`.
-The compatibility fallback remains `GET /__down?bytes=0`.
+`warmConnectionPing`, the strict Go client traces connection acquisition,
+discards cold attempts, and reports only a reused keep-alive sample. JSON
+latency samples include `connectionReused`, `probeTransport`, `probeMethod`, and
+`probePath`. The compatibility fallback remains `GET /__down?bytes=0`.
+
+The Go Cloudflare adapter always uses that fallback on a dedicated transport
+limited to one connection. It primes the connection for each idle or loaded
+condition and accepts only probes with traced `GotConnInfo.Reused=true`; up to
+four cold attempts are discarded rather than reported. Its JSON result adds
+warm-sample, warmup, discarded-cold, server-timing-adjustment, and observed HTTP
+protocol evidence.
 
 #### 2.1.3 `POST /__up` - verified upload
 
@@ -711,6 +727,15 @@ with `--json` flag, output matches the web client format exactly:
   "endTime": "2024-01-15T10:24:25.987654321Z"
 }
 ```
+
+Cloudflare provider JSON is a separate compatibility result rather than the
+strict web-result schema. The Go `cloudflare-http-v2` object includes an
+`httpTransport` section with behavioral-probe selection evidence and an
+`antiTransform` section. Its idle and loaded latency objects include
+`connectionReused`, `warmSamples`, `warmupRequests`,
+`discardedColdAttempts`, `serverTimingAdjustedSamples`, `probeTransport`,
+`probeMethod`, `probePath`, and `httpProtocols`. The C compatibility client
+remains `cloudflare-http-v1` until its negotiation phase.
 
 **when packet loss test is unavailable:**
 

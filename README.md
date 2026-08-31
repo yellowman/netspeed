@@ -420,18 +420,20 @@ Important CLI flags:
 | `-d, --download-only` | skip upload |
 | `-u, --upload-only` | skip download |
 | `--no-packet-loss` | skip WebRTC packet test |
-| `--download-payload` | `auto`, `random`, or `zero`; explicit values require advertised transport capabilities |
-| `--download-framing` | `auto`, `fixed`, or `chunked` |
-| `--download-chunk-bytes` | daemon application chunk size; `0` uses the advertised default |
-| `--download-flush` | `auto`, `true`, or `false` per application chunk |
+| `--download-payload` | `auto`, `random`, or `zero`; negotiated by Netspeed or enforced as an observed-default constraint by the Go Cloudflare adapter |
+| `--download-framing` | `auto`, `fixed`, or `chunked`; Cloudflare mode never sends an unadvertised framing query |
+| `--download-chunk-bytes` | application chunk size; `0` is automatic, while Cloudflare requires exact response-header evidence |
+| `--download-flush` | `auto`, `true`, or `false`; Cloudflare requires exact response-header evidence |
 | `--no-color` | disable terminal colors |
 | `-t, --timeout` | overall test timeout, default 60 seconds |
 
-The Go client validates `measurementCapabilities` before using it, follows only
-same-origin relative endpoint paths, and records the normalized choice as
-`meta.measurementSelection` in JSON output. Explicit transport controls are
-rejected rather than silently ignored when the endpoint is legacy or the
-Cloudflare compatibility provider is selected.
+The strict Go client validates `measurementCapabilities` before using it,
+follows only same-origin relative endpoint paths, and records the normalized
+choice as `meta.measurementSelection` in JSON output. The Go Cloudflare adapter
+instead behaviorally probes the common endpoint surface, records the evidence in
+`httpTransport`, and treats explicit controls as requirements on the observed
+provider defaults. It never sends Netspeed-only discriminator keys to an
+endpoint that did not advertise them.
 
 what it measures
 ----------------
@@ -510,12 +512,31 @@ links
 
 ### Cloudflare compatibility
 
-The native clients support `--provider auto`, `--provider netspeed`, and `--provider cloudflare`. `netspeed` preserves protocol-v2 metadata and verified upload receipts. `cloudflare` uses Cloudflare-compatible HTTP endpoints and reports upload evidence as client-observed, never as a Netspeed receipt. `auto` selects Cloudflare only after a positive Cloudflare hostname or response-header fingerprint; recognizable incompatible Netspeed metadata is never downgraded.
+The native clients support `--provider auto`, `--provider netspeed`, and
+`--provider cloudflare`. `netspeed` preserves protocol-v2 metadata and verified
+upload receipts. `cloudflare` uses the common Cloudflare HTTP surface and reports
+upload evidence as client-observed, never as a Netspeed receipt. `auto` selects
+Cloudflare only after a positive hostname or response-header fingerprint;
+recognizable incompatible Netspeed metadata is never downgraded.
 
-Cloudflare-compatible TURN loopback requires usable TURN credentials, supplied with `--turn-credentials-url` or `--turn-url`, `--turn-username`, and `--turn-credential`. The C build requires libdatachannel for this packet test; without it the measurement is explicitly unavailable.
+The Go Cloudflare path uses the `cloudflare-http-v2` contract. It probes and
+labels the provider-default download payload and framing, disables HTTP content
+decoding, sends `no-store, no-transform`, rejects encoded responses, and reports
+only warm latency samples whose keep-alive connection reuse was observed through
+`httptrace`. Explicit transport flags constrain the observed defaults; no
+Netspeed-only discriminator query parameters are sent. The native C path remains
+on `cloudflare-http-v1` until its transport-negotiation phase.
+
+Cloudflare-compatible TURN loopback requires usable TURN credentials, supplied
+with `--turn-credentials-url` or `--turn-url`, `--turn-username`, and
+`--turn-credential`. The C build requires libdatachannel for this packet test;
+without it the measurement is explicitly unavailable.
 
 ```sh
 netspeed --provider auto --server https://speed.cloudflare.com
+# Continue only if the provider-default body is demonstrably random.
+netspeed --provider cloudflare --download-payload random \
+  --server https://speed.cloudflare.com
 netspeed --provider cloudflare --server https://example.test \
   --turn-credentials-url https://example.test/turn-credentials
 netspeed-c --provider cloudflare --server https://example.test \

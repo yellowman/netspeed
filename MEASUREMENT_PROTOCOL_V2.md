@@ -44,12 +44,18 @@ A version-2 client starts with `GET /meta` and requires these fields:
   and anti-transform/proxy-buffer headers. Its complete schema is defined in
   [`HTTP_MEASUREMENT_TRANSPORT.md`](HTTP_MEASUREMENT_TRANSPORT.md).
 
-The Go CLI validates and negotiates this object, uses its advertised paths and
-parameter names, and publishes the normalized choice as
+The strict Go CLI validates and negotiates this object, uses its advertised paths
+and parameter names, and publishes the normalized choice as
 `meta.measurementSelection`. Explicit transport controls fail against an absent,
-unsafe, incomplete, or unsupported advertisement. The native C and browser
-clients retain the compatible defaults until their negotiation phases are
-implemented.
+unsafe, incomplete, or unsupported advertisement.
+
+The Go Cloudflare compatibility path has no authority to invent that
+advertisement. Its `cloudflare-http-v2` contract behaviorally probes the common
+`/__down?bytes=N` surface, records the observed provider-default payload and
+framing under `httpTransport`, and treats explicit transport flags as
+constraints. It never sends Netspeed-only discriminator keys merely because a
+CLI flag was present. The native C and browser clients retain the compatible
+defaults until their negotiation phases are implemented.
 
 A v2 client does not silently fall back to pre-v2 measurement methodology. A
 packet test may be reported as unavailable when its frame capability is missing,
@@ -81,10 +87,14 @@ The client accepts a sample only when:
 - the body contains exactly the requested number of bytes;
 - the measured body interval is positive.
 
-`Cache-Control: no-store, no-transform` applies in both modes. A negotiated Go
-sample additionally requires matching `X-Netspeed-Measurement`,
+`Cache-Control: no-store, no-transform` applies in both modes. A negotiated
+strict-Go sample additionally requires matching `X-Netspeed-Measurement`,
 `X-Netspeed-Payload`, `X-Netspeed-Framing`, and `X-Netspeed-Chunk-Bytes`
-headers. The Go client consumes the body without retaining it. The browser uses
+headers. The Go Cloudflare adapter sends `Accept-Encoding: identity`, disables
+automatic decompression, rejects non-identity response coding, and verifies that
+every throughput body retains the payload/framing behavior observed by its
+bounded preflight probe. The Go client consumes the body without retaining it
+beyond bounded windows distributed across the response. The browser uses
 a `ReadableStream` when available and otherwise refuses to materialize more
 than 100 MB.
 
