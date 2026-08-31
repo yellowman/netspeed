@@ -59,6 +59,7 @@ const SpeedTest = (function() {
     let requestStreamingSupport;
     let measurementSelection = HTTPTransport.legacySelection();
     let transportEvidence = null;
+    let websocketLatency = null;
 
     // Active plans are exposed for diagnostics. They contain bounded chunks and
     // concurrency rather than the former giant profile table.
@@ -143,6 +144,325 @@ const SpeedTest = (function() {
         return authenticatedHeaders(HTTPTransport.measurementRequestHeaders(base, upload));
     }
 
+    function websocketURL(path) {
+        const parsed = new URL(apiURL(path), browserPageURL());
+        if (parsed.protocol === 'http:') parsed.protocol = 'ws:';
+        else if (parsed.protocol === 'https:') parsed.protocol = 'wss:';
+        else throw new Error(`WebSocket ping endpoint must resolve from HTTP(S), got ${parsed.protocol}`);
+        return parsed.href;
+    }
+
+    function websocketPayload(sequence) {
+        const payload = new Uint8Array(HTTPTransport.WEBSOCKET_PING_PAYLOAD_BYTES);
+        payload.set([0x4e, 0x53, 0x50, 0x31], 0); // NSP1
+        new DataView(payload.buffer).setUint32(4, Number(sequence) >>> 0, false);
+        const suffix = payload.subarray(8);
+        const cryptoObject = typeof globalThis !== 'undefined' ? globalThis.crypto : null;
+        if (cryptoObject && typeof cryptoObject.getRandomValues === 'function') {
+            cryptoObject.getRandomValues(suffix);
+        } else {
+            for (let index = 0; index < suffix.length; index++) suffix[index] = Math.floor(Math.random() * 256);
+        }
+        return payload;
+    }
+
+    function websocketPayloadKey(payload) {
+        return Array.from(payload, value => value.toString(16).padStart(2, '0')).join('');
+    }
+
+    function asWebSocketBytes(data) {
+        if (data instanceof ArrayBuffer) return Promise.resolve(new Uint8Array(data));
+        if (ArrayBuffer.isView(data)) {
+            return Promise.resolve(new Uint8Array(data.buffer, data.byteOffset, data.byteLength));
+        }
+        if (data && typeof data.arrayBuffer === 'function') {
+            return data.arrayBuffer().then(buffer => new Uint8Array(buffer));
+        }
+        return Promise.reject(new Error('WebSocket ping returned a non-binary message'));
+    }
+
+    function updateWebSocketEvidence(manager) {
+        if (!transportEvidence || !manager) return;
+        const status = manager.status();
+        Object.assign(transportEvidence.latency.webSocket, status);
+        if (status.disabled && status.closeReason) {
+            transportEvidence.latency.fallbackUsed = true;
+            transportEvidence.latency.fallbackReason = status.closeReason;
+            transportEvidence.latency.activeTransport = 'http';
+            transportEvidence.latency.probeTransport = 'http';
+            transportEvidence.latency.probeMethod = measurementSelection.latencyMethod;
+            transportEvidence.latency.probePath = measurementSelection.latencyPath;
+        }
+    }
+
+    function createWebSocketLatencyManager(selection) {
+        if (!selection.webSocketPingPath) return null;
+
+        const state = {
+            socket: null,
+            connectPromise: null,
+            readyPromise: null,
+            pending: new Map(),
+            disabled: false,
+            closeReason: '',
+            intentionallyClosed: false,
+            connections: 0,
+            warmups: 0,
+            successfulPings: 0
+        };
+        const WebSocketConstructor = typeof globalThis !== 'undefined' ? globalThis.WebSocket : undefined;
+
+        function errorWithName(message, name = 'Error') {
+            const error = new Error(message);
+            error.name = name;
+            return error;
+        }
+
+        function rejectPending(error) {
+            for (const pending of state.pending.values()) {
+                clearTimeout(pending.timer);
+                if (pending.signal && pending.abortHandler) pending.signal.removeEventListener('abort', pending.abortHandler);
+                pending.reject(error);
+            }
+            state.pending.clear();
+        }
+
+        function disable(reason) {
+            if (!state.disabled) {
+                state.disabled = true;
+                state.closeReason = String(reason || 'WebSocket latency unavailable');
+            }
+            const error = new Error(state.closeReason);
+            rejectPending(error);
+            if (state.socket && state.socket.readyState < 2) {
+                try { state.socket.close(1000, 'HTTP fallback'); } catch (_) {}
+            }
+            updateWebSocketEvidence(manager);
+            return error;
+        }
+
+        if (typeof WebSocketConstructor !== 'function') {
+            state.disabled = true;
+            state.closeReason = 'WebSocket API unavailable';
+        } else if (accessToken()) {
+            state.disabled = true;
+            state.closeReason = 'browser WebSocket API cannot attach the configured bearer token';
+        } else if (requestCredentialsMode() === 'omit') {
+            state.disabled = true;
+            state.closeReason = "browser WebSocket API cannot guarantee credentials:'omit'";
+        } else if (requestCredentialsMode() === 'same-origin') {
+            const target = new URL(websocketURL(selection.webSocketPingPath));
+            const credentialOrigin = `${target.protocol === 'wss:' ? 'https:' : 'http:'}//${target.host}`;
+            if (credentialOrigin !== new URL(browserPageURL()).origin) {
+                state.disabled = true;
+                state.closeReason = "browser WebSocket API cannot guarantee credentials:'same-origin' for a cross-origin endpoint";
+            }
+        }
+
+        async function connect(signal) {
+            if (state.disabled) throw new Error(state.closeReason);
+            if (signal?.aborted) throw errorWithName('WebSocket ping aborted', 'AbortError');
+            if (state.socket && state.socket.readyState === 1) return state.socket;
+            if (state.connectPromise) return state.connectPromise;
+
+            state.connectPromise = new Promise((resolve, reject) => {
+                let settled = false;
+                let socket;
+                const finish = (error) => {
+                    if (settled) return;
+                    settled = true;
+                    clearTimeout(timer);
+                    if (signal && abortHandler) signal.removeEventListener('abort', abortHandler);
+                    if (error) reject(error);
+                    else resolve(socket);
+                };
+                const abortHandler = signal ? () => {
+                    try { socket?.close(); } catch (_) {}
+                    finish(errorWithName('WebSocket ping aborted', 'AbortError'));
+                } : null;
+                const timer = setTimeout(() => {
+                    try { socket?.close(); } catch (_) {}
+                    finish(new Error('WebSocket upgrade timed out'));
+                }, 5000);
+                if (signal && abortHandler) signal.addEventListener('abort', abortHandler, { once: true });
+
+                try {
+                    socket = new WebSocketConstructor(websocketURL(selection.webSocketPingPath), selection.webSocketPingProtocol);
+                    state.socket = socket;
+                    socket.binaryType = 'arraybuffer';
+                } catch (error) {
+                    finish(error);
+                    return;
+                }
+                socket.onopen = () => {
+                    if (socket.protocol !== selection.webSocketPingProtocol) {
+                        try { socket.close(1002, 'subprotocol mismatch'); } catch (_) {}
+                        finish(new Error(`WebSocket server selected protocol ${JSON.stringify(socket.protocol)}; expected ${JSON.stringify(selection.webSocketPingProtocol)}`));
+                        return;
+                    }
+                    state.connections++;
+                    finish(null);
+                    updateWebSocketEvidence(manager);
+                };
+                socket.onerror = () => finish(new Error('WebSocket upgrade or transport failed'));
+                socket.onclose = event => {
+                    state.socket = null;
+                    if (!state.intentionallyClosed && !state.disabled) {
+                        disable(`WebSocket closed${event?.code ? ` with code ${event.code}` : ''}${event?.reason ? `: ${event.reason}` : ''}`);
+                    }
+                };
+                socket.onmessage = event => {
+                    asWebSocketBytes(event.data).then(bytes => {
+                        if (bytes.length !== selection.webSocketPingPayloadBytes ||
+                            bytes[0] !== 0x4e || bytes[1] !== 0x53 || bytes[2] !== 0x50 || bytes[3] !== 0x31) {
+                            throw new Error('WebSocket ping returned an invalid binary payload');
+                        }
+                        const key = websocketPayloadKey(bytes);
+                        const pending = state.pending.get(key);
+                        if (!pending) throw new Error('WebSocket ping returned an unknown or stale nonce');
+                        state.pending.delete(key);
+                        clearTimeout(pending.timer);
+                        if (pending.signal && pending.abortHandler) pending.signal.removeEventListener('abort', pending.abortHandler);
+                        const endedPerformance = performance.now();
+                        const endedAt = Date.now();
+                        const rttMs = endedPerformance - pending.startedPerformance;
+                        if (!Number.isFinite(rttMs) || rttMs <= 0) throw new Error(`Invalid WebSocket latency duration: ${rttMs}`);
+                        pending.resolve({ rttMs, startedAt: pending.startedAt, endedAt });
+                    }).catch(error => disable(error.message || String(error)));
+                };
+            }).catch(error => {
+                if (error?.name === 'AbortError') throw error;
+                throw disable(`WebSocket latency upgrade failed: ${error.message || String(error)}`);
+            }).finally(() => {
+                state.connectPromise = null;
+            });
+            return state.connectPromise;
+        }
+
+        async function send(sequence, signal) {
+            const socket = await connect(signal);
+            if (signal?.aborted) throw errorWithName('WebSocket ping aborted', 'AbortError');
+            const payload = websocketPayload(sequence);
+            const key = websocketPayloadKey(payload);
+            return new Promise((resolve, reject) => {
+                const startedAt = Date.now();
+                const startedPerformance = performance.now();
+                const abortHandler = signal ? () => {
+                    const pending = state.pending.get(key);
+                    if (!pending) return;
+                    state.pending.delete(key);
+                    clearTimeout(pending.timer);
+                    reject(errorWithName('WebSocket ping aborted', 'AbortError'));
+                } : null;
+                const timer = setTimeout(() => {
+                    state.pending.delete(key);
+                    reject(disable('WebSocket ping message timed out'));
+                }, 10000);
+                state.pending.set(key, { resolve, reject, timer, signal, abortHandler, startedAt, startedPerformance });
+                if (signal && abortHandler) signal.addEventListener('abort', abortHandler, { once: true });
+                try {
+                    socket.send(payload);
+                } catch (error) {
+                    state.pending.delete(key);
+                    clearTimeout(timer);
+                    if (signal && abortHandler) signal.removeEventListener('abort', abortHandler);
+                    reject(disable(`WebSocket ping send failed: ${error.message || String(error)}`));
+                }
+            });
+        }
+
+        async function warm(signal) {
+            if (state.disabled) throw new Error(state.closeReason);
+            if (!state.readyPromise) {
+                state.readyPromise = send(0xffffffff, signal).then(() => {
+                    state.warmups++;
+                    updateWebSocketEvidence(manager);
+                }).catch(error => {
+                    state.readyPromise = null;
+                    if (error?.name === 'AbortError') throw error;
+                    throw disable(`WebSocket latency warmup failed: ${error.message || String(error)}`);
+                });
+            }
+            return state.readyPromise;
+        }
+
+        const manager = {
+            async warm(signal) {
+                await warm(signal);
+                return {
+                    connectionReused: true,
+                    connectionSetupMs: 0,
+                    connectionReuseEvidence: 'persistent-websocket-warmup',
+                    connectionSetupExcluded: true,
+                    probeTransport: 'websocket',
+                    probeMethod: 'MESSAGE',
+                    probePath: selection.webSocketPingPath,
+                    webSocketProtocol: selection.webSocketPingProtocol
+                };
+            },
+            async measure(condition, sequence, signal) {
+                await warm(signal);
+                let measured;
+                try {
+                    measured = await send(sequence, signal);
+                } catch (error) {
+                    if (error?.name === 'AbortError') throw error;
+                    throw disable(`WebSocket latency message failed: ${error.message || String(error)}`);
+                }
+                state.successfulPings++;
+                updateWebSocketEvidence(manager);
+                return {
+                    ts: measured.endedAt,
+                    startedAt: measured.startedAt,
+                    endedAt: measured.endedAt,
+                    rttMs: measured.rttMs,
+                    condition,
+                    loadOverlapped: false,
+                    timingSource: 'websocket-message',
+                    connectionReused: true,
+                    connectionSetupMs: 0,
+                    connectionReuseEvidence: 'persistent-websocket-message',
+                    connectionSetupExcluded: true,
+                    probeTransport: 'websocket',
+                    probeMethod: 'MESSAGE',
+                    probePath: selection.webSocketPingPath,
+                    webSocketProtocol: selection.webSocketPingProtocol
+                };
+            },
+            status() {
+                return {
+                    advertised: true,
+                    path: selection.webSocketPingPath,
+                    protocol: selection.webSocketPingProtocol,
+                    payloadBytes: selection.webSocketPingPayloadBytes,
+                    connections: state.connections,
+                    warmups: state.warmups,
+                    successfulPings: state.successfulPings,
+                    disabled: state.disabled,
+                    closeReason: state.closeReason
+                };
+            },
+            fallbackReason() { return state.closeReason; },
+            disabled() { return state.disabled; },
+            close() {
+                state.intentionallyClosed = true;
+                rejectPending(errorWithName('WebSocket ping closed', 'AbortError'));
+                if (state.socket) {
+                    try { state.socket.close(1000, 'test complete'); } catch (_) {}
+                }
+                state.socket = null;
+                updateWebSocketEvidence(manager);
+            }
+        };
+        updateWebSocketEvidence(manager);
+        return manager;
+    }
+
+    function closeWebSocketLatency() {
+        if (websocketLatency) websocketLatency.close();
+        websocketLatency = null;
+    }
+
     function configuredTransportPreferences() {
         const config = typeof globalThis !== 'undefined' ? globalThis.NETSPEED_CONFIG : undefined;
         return HTTPTransport.preferencesFromConfig(config);
@@ -169,16 +489,32 @@ const SpeedTest = (function() {
                 lastLatency: null
             },
             latency: {
-                probeTransport: 'http',
-                probeMethod: selection.latencyMethod,
-                probePath: selection.latencyPath,
+                preferredTransport: selection.preferredLatencyTransport || 'http',
+                activeTransport: selection.webSocketPingPath ? 'websocket' : 'http',
+                probeTransport: selection.webSocketPingPath ? 'websocket' : 'http',
+                probeMethod: selection.webSocketPingPath ? 'MESSAGE' : selection.latencyMethod,
+                probePath: selection.webSocketPingPath || selection.latencyPath,
                 warmConnectionAdvertised: selection.warmConnectionPing,
+                httpFallbackAvailable: selection.httpFallbackAvailable !== false,
+                fallbackUsed: false,
+                fallbackReason: '',
                 warmupRequests: 0,
                 discardedColdAttempts: 0,
                 discardedUnverifiableAttempts: 0,
                 verifiedReusedSamples: 0,
                 unobservableReuseSamples: 0,
-                nextHopProtocols: []
+                nextHopProtocols: [],
+                webSocket: {
+                    advertised: Boolean(selection.webSocketPingPath),
+                    path: selection.webSocketPingPath || '',
+                    protocol: selection.webSocketPingProtocol || '',
+                    payloadBytes: selection.webSocketPingPayloadBytes || 0,
+                    connections: 0,
+                    warmups: 0,
+                    successfulPings: 0,
+                    disabled: false,
+                    closeReason: ''
+                }
             }
         };
     }
@@ -1058,6 +1394,28 @@ const SpeedTest = (function() {
      * manual/fetchStart fallbacks are rejected rather than mislabeled as warm.
      */
     async function runLatencyProbe(condition, seq) {
+        let probeFallbackReason = '';
+        if (websocketLatency && !websocketLatency.disabled()) {
+            try {
+                const sample = await websocketLatency.measure(condition, seq, abortController?.signal);
+                if (transportEvidence) {
+                    transportEvidence.latency.activeTransport = 'websocket';
+                    transportEvidence.latency.probeTransport = 'websocket';
+                    transportEvidence.latency.probeMethod = 'MESSAGE';
+                    transportEvidence.latency.probePath = measurementSelection.webSocketPingPath;
+                    transportEvidence.latency.verifiedReusedSamples++;
+                }
+                return sample;
+            } catch (error) {
+                if (error?.name === 'AbortError') throw error;
+                probeFallbackReason = websocketLatency.fallbackReason() || error.message || String(error);
+                updateWebSocketEvidence(websocketLatency);
+            }
+        } else if (websocketLatency) {
+            probeFallbackReason = websocketLatency.fallbackReason();
+            updateWebSocketEvidence(websocketLatency);
+        }
+
         const attempts = measurementSelection.warmConnectionPing ? 3 : 1;
         let lastRejected = null;
         for (let attempt = 0; attempt < attempts; attempt++) {
@@ -1072,7 +1430,16 @@ const SpeedTest = (function() {
                 if (transportEvidence) transportEvidence.latency.discardedUnverifiableAttempts++;
                 continue;
             }
+            if (probeFallbackReason) sample.probeFallbackReason = probeFallbackReason;
             if (transportEvidence) {
+                transportEvidence.latency.activeTransport = 'http';
+                transportEvidence.latency.probeTransport = 'http';
+                transportEvidence.latency.probeMethod = sample.probeMethod;
+                transportEvidence.latency.probePath = sample.probePath;
+                if (probeFallbackReason) {
+                    transportEvidence.latency.fallbackUsed = true;
+                    transportEvidence.latency.fallbackReason = probeFallbackReason;
+                }
                 if (sample.connectionReused === true) transportEvidence.latency.verifiedReusedSamples++;
                 else if (sample.connectionReused === null) transportEvidence.latency.unobservableReuseSamples++;
             }
@@ -1089,6 +1456,21 @@ const SpeedTest = (function() {
 
     async function warmLatencyConnection(condition) {
         if (transportEvidence) transportEvidence.latency.warmupRequests++;
+        if (websocketLatency && !websocketLatency.disabled()) {
+            try {
+                const sample = await websocketLatency.warm(abortController?.signal);
+                if (transportEvidence) {
+                    transportEvidence.latency.activeTransport = 'websocket';
+                    transportEvidence.latency.lastWarmup = { ...sample };
+                }
+                return sample;
+            } catch (error) {
+                if (error?.name === 'AbortError') throw error;
+                updateWebSocketEvidence(websocketLatency);
+            }
+        } else if (websocketLatency) {
+            updateWebSocketEvidence(websocketLatency);
+        }
         try {
             const sample = await runLatencyAttempt(condition, 'warmup', 0);
             if (transportEvidence) {
@@ -2539,6 +2921,7 @@ const SpeedTest = (function() {
         abortController = new AbortController();
         timingFallbackCount = 0;
         resourceTimingUsed = false;
+        closeWebSocketLatency();
         measurementSelection = HTTPTransport.legacySelection();
         transportEvidence = null;
         delete DOWNLOAD_PROFILES.window;
@@ -2614,6 +2997,8 @@ const SpeedTest = (function() {
                 configuredTransportPreferences()
             );
             transportEvidence = createTransportEvidence(measurementSelection);
+            websocketLatency = createWebSocketLatencyManager(measurementSelection);
+            updateWebSocketEvidence(websocketLatency);
             results.httpTransport = transportEvidence;
             meta.measurementSelection = HTTPTransport.cloneSelection(measurementSelection);
 
@@ -2708,6 +3093,8 @@ const SpeedTest = (function() {
             }
             throw err;
         } finally {
+            updateWebSocketEvidence(websocketLatency);
+            closeWebSocketLatency();
             isRunning = false;
             abortController = null;
         }
@@ -2720,6 +3107,7 @@ const SpeedTest = (function() {
         if (abortController) {
             abortController.abort();
         }
+        closeWebSocketLatency();
         isRunning = false;
         isPaused = false;
     }
@@ -2846,10 +3234,14 @@ const SpeedTest = (function() {
             getStageOutcomes,
             setResults(value) { results = value; },
             setMeasurementTransport(capabilities, preferences = {}) {
+                closeWebSocketLatency();
                 measurementSelection = HTTPTransport.negotiate(capabilities, preferences);
                 transportEvidence = createTransportEvidence(measurementSelection);
+                websocketLatency = createWebSocketLatencyManager(measurementSelection);
+                updateWebSocketEvidence(websocketLatency);
                 return HTTPTransport.cloneSelection(measurementSelection);
             },
+            closeWebSocketLatency,
             getMeasurementTransport() { return HTTPTransport.cloneSelection(measurementSelection); },
             getTransportEvidence() { return transportEvidence ? JSON.parse(JSON.stringify(transportEvidence)) : null; },
             resetRequestStreamingSupport() { requestStreamingSupport = undefined; },

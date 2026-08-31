@@ -19,6 +19,7 @@ import (
 	"github.com/yellowman/netspeed/internal/measurementhttp"
 	"github.com/yellowman/netspeed/internal/protocol"
 	"github.com/yellowman/netspeed/internal/webrtc"
+	"github.com/yellowman/netspeed/internal/websocketping"
 )
 
 // calculateSpeedMbps calculates speed in megabits per second from bytes and duration.
@@ -103,6 +104,27 @@ func (s *Server) handlePing(w http.ResponseWriter, r *http.Request) {
 		Framing:    measurementhttp.FramingFixed,
 		ChunkBytes: measurementhttp.DefaultChunkBytes,
 	}, "latency")
+}
+
+// handleWebSocketPing upgrades GET /__ws and keeps one application-level echo
+// channel open for unloaded and loaded latency samples. The upgrade itself is
+// never included in a reported RTT. Clients that cannot upgrade fall back to
+// the advertised warm HTTP endpoint.
+func (s *Server) handleWebSocketPing(w http.ResponseWriter, r *http.Request) {
+	if !s.webSocketOriginAllowed(r) {
+		w.Header().Set("Cache-Control", measurementhttp.CacheControl)
+		http.Error(w, "WebSocket origin is not allowed", http.StatusForbidden)
+		return
+	}
+
+	release, admitted := s.beginTransfer(w, r)
+	if !admitted {
+		return
+	}
+	defer release()
+
+	err := websocketping.Serve(w, r, nil)
+	websocketping.LogServeError(s.clientIP(r), err)
 }
 
 func (s *Server) serveDownload(w http.ResponseWriter, r *http.Request, options measurementhttp.DownloadOptions, measurement string) {

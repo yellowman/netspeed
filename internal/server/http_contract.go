@@ -137,6 +137,30 @@ func (s *Server) corsMiddleware(next http.Handler) http.Handler {
 	})
 }
 
+// webSocketOriginAllowed applies the browser-origin boundary even when the
+// ordinary Fetch CORS middleware is disabled. Browser WebSocket handshakes do
+// not enforce CORS, so silently accepting every Origin in that configuration
+// would turn "CORS disabled" into a cross-site WebSocket permission. Native
+// clients omit Origin and remain unaffected.
+func (s *Server) webSocketOriginAllowed(request *http.Request) bool {
+	origin := strings.TrimSpace(request.Header.Get("Origin"))
+	if origin == "" {
+		return true
+	}
+	if s.cfg.EnableCORS {
+		allowed, _ := s.allowedOrigin(origin)
+		return allowed
+	}
+
+	incoming, err := url.Parse(origin)
+	if err != nil || (incoming.Scheme != "http" && incoming.Scheme != "https") ||
+		incoming.Host == "" || incoming.User != nil || incoming.Path != "" ||
+		incoming.RawQuery != "" || incoming.Fragment != "" {
+		return false
+	}
+	return strings.EqualFold(incoming.Host, strings.TrimSpace(request.Host))
+}
+
 func (s *Server) allowedOrigin(origin string) (allowed, wildcard bool) {
 	incoming, err := url.Parse(strings.TrimSpace(origin))
 	if err != nil || incoming.Scheme == "" || incoming.Host == "" || incoming.User != nil ||

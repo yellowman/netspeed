@@ -16,23 +16,25 @@ The server instead uses four independent limits:
 |---|---:|---|
 | `NETSPEEDD_READ_HEADER_TIMEOUT` / `-read-header-timeout` | 10s | request headers only |
 | `NETSPEEDD_CONTROL_TIMEOUT` / `-control-timeout` | 30s | metadata, `/__ping`, health, locations, metrics, signaling, reports, and static files |
-| `NETSPEEDD_TRANSFER_TIMEOUT` / `-transfer-timeout` | 5m | one `/__down` or `/__up` request |
+| `NETSPEEDD_TRANSFER_TIMEOUT` / `-transfer-timeout` | 5m | one `/__down` or `/__up` request, or one persistent `/__ws` latency session |
 | `NETSPEEDD_IDLE_TIMEOUT` / `-idle-timeout` | 2m | an idle keep-alive connection |
 
 Endpoint wrappers set connection read/write deadlines only for the operation
 that needs them and clear those deadlines before the connection can be reused.
 They also attach the same deadline to the request context. Download requests get
-a write deadline; uploads get read and write deadlines; control requests get
-both. The transfer timeout must be large enough for the largest permitted
-request at the slowest link rate the deployment intends to support.
+a write deadline; uploads and the bidirectional WebSocket echo get read and
+write deadlines; control requests get both. The transfer timeout must be large
+enough for the largest permitted request at the slowest link rate and longer
+than the complete client test when `/__ws` is enabled.
 
 ## 2. Browser routing
 
 ### Same-origin deployment
 
 When the UI and daemon share an origin, no browser configuration is required.
-The browser uses `/meta`, `/__down`, `/__up`, `/__ping`, `/locations`, and
-`/api/*` on the page origin.
+The browser uses `/meta`, `/__down`, `/__up`, `/__ws`, `/__ping`, `/locations`,
+and `/api/*` on the page origin. `/__ws` is used only when `/meta` advertises the
+exact `netspeed.ping.v1` application-echo contract.
 
 When bearer authentication is enabled, `/locations` is protected and successful
 responses are `Cache-Control: private, no-store` with `Pragma: no-cache` and
@@ -90,6 +92,15 @@ A bearer token configured as `accessToken` is sent in the `Authorization`
 header. A token embedded in browser JavaScript is visible to that browser and
 is not a secret from the user.
 
+The browser WebSocket constructor cannot attach that `Authorization` header and
+cannot guarantee Fetch-equivalent cookie suppression. Browser latency therefore
+uses warm HTTP immediately when `accessToken` is set, credentials are `omit`,
+or credentials are `same-origin` while the API is cross-origin. With a
+same-origin API and ordinary same-origin credentials, or an explicitly
+credentialed cross-origin `include` deployment, the browser may use the
+advertised WebSocket. Any upgrade or message failure permanently selects warm
+HTTP for the remainder of that test.
+
 `measurementTransport` selects the version-1 HTTP discriminators after `/meta`
 validation. Its fields accept `auto|random|zero`, `auto|fixed|chunked`, a chunk
 size where `0` means the advertised default, and `auto|true|false` for flushing.
@@ -132,6 +143,13 @@ Both preflight and actual requests carrying a disallowed `Origin` receive
 `403 Forbidden`. Requests without an `Origin` header, including the Go CLI,
 remain unaffected.
 
+Browser WebSocket upgrades do not use a CORS preflight, but they do carry an
+`Origin` header. The same allowlist rejects a disallowed `/__ws` upgrade before
+it consumes a transfer slot. When Fetch CORS is disabled, `/__ws` still accepts
+only a same-host browser `Origin`; native clients that omit `Origin` are
+unaffected. A wildcard non-credentialed origin still cannot override the
+browser credential restrictions described above.
+
 `Timing-Allow-Origin` is required for a separately hosted browser to inspect
 cross-origin Resource Timing fields. When warm probing is advertised, the
 browser rejects a manual or `fetchStart` latency fallback that cannot exclude
@@ -151,10 +169,11 @@ address and list every trusted proxy network explicitly:
 ```
 
 Forwarding headers from all other peers are ignored. The proxy must not buffer,
-compress, cache, or transform `/__down`, `/__up`, or `/__ping`; doing so changes
-the path being measured. It should also permit request and response bodies up
-to `NETSPEEDD_MAX_BYTES` and use upstream timeouts at least as long as
-`NETSPEEDD_TRANSFER_TIMEOUT`.
+compress, cache, or transform `/__down`, `/__up`, `/__ping`, or the `/__ws`
+upgrade; doing so changes the path being measured. It must pass WebSocket
+Upgrade and Connection headers unchanged. It should also permit request and
+response bodies up to `NETSPEEDD_MAX_BYTES` and use upstream timeouts at least
+as long as `NETSPEEDD_TRANSFER_TIMEOUT`.
 
 The daemon emits `Cache-Control: no-store, no-transform` and
 `X-Accel-Buffering: no`, but those are not a substitute for proxy configuration.
@@ -183,6 +202,22 @@ location ~ ^/__(down|up|ping)$ {
     proxy_read_timeout 5m;     # keep aligned with NETSPEEDD_TRANSFER_TIMEOUT
     proxy_send_timeout 5m;
 }
+
+location = /__ws {
+    proxy_pass http://127.0.0.1:8080;
+    proxy_http_version 1.1;
+    proxy_set_header Upgrade $http_upgrade;
+    proxy_set_header Connection "upgrade";
+
+    proxy_cache off;
+    proxy_buffering off;
+    gzip off;
+    proxy_set_header Accept-Encoding "";
+    proxy_pass_header X-Accel-Buffering;
+
+    proxy_read_timeout 5m;
+    proxy_send_timeout 5m;
+}
 ```
 
 Do not configure `proxy_ignore_headers X-Accel-Buffering` for these routes. The
@@ -198,7 +233,7 @@ measurement paths and do not add `request_buffers`, `response_buffers`, or an
 `encode` handler to them:
 
 ```caddyfile
-@measurement path /__down /__up /__ping
+@measurement path /__down /__up /__ping /__ws
 reverse_proxy @measurement 127.0.0.1:8080 {
     flush_interval -1
 }
@@ -211,7 +246,7 @@ chooses immediate downstream forwarding.
 
 A path-prefixed deployment can strip the prefix before proxying. For example,
 an upstream route `/netspeed-api/` should present `/meta`, `/__down`, `/__up`,
-`/__ping`, and the other root paths to `netspeedd`, while the browser uses
+`/__ws`, `/__ping`, and the other root paths to `netspeedd`, while the browser uses
 `apiBaseUrl: "https://example.com/netspeed-api/"`.
 
 ## 5. Direct TLS

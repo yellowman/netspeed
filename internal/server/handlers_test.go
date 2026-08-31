@@ -2,6 +2,7 @@ package server
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"io"
@@ -9,12 +10,15 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/yellowman/netspeed/internal/clientaddr"
 	"github.com/yellowman/netspeed/internal/config"
 	"github.com/yellowman/netspeed/internal/limits"
+	"github.com/yellowman/netspeed/internal/measurementhttp"
 	"github.com/yellowman/netspeed/internal/meta"
 	"github.com/yellowman/netspeed/internal/protocol"
+	"github.com/yellowman/netspeed/internal/websocketping"
 )
 
 type panicReadCloser struct{}
@@ -91,11 +95,39 @@ func TestHandleMetaAdvertisesMeasurementCapabilities(t *testing.T) {
 		t.Fatalf("packetLossFrameVersion = %d; want %d", got.PacketLossFrameVersion, protocol.PacketLossFrameVersion)
 	}
 	if got.MeasurementCapabilities == nil || got.MeasurementCapabilities.HTTPPingPath != "/__ping" ||
+		got.MeasurementCapabilities.WebSocketPingPath != "/__ws" ||
+		got.MeasurementCapabilities.WebSocketPingProtocol != measurementhttp.WebSocketPingSubprotocol ||
+		got.MeasurementCapabilities.WebSocketPingPayloadBytes != measurementhttp.WebSocketPingPayloadBytes ||
 		len(got.MeasurementCapabilities.DownloadPayloads) != 2 || len(got.MeasurementCapabilities.DownloadFramings) != 2 ||
 		!got.MeasurementCapabilities.NoTransform || got.MeasurementCapabilities.ProxyBufferSuppressionHeader != "X-Accel-Buffering: no" ||
 		got.MeasurementCapabilities.DownloadPayloadParameter != "payload" || got.MeasurementCapabilities.DownloadFramingParameter != "framing" ||
 		len(got.MeasurementCapabilities.HTTPPingMethods) != 2 || !got.MeasurementCapabilities.WarmConnectionPing {
 		t.Fatalf("measurementCapabilities = %#v; want HTTP transport discriminators", got.MeasurementCapabilities)
+	}
+}
+
+func TestHandleWebSocketPingEchoesPersistentBinaryNonces(t *testing.T) {
+	s := measurementTestServer(1024)
+	server := httptest.NewServer(http.HandlerFunc(s.handleWebSocketPing))
+	defer server.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	client, err := websocketping.Dial(ctx, server.URL, "/__ws", "", "netspeedd-handler-test", time.Second)
+	if err != nil {
+		t.Fatalf("dial WebSocket ping: %v", err)
+	}
+	for sequence := uint32(1); sequence <= 2; sequence++ {
+		payload, err := websocketping.NewPayload(sequence)
+		if err != nil {
+			t.Fatalf("create WebSocket payload: %v", err)
+		}
+		if rtt, err := client.Ping(ctx, payload); err != nil || rtt <= 0 {
+			t.Fatalf("WebSocket ping %d RTT=%s error=%v", sequence, rtt, err)
+		}
+	}
+	if err := client.Close(); err != nil {
+		t.Fatalf("close WebSocket ping: %v", err)
 	}
 }
 

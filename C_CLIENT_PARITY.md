@@ -19,8 +19,9 @@ The C client implements the following v2 invariants:
   packet-test requests;
 - validates and negotiates `measurementCapabilities` version 1, including
   advertised endpoint paths, distinct query-parameter names, payload and
-  framing choices, chunk bounds, upload identity coding, warm HTTP ping, and
-  anti-transform controls;
+  framing choices, chunk bounds, upload identity coding, the exact optional
+  `netspeed.ping.v1` WebSocket contract, warm HTTP fallback, and anti-transform
+  controls;
 - supports `random` and `zero` download payloads, `fixed` and `chunked`
   framing, explicit application chunk size, and per-chunk flush selection;
 - rejects explicit transport controls on legacy or incompatible servers rather
@@ -28,11 +29,17 @@ The C client implements the following v2 invariants:
 - sends `Accept-Encoding: identity`, `Cache-Control: no-store, no-transform`,
   and `Pragma: no-cache` on every HTTP measurement request and disables
   libcurl's automatic content decoding;
-- rejects response payload, framing, chunk, compression, cache-control,
-  proxy-buffer-suppression, upload-byte, or ingestion-duration mismatches;
-- performs strict HTTP latency through the advertised zero-byte endpoint,
-  discards cold probes when warm reuse is promised, and records the actual
-  probe path, method, transport, and connection-reuse evidence;
+- rejects declared payload, framing, chunk, compression, cache-control,
+  proxy-buffer-suppression, upload-byte, or ingestion-duration mismatches and
+  exact download-size mismatches; strict random/zero body-content sampling
+  remains a separate hardening item;
+- establishes one persistent WebSocket latency echo through libcurl's connected
+  socket when the exact path, subprotocol, and 16-byte payload are advertised,
+  excludes upgrade and one warmup from RTT, and permanently falls back to the
+  advertised warm HTTP endpoint after any upgrade or message failure;
+- discards cold HTTP probes when warm reuse is promised and records the actual
+  probe path, method, transport, fallback reason, subprotocol, and
+  connection-reuse evidence;
 - rejects non-success HTTP responses, unexpected content types, redirects,
   truncated downloads, declared-length mismatches, and non-positive timing;
 - streams upload bodies from a bounded generator rather than allocating the
@@ -132,8 +139,10 @@ Packet fields use the same directional names as the Go client, including
 `acknowledgementsReceived`, and `reverseAcknowledgementLossPercent`.
 
 Strict Netspeed JSON includes `meta.measurementCapabilities` and the normalized
-`meta.measurementSelection`. Each HTTP latency sample includes
-`connectionReused`, `probeTransport`, `probeMethod`, and `probePath`.
+`meta.measurementSelection`. Each latency sample includes `connectionReused`,
+`probeTransport`, `probeMethod`, and `probePath`; WebSocket samples add
+`webSocketProtocol`, while HTTP samples after a WebSocket failure add
+`probeFallbackReason`.
 
 Cloudflare compatibility uses the `cloudflare-http-v2` result contract. Before
 measurement, the C client fetches a bounded 64 KiB body through only the common

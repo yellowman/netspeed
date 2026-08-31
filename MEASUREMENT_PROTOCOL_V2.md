@@ -25,7 +25,10 @@ A version-2 client starts with `GET /meta` and requires these fields:
     "downloadPayloads": ["random", "zero"],
     "downloadFramings": ["fixed", "chunked"],
     "httpPingPath": "/__ping",
-    "httpPingMethods": ["GET", "HEAD"]
+    "httpPingMethods": ["GET", "HEAD"],
+    "webSocketPingPath": "/__ws",
+    "webSocketPingProtocol": "netspeed.ping.v1",
+    "webSocketPingPayloadBytes": 16
   }
 }
 ```
@@ -40,8 +43,9 @@ A version-2 client starts with `GET /meta` and requires these fields:
 - `packetLossFrameVersion` must be at least `1` for the packet test.
 - `measurementCapabilities` is an optional transport-control extension. Version
   1 advertises exact query parameter names, pseudorandom and zero-fill payloads,
-  fixed and streamed framing, upload content-coding restrictions, warm HTTP ping,
-  and anti-transform/proxy-buffer headers. Its complete schema is defined in
+  fixed and streamed framing, upload content-coding restrictions, an optional
+  persistent WebSocket echo, warm HTTP fallback, and anti-transform/proxy-buffer
+  headers. Its complete schema is defined in
   [`HTTP_MEASUREMENT_TRANSPORT.md`](HTTP_MEASUREMENT_TRANSPORT.md).
 
 The strict Go CLI, native C CLI, and browser validate and negotiate this
@@ -212,28 +216,43 @@ for old internally constructed result fixtures, not normal v2 runs.
 ### 4.1 unloaded latency
 
 A normal run requests 20 latency probes; quick mode uses fewer probes according
-to the client configuration. When transport capabilities advertise `/__ping`,
-a probe is a zero-body `GET` or `HEAD` to that path. Otherwise the compatibility
-fallback is `GET /__down?bytes=0`. RTT is the interval from request write
-completion to first response byte when precise timing is available.
+to the client configuration. A client prefers WebSocket only when the capability
+object supplies the exact same-origin path, `netspeed.ping.v1` subprotocol, and
+16-byte payload contract. It establishes one persistent connection, sends one
+unreported warmup message, and then measures from each binary send to the exact
+nonce echo. DNS, TCP, TLS, HTTP Upgrade, and warmup time are outside the sample.
 
-Capability-aware clients warm and reuse a persistent HTTP transport so
-repeated DNS, TCP, QUIC, and TLS setup is excluded. The Go and native C clients
-record the method, path, transport, and observed connection reuse. When the
-server promises warm probing, a cold attempt is discarded and retried up to
-three times; only a reused attempt becomes a native sample.
+The application payload is `NSP1`, a big-endian 32-bit sequence number, and an
+8-byte random nonce. Text, fragmented, malformed, oversized, or mismatched echo
+messages are protocol failures. After the first upgrade, timeout, close,
+subprotocol, framing, or echo failure, the client disables WebSocket for the
+remainder of the run and permanently uses the advertised warm HTTP path. The
+fallback reason is attached to later HTTP samples rather than retried on every
+probe.
 
-The browser warms its origin pool and uses Resource Timing. It discards probes
-that visibly establish a connection. When connection fields are hidden, a
-`requestStart`-to-`responseStart` sample may remain valid because the interval
-itself excludes setup, but it is labeled `connectionReused: null`. A manual or
-`fetchStart` fallback whose reuse is unobservable is rejected when warm probing
-was promised. Cross-origin deployments must preserve `Timing-Allow-Origin`.
+HTTP uses a zero-body `GET` or `HEAD` to the advertised `/__ping` path, or
+`GET /__down?bytes=0` when no dedicated path exists. RTT is request-write
+completion to first response byte when precise timing is available. The Go and
+native C clients warm one transport, require observed connection reuse when the
+server promises it, and discard up to three cold attempts rather than reporting
+handshake-contaminated latency.
 
-WebSocket probing remains optional: a client may use it only when a path is
-explicitly advertised and must otherwise retain HTTP fallback. Warmup removal
-drops the first two valid unloaded samples before summary statistics are
-computed.
+The browser cannot send native WebSocket control pings, inspect upgrade headers,
+attach an `Authorization` header, or reproduce every Fetch cookie-suppression
+mode. It therefore uses the same application echo, validates the selected
+subprotocol and nonce, and starts with HTTP when a bearer token is configured,
+credentials are `omit`, or `same-origin` credentials are paired with a
+cross-origin API. On HTTP it warms the origin pool and uses Resource Timing. A
+visible connection setup is discarded; hidden setup fields can yield
+`connectionReused: null` only when `requestStart` to `responseStart` itself
+excludes setup. Cross-origin HTTP deployments must preserve
+`Timing-Allow-Origin`.
+
+Accepted samples label `probeTransport`, `probeMethod`, `probePath`,
+`webSocketProtocol`, and any `probeFallbackReason`. Cloudflare compatibility
+mode remains HTTP-only and never infers the private Netspeed WebSocket path.
+Warmup removal drops the first two valid unloaded samples before summary
+statistics are computed.
 
 ### 4.2 loaded latency
 

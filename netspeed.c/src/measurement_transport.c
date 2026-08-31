@@ -4,6 +4,7 @@
 #include "measurement_transport.h"
 
 #include "timing.h"
+#include "websocket_ping.h"
 
 #include <ctype.h>
 #include <inttypes.h>
@@ -190,6 +191,32 @@ static int validate_capabilities(const measurement_capabilities_t *capabilities,
     if (status != ERR_OK) {
         return status;
     }
+    if (!capabilities->websocket_ping_path[0]) {
+        if (capabilities->websocket_ping_protocol[0] ||
+            capabilities->websocket_ping_payload_bytes != 0) {
+            set_message(error, error_capacity,
+                        "WebSocket ping metadata is advertised without webSocketPingPath");
+            return ERR_PROTOCOL;
+        }
+    } else {
+        if (strcmp(capabilities->websocket_ping_protocol,
+                   NETSPEED_WEBSOCKET_PING_PROTOCOL) != 0) {
+            set_message(error, error_capacity,
+                        "unsupported WebSocket ping protocol %s",
+                        capabilities->websocket_ping_protocol[0]
+                            ? capabilities->websocket_ping_protocol
+                            : "<missing>");
+            return ERR_PROTOCOL;
+        }
+        if (capabilities->websocket_ping_payload_bytes !=
+            NETSPEED_WEBSOCKET_PING_PAYLOAD_BYTES) {
+            set_message(error, error_capacity,
+                        "unsupported WebSocket ping payload size %d; need %d",
+                        capabilities->websocket_ping_payload_bytes,
+                        NETSPEED_WEBSOCKET_PING_PAYLOAD_BYTES);
+            return ERR_PROTOCOL;
+        }
+    }
 
     const char *parameter_names[] = {
         capabilities->download_bytes_parameter,
@@ -334,6 +361,9 @@ void measurement_selection_legacy(measurement_selection_t *selection)
     snprintf(selection->latency_path, sizeof(selection->latency_path), "%s", "/__down");
     snprintf(selection->latency_method, sizeof(selection->latency_method), "%s", "GET");
     selection->latency_uses_download_endpoint = true;
+    snprintf(selection->preferred_latency_transport,
+             sizeof(selection->preferred_latency_transport), "%s", "http");
+    selection->http_fallback_available = true;
 }
 
 int measurement_negotiate(const measurement_capabilities_t *capabilities,
@@ -441,6 +471,8 @@ int measurement_negotiate(const measurement_capabilities_t *capabilities,
     COPY_FIELD(upload_bytes_parameter, upload_bytes_parameter);
     COPY_FIELD(response_cache_control, response_cache_control);
     COPY_FIELD(proxy_buffer_suppression_header, proxy_buffer_suppression_header);
+    COPY_FIELD(websocket_ping_path, websocket_ping_path);
+    COPY_FIELD(websocket_ping_protocol, websocket_ping_protocol);
 #undef COPY_FIELD
     snprintf(selection->download_payload, sizeof(selection->download_payload), "%s", payload);
     snprintf(selection->download_framing, sizeof(selection->download_framing), "%s", framing);
@@ -449,6 +481,12 @@ int measurement_negotiate(const measurement_capabilities_t *capabilities,
     snprintf(selection->upload_content_encoding,
              sizeof(selection->upload_content_encoding), "%s", "identity");
     selection->no_transform = capabilities->no_transform;
+    selection->websocket_ping_payload_bytes =
+        capabilities->websocket_ping_payload_bytes;
+    snprintf(selection->preferred_latency_transport,
+             sizeof(selection->preferred_latency_transport), "%s",
+             capabilities->websocket_ping_path[0] ? "websocket" : "http");
+    selection->http_fallback_available = true;
 
     if (capabilities->http_ping_path[0]) {
         snprintf(selection->latency_path, sizeof(selection->latency_path), "%s",

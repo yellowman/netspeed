@@ -103,6 +103,14 @@ type Client struct {
 	packetLossFrameVersion          int
 	maxConcurrentTransfersPerClient int
 	measurementTransport            measurementhttp.Selection
+	websocketLatency                *websocketLatencyProbe
+}
+
+func (c *Client) closeWebSocketLatency() {
+	if c.websocketLatency != nil {
+		c.websocketLatency.close()
+		c.websocketLatency = nil
+	}
 }
 
 // New creates a new speed test client.
@@ -180,6 +188,9 @@ func (c *Client) Run(ctx context.Context) (*Results, error) {
 		return nil, fmt.Errorf("negotiate HTTP measurement transport: %w", err)
 	}
 	c.measurementTransport = selection
+	c.closeWebSocketLatency()
+	c.websocketLatency = newWebSocketLatencyProbe(c.cfg, selection)
+	defer c.closeWebSocketLatency()
 	meta.MeasurementSelection = &c.measurementTransport
 	if meta.MaxTransferBytes > 0 {
 		c.maxTransferBytes = meta.MaxTransferBytes
@@ -437,10 +448,14 @@ func (c *Client) quickBandwidthEstimate(ctx context.Context) float64 {
 }
 
 type latencyProbeMeasurement struct {
-	RTT              time.Duration
-	ConnectionReused bool
-	Method           string
-	Path             string
+	RTT               time.Duration
+	ConnectionReused  bool
+	Transport         string
+	TimingSource      string
+	Method            string
+	Path              string
+	FallbackReason    string
+	WebSocketProtocol string
 }
 
 func (c *Client) measureLatencySample(ctx context.Context, condition string, seq int) (LatencySample, error) {
@@ -453,16 +468,18 @@ func (c *Client) measureLatencySample(ctx context.Context, condition string, seq
 		return LatencySample{}, err
 	}
 	return LatencySample{
-		Timestamp:        endedAt,
-		StartedAt:        startedAt,
-		EndedAt:          endedAt,
-		RTT:              probe.RTT,
-		Condition:        condition,
-		TimingSource:     "httptrace",
-		ConnectionReused: probe.ConnectionReused,
-		ProbeTransport:   "http",
-		ProbeMethod:      probe.Method,
-		ProbePath:        probe.Path,
+		Timestamp:           endedAt,
+		StartedAt:           startedAt,
+		EndedAt:             endedAt,
+		RTT:                 probe.RTT,
+		Condition:           condition,
+		TimingSource:        probe.TimingSource,
+		ConnectionReused:    probe.ConnectionReused,
+		ProbeTransport:      probe.Transport,
+		ProbeMethod:         probe.Method,
+		ProbePath:           probe.Path,
+		ProbeFallbackReason: probe.FallbackReason,
+		WebSocketProtocol:   probe.WebSocketProtocol,
 	}, nil
 }
 
@@ -471,6 +488,23 @@ func (c *Client) measureLatencySample(ctx context.Context, condition string, seq
 // connection support must produce a reused keep-alive connection; an unmeasured
 // cold probe is retried rather than contaminating the reported sample.
 func (c *Client) measureLatency(ctx context.Context, condition string, seq int) (latencyProbeMeasurement, error) {
+	fallbackReason := ""
+	if c.websocketLatency != nil {
+		if probe, used, reason := c.websocketLatency.measure(ctx, seq); used {
+			return probe, nil
+		} else {
+			fallbackReason = reason
+		}
+	}
+	probe, err := c.measureHTTPLatency(ctx, condition, seq)
+	if err != nil {
+		return latencyProbeMeasurement{}, err
+	}
+	probe.FallbackReason = fallbackReason
+	return probe, nil
+}
+
+func (c *Client) measureHTTPLatency(ctx context.Context, condition string, seq int) (latencyProbeMeasurement, error) {
 	_netspeedProgress := nsBeginProgress("latency probes")
 	defer _netspeedProgress.Done("complete")
 	attempts := 1
@@ -540,6 +574,8 @@ func (c *Client) measureLatencyAttempt(ctx context.Context, condition string, se
 	return latencyProbeMeasurement{
 		RTT:              rtt,
 		ConnectionReused: timing.connectionReused,
+		Transport:        "http",
+		TimingSource:     "httptrace",
 		Method:           method,
 		Path:             c.measurementTransport.LatencyPath,
 	}, nil
@@ -1067,11 +1103,13 @@ func (c *Client) runLoadedLatencyProbes(ctx context.Context, condition string, c
 			Condition:            condition,
 			LoadOverlapped:       true,
 			LoadTrackingAccurate: true,
-			TimingSource:         "httptrace",
+			TimingSource:         probe.TimingSource,
 			ConnectionReused:     probe.ConnectionReused,
-			ProbeTransport:       "http",
+			ProbeTransport:       probe.Transport,
 			ProbeMethod:          probe.Method,
 			ProbePath:            probe.Path,
+			ProbeFallbackReason:  probe.FallbackReason,
+			WebSocketProtocol:    probe.WebSocketProtocol,
 		}
 		samples = append(samples, sample)
 		if c.cfg.OnProgress != nil {

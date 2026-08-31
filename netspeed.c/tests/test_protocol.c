@@ -209,6 +209,9 @@ static const char *capability_json(void)
            "\"uploadBytesParameter\":\"expected\","
            "\"httpPingPath\":\"/measure/ping\","
            "\"httpPingMethods\":[\"GET\",\"HEAD\"],"
+           "\"webSocketPingPath\":\"/measure/ws\","
+           "\"webSocketPingProtocol\":\"netspeed.ping.v1\","
+           "\"webSocketPingPayloadBytes\":16,"
            "\"warmConnectionPing\":true,"
            "\"downloadPayloads\":[\"random\",\"zero\"],"
            "\"downloadFramings\":[\"fixed\",\"chunked\"],"
@@ -238,6 +241,12 @@ static void test_meta_parser(void)
     CHECK(meta.measurement_capabilities.http_ping_get &&
           meta.measurement_capabilities.http_ping_head,
           "advertised latency methods are retained");
+    CHECK(strcmp(meta.measurement_capabilities.websocket_ping_path,
+                 "/measure/ws") == 0 &&
+          strcmp(meta.measurement_capabilities.websocket_ping_protocol,
+                 "netspeed.ping.v1") == 0 &&
+          meta.measurement_capabilities.websocket_ping_payload_bytes == 16,
+          "advertised WebSocket latency contract is retained");
     CHECK(meta.measurement_capabilities.download_payload_random &&
           meta.measurement_capabilities.download_payload_zero,
           "advertised payload discriminators are retained");
@@ -267,6 +276,12 @@ static void test_transport_negotiation(void)
           strcmp(selection.latency_method, "GET") == 0 &&
           selection.warm_connection_ping,
           "dedicated warm latency endpoint is selected");
+    CHECK(strcmp(selection.websocket_ping_path, "/measure/ws") == 0 &&
+          strcmp(selection.websocket_ping_protocol, "netspeed.ping.v1") == 0 &&
+          selection.websocket_ping_payload_bytes == 16 &&
+          strcmp(selection.preferred_latency_transport, "websocket") == 0 &&
+          selection.http_fallback_available,
+          "WebSocket latency is preferred with warm HTTP fallback retained");
 
     char path[MAX_URL_LEN];
     CHECK(measurement_build_download_path(NULL, &selection, 12345, "unit", 7,
@@ -325,6 +340,9 @@ static void test_transport_negotiation(void)
     measurement_capabilities_t head_only = meta.measurement_capabilities;
     head_only.http_ping_get = false;
     head_only.http_ping_head = true;
+    head_only.websocket_ping_path[0] = '\0';
+    head_only.websocket_ping_protocol[0] = '\0';
+    head_only.websocket_ping_payload_bytes = 0;
     memset(&head_config, 0, sizeof(head_config));
     snprintf(head_config.download_payload, sizeof(head_config.download_payload),
              "%s", "auto");
@@ -334,8 +352,22 @@ static void test_transport_negotiation(void)
              "%s", "auto");
     CHECK(measurement_negotiate(&head_only, &head_config, &selection,
                                 error, sizeof(error)) == ERR_OK &&
-          strcmp(selection.latency_method, "HEAD") == 0,
+          strcmp(selection.latency_method, "HEAD") == 0 &&
+          strcmp(selection.preferred_latency_transport, "http") == 0,
           "HEAD is selected when it is the only advertised HTTP ping method");
+
+    measurement_capabilities_t incomplete_websocket =
+        meta.measurement_capabilities;
+    incomplete_websocket.websocket_ping_protocol[0] = '\0';
+    CHECK(measurement_negotiate(&incomplete_websocket, &head_config, &selection,
+                                error, sizeof(error)) == ERR_PROTOCOL,
+          "WebSocket path without the exact subprotocol is rejected");
+
+    measurement_capabilities_t orphan_websocket = meta.measurement_capabilities;
+    orphan_websocket.websocket_ping_path[0] = '\0';
+    CHECK(measurement_negotiate(&orphan_websocket, &head_config, &selection,
+                                error, sizeof(error)) == ERR_PROTOCOL,
+          "WebSocket metadata without a path is rejected");
 
     config_t legacy_config;
     memset(&legacy_config, 0, sizeof(legacy_config));
@@ -349,7 +381,9 @@ static void test_transport_negotiation(void)
     memset(&missing, 0, sizeof(missing));
     CHECK(measurement_negotiate(&missing, &legacy_config, &selection,
                                 error, sizeof(error)) == ERR_OK &&
-          selection.legacy_fallback,
+          selection.legacy_fallback &&
+          strcmp(selection.preferred_latency_transport, "http") == 0 &&
+          selection.http_fallback_available,
           "automatic controls retain legacy protocol-v2 fallback");
     snprintf(legacy_config.download_payload, sizeof(legacy_config.download_payload),
              "%s", "zero");

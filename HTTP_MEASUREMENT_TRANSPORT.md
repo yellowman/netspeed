@@ -7,9 +7,11 @@ byte-count, receipt, window, or statistics rules in
 
 The daemon implements this contract and advertises it in `/meta`. Clients that
 do not understand `measurementCapabilities` remain compatible: the default
-`/__down?bytes=N` and `/__up` behavior is unchanged. A WebSocket latency path is
-optional and is not advertised by the daemon until one is available; clients
-must retain HTTP fallback.
+`/__down?bytes=N` and `/__up` behavior is unchanged. The daemon also advertises
+an optional application-level WebSocket echo for low-overhead latency. Capable
+clients prefer it only when the complete contract is present and permanently
+fall back to the advertised warm HTTP probe after any upgrade or protocol
+failure.
 
 ## 1. Capability advertisement
 
@@ -28,6 +30,9 @@ must retain HTTP fallback.
   "uploadBytesParameter": "bytes",
   "httpPingPath": "/__ping",
   "httpPingMethods": ["GET", "HEAD"],
+  "webSocketPingPath": "/__ws",
+  "webSocketPingProtocol": "netspeed.ping.v1",
+  "webSocketPingPayloadBytes": 16,
   "warmConnectionPing": true,
   "downloadPayloads": ["random", "zero"],
   "downloadFramings": ["fixed", "chunked"],
@@ -94,14 +99,15 @@ measurement engine:
 For every run, the normalized contract is included in result metadata as
 `measurementSelection`. The browser also publishes it under
 `httpTransport.selection`. It records the selected payload, framing,
-application chunk size, flush behavior, upload encoding, latency path and
-method, warm-reuse requirement, and whether legacy fallback was used. All three
-clients verify the response's measurement type, payload, framing, chunk size,
-flush value, exact length, identity content coding, and `no-store,
-no-transform` controls. The native C process fixture and browser integration
-tests advertise nonstandard endpoint paths and query names so qualification proves
-that clients
-consume the advertisement rather than falling back to hard-coded routes.
+application chunk size, flush behavior, upload encoding, HTTP latency path and
+method, exact WebSocket path/subprotocol/payload size, preferred latency
+transport, HTTP-fallback availability, warm-reuse requirement, and whether
+legacy fallback was used. All three clients verify the response's measurement
+type, payload, framing, chunk size, flush value, exact length, identity content
+coding, and `no-store, no-transform` controls. The native C process fixture and
+browser integration tests advertise nonstandard endpoint paths and query names,
+so qualification proves that clients consume the advertisement rather than
+falling back to hard-coded routes.
 
 Browser scripts cannot set the forbidden `Accept-Encoding` request header. The
 browser instead requests `no-store, no-transform`, sends
@@ -226,18 +232,99 @@ X-Netspeed-Upload-Duration-Ns: <body ingestion duration>
 consumption only. Admission, handler setup, and JSON receipt generation are not
 included.
 
-## 4. Warm-connection HTTP latency
+## 4. Latency transports
+
+### 4.1 Preferred application-level WebSocket echo
+
+A daemon advertising all three WebSocket fields offers:
+
+```text
+GET /__ws
+Sec-WebSocket-Protocol: netspeed.ping.v1
+```
+
+The route requires an HTTP/1.1 RFC 6455 upgrade and selects exactly the
+`netspeed.ping.v1` subprotocol. Each application ping is one unfragmented binary
+message with exactly 16 bytes:
+
+```text
+bytes 0..3   ASCII "NSP1"
+bytes 4..7   unsigned 32-bit sequence number, network byte order
+bytes 8..15  per-message random nonce
+```
+
+The daemon validates the size and magic and echoes the complete message
+unchanged. It accepts masked client frames, sends unmasked server frames,
+answers WebSocket control pings with pongs, and rejects text, fragmented,
+oversized, or malformed application messages. The client compares the complete
+nonce, so an old or duplicated echo cannot satisfy a later probe.
+
+A successful upgrade selects the exact subprotocol and carries:
+
+```http
+HTTP/1.1 101 Switching Protocols
+Cache-Control: no-store, no-transform
+Pragma: no-cache
+X-Accel-Buffering: no
+X-Netspeed-Measurement: latency
+```
+
+The Go and native C clients validate every repeated or comma-separated
+`Content-Encoding` value, all required upgrade fields, and all singleton
+diagnostic fields. A leading `identity` cannot conceal a later `gzip` or `br`,
+and conflicting repeated diagnostics are rejected rather than trusting the
+first header line. Browser JavaScript cannot inspect 101 response headers; it
+validates the selected subprotocol and every echoed binary nonce instead.
+
+The Go, native C, and browser Netspeed clients:
+
+1. use WebSocket only when `/meta` advertises the exact path, subprotocol, and
+   16-byte payload contract;
+2. establish one persistent connection and send one unreported application
+   warmup;
+3. start the RTT clock immediately before sending a measured binary message and
+   stop it when the exact nonce returns, excluding DNS, TCP, TLS, HTTP Upgrade,
+   and warmup time;
+4. label accepted samples with `probeTransport: "websocket"`,
+   `probeMethod: "MESSAGE"`, `timingSource: "websocket-message"`, the advertised
+   path, and `webSocketProtocol: "netspeed.ping.v1"`;
+5. disable WebSocket for the remainder of the run after the first upgrade,
+   close, timeout, framing, subprotocol, or echo failure, then use the existing
+   warm HTTP path for every later probe. HTTP samples retain the stable reason in
+   `probeFallbackReason`.
+
+This is an application message echo rather than an RFC 6455 control ping because
+the browser WebSocket API cannot originate control frames. The browser also
+cannot attach an `Authorization` header or exactly reproduce Fetch credential
+suppression. It therefore selects HTTP immediately when a bearer token is
+configured, when credentials are `omit`, or when `same-origin` credentials are
+combined with a cross-origin WebSocket endpoint. The Go client can attach the
+bearer token but its dependency-free direct WebSocket dial does not traverse an
+HTTP proxy; a failed direct upgrade falls back to the normal HTTP transport. The
+C client lets libcurl establish DNS, TCP, proxy tunnels, and TLS before using the
+connected socket for the WebSocket exchange.
+
+The daemon evaluates a browser `Origin` before transfer admission. The
+configured CORS allowlist governs cross-origin WebSocket handshakes; when Fetch
+CORS is disabled, `/__ws` still permits only a same-host browser Origin. Native
+clients normally omit Origin and remain unaffected.
+
+The WebSocket remains optional. Older daemons omit the three fields, strict
+clients use HTTP directly, and Cloudflare compatibility mode never infers this
+private Netspeed route from provider behavior.
+
+### 4.2 Warm-connection HTTP fallback
 
 `GET /__ping` and `HEAD /__ping` return `200 OK`, `Content-Length: 0`, and no
 body. Arbitrary query labels such as `measId`, `during`, and `seq` are accepted.
 The endpoint has no redirect and does not request connection closure.
 
-A client should warm one persistent HTTP transport, then issue probes through
-the same connection pool. The measured interval therefore excludes repeated
-DNS, TCP, QUIC, and TLS setup. The strict Go and native C clients observe
-connection reuse and, when `warmConnectionPing` is advertised, discard a cold
-probe and retry until the reported probe has `connectionReused=true`; they fail
-after three cold attempts rather than mislabeling handshake time as RTT.
+A client warms one persistent HTTP transport, then issues probes through the
+same connection pool. The measured interval therefore excludes repeated DNS,
+TCP, QUIC, and TLS setup. The strict Go and native C clients observe connection
+reuse and, when `warmConnectionPing` is advertised, discard a cold probe and
+retry until the reported probe has `connectionReused=true`; they fail after
+three cold attempts rather than mislabeling handshake time as RTT.
 
 The browser cannot bind Fetch to a named socket. It warms the origin pool, uses
 unique URLs plus Resource Timing, and discards attempts that visibly incurred
@@ -249,11 +336,18 @@ therefore preserve `Timing-Allow-Origin`. Browser results label reuse as true,
 false, or unobservable, record discarded attempts and observed HTTP protocol,
 and never turn unobservable evidence into a claim of socket reuse.
 
-During loaded-latency measurement, the same endpoint is used while the client
-independently proves that directional load remained continuous for the full
-probe interval. The browser also reserves one of the conventional six
-HTTP/1.1 per-origin connection slots so the probe is not queued behind its own
+`GET /__down?bytes=0` remains the compatibility fallback when no dedicated HTTP
+ping path is advertised. The normalized selection always records
+`httpFallbackAvailable: true`, even when WebSocket is preferred.
+
+During loaded-latency measurement, the selected latency transport is used while
+the client independently proves that directional load remained continuous for
+the full probe interval. Clients reserve one advertised transfer slot for the
+latency channel. The browser also reserves one of the conventional six HTTP/1.1
+per-origin connection slots so an HTTP fallback is not queued behind its own
 throughput workers.
+
+### 4.3 Cloudflare-compatible HTTP latency
 
 Later Cloudflare-mode downloads retain only bounded evidence windows distributed
 across the complete response. This catches a random-looking prefix followed by a
@@ -269,17 +363,14 @@ libcurl's pre-transfer, start-transfer, and new-connection information. Server
 time follows the Cloudflare metric families: a `cfReqDur` total takes precedence,
 otherwise `cfSpeed*` component durations are summed, with `app` as a fallback.
 JSON records warmup and discarded counts, adjustment counts, method, path,
-transport, and observed HTTP protocols.
-
-`GET /__down?bytes=0` remains a compatible fallback. A future WebSocket ping
-path may be advertised through `webSocketPingPath`; its absence means the client
-must use HTTP rather than treating latency as unavailable.
+transport, and observed HTTP protocols. Netspeed's WebSocket route is not
+probed or guessed in Cloudflare mode.
 
 ## 5. Common measurement response controls
 
-Every response emitted by the `/__down`, `/__up`, and `/__ping` handlers,
-including parameter and transfer-admission errors, carries the applicable
-controls before the response is committed:
+Every ordinary response emitted by `/__down`, `/__up`, and `/__ping`, including
+parameter and transfer-admission errors, carries the applicable controls before
+the response is committed:
 
 ```http
 Cache-Control: no-store, no-transform
@@ -292,7 +383,8 @@ X-Content-Type-Options: nosniff
 X-Netspeed-Measurement: download|upload|latency
 ```
 
-These headers state the daemon's contract and suppress Nginx response buffering
+The `/__ws` 101 response carries the smaller upgrade-safe set shown in section
+4.1. These headers state the daemon's contract and suppress Nginx response buffering
 when that upstream header is honored. They do not override a reverse proxy that
 is configured to ignore them, cannot disable request-body buffering, and cannot
 repair a CDN that transforms traffic before the daemon sees it. Deployment
@@ -306,7 +398,9 @@ configuration remains mandatory; see
 - non-identity upload content coding: `415`;
 - transfer or quota admission rejection: `429` or `503` under the existing
   service-hardening contract;
-- unsupported method: `405` with `Allow`.
+- unsupported ordinary HTTP method: `405` with `Allow`;
+- malformed WebSocket upgrade or application frame: rejected upgrade or RFC
+  6455 protocol close, followed by client HTTP fallback.
 
 No error is converted into a successful short measurement. Once a streamed
 response is committed, an interrupted write is logged and the connection ends;

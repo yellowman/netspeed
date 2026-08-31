@@ -59,8 +59,8 @@ func (c *Client) setMeasurementRequestHeaders(request *http.Request) {
 }
 
 func (c *Client) verifyCommonMeasurementResponse(response *http.Response, expectedMeasurement string) error {
-	if encoding := strings.TrimSpace(response.Header.Get("Content-Encoding")); encoding != "" && !strings.EqualFold(encoding, "identity") {
-		return fmt.Errorf("measurement response used unsupported Content-Encoding %q", encoding)
+	if err := measurementhttp.ValidateIdentityResponseEncoding(response.Header); err != nil {
+		return err
 	}
 	if c.measurementTransport.LegacyFallback {
 		return nil
@@ -69,7 +69,11 @@ func (c *Client) verifyCommonMeasurementResponse(response *http.Response, expect
 	if !headerHasDirective(cacheControl, "no-store") || !headerHasDirective(cacheControl, "no-transform") {
 		return fmt.Errorf("measurement response Cache-Control %q does not preserve no-store, no-transform", cacheControl)
 	}
-	if got := strings.TrimSpace(response.Header.Get("X-Netspeed-Measurement")); !strings.EqualFold(got, expectedMeasurement) {
+	got, err := requiredUniqueHeaderValue(response.Header, "X-Netspeed-Measurement")
+	if err != nil {
+		return err
+	}
+	if !strings.EqualFold(got, expectedMeasurement) {
 		return fmt.Errorf("measurement response type %q; expected %q", got, expectedMeasurement)
 	}
 	return nil
@@ -83,11 +87,19 @@ func (c *Client) verifyDownloadMeasurementResponse(response *http.Response, expe
 		return nil
 	}
 	selection := c.measurementTransport
-	if got := strings.TrimSpace(response.Header.Get("X-Netspeed-Payload")); !strings.EqualFold(got, string(selection.DownloadPayload)) {
-		return fmt.Errorf("download response payload %q; expected %q", got, selection.DownloadPayload)
+	gotPayload, err := requiredUniqueHeaderValue(response.Header, "X-Netspeed-Payload")
+	if err != nil {
+		return err
 	}
-	if got := strings.TrimSpace(response.Header.Get("X-Netspeed-Framing")); !strings.EqualFold(got, string(selection.DownloadFraming)) {
-		return fmt.Errorf("download response framing %q; expected %q", got, selection.DownloadFraming)
+	if !strings.EqualFold(gotPayload, string(selection.DownloadPayload)) {
+		return fmt.Errorf("download response payload %q; expected %q", gotPayload, selection.DownloadPayload)
+	}
+	gotFraming, err := requiredUniqueHeaderValue(response.Header, "X-Netspeed-Framing")
+	if err != nil {
+		return err
+	}
+	if !strings.EqualFold(gotFraming, string(selection.DownloadFraming)) {
+		return fmt.Errorf("download response framing %q; expected %q", gotFraming, selection.DownloadFraming)
 	}
 	chunkBytes, err := parseRequiredInt64Header(response.Header, "X-Netspeed-Chunk-Bytes")
 	if err != nil {
@@ -96,8 +108,12 @@ func (c *Client) verifyDownloadMeasurementResponse(response *http.Response, expe
 	if chunkBytes != int64(selection.DownloadChunkBytes) {
 		return fmt.Errorf("download response chunk size %d; expected %d", chunkBytes, selection.DownloadChunkBytes)
 	}
-	if got := strings.TrimSpace(response.Header.Get("X-Netspeed-Flush")); !strings.EqualFold(got, strconv.FormatBool(selection.DownloadFlush)) {
-		return fmt.Errorf("download response flush %q; expected %t", got, selection.DownloadFlush)
+	gotFlush, err := requiredUniqueHeaderValue(response.Header, "X-Netspeed-Flush")
+	if err != nil {
+		return err
+	}
+	if !strings.EqualFold(gotFlush, strconv.FormatBool(selection.DownloadFlush)) {
+		return fmt.Errorf("download response flush %q; expected %t", gotFlush, selection.DownloadFlush)
 	}
 	switch selection.DownloadFraming {
 	case measurementhttp.FramingFixed:
@@ -139,7 +155,11 @@ func (c *Client) verifyUploadMeasurementResponse(response *http.Response, expect
 		"X-Netspeed-Framing":          "fixed",
 		"X-Netspeed-Content-Encoding": "identity",
 	} {
-		if got := strings.TrimSpace(response.Header.Get(header)); !strings.EqualFold(got, expected) {
+		got, err := requiredUniqueHeaderValue(response.Header, header)
+		if err != nil {
+			return err
+		}
+		if !strings.EqualFold(got, expected) {
 			return fmt.Errorf("upload response %s %q; expected %q", header, got, expected)
 		}
 	}
@@ -168,10 +188,21 @@ func (c *Client) verifyUploadMeasurementResponse(response *http.Response, expect
 	return nil
 }
 
+func requiredUniqueHeaderValue(header http.Header, name string) (string, error) {
+	value, present, err := measurementhttp.UniqueHeaderValue(header, name)
+	if err != nil {
+		return "", err
+	}
+	if !present {
+		return "", fmt.Errorf("measurement response is missing %s", name)
+	}
+	return value, nil
+}
+
 func parseRequiredInt64Header(header http.Header, name string) (int64, error) {
-	raw := strings.TrimSpace(header.Get(name))
-	if raw == "" {
-		return 0, fmt.Errorf("measurement response is missing %s", name)
+	raw, err := requiredUniqueHeaderValue(header, name)
+	if err != nil {
+		return 0, err
 	}
 	value, err := strconv.ParseInt(raw, 10, 64)
 	if err != nil || value < 0 {

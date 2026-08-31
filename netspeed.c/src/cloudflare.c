@@ -133,7 +133,7 @@ typedef struct {
 typedef struct {
     char capability_source[32];
     bool provider_defaults_only;
-    bool query_discriminators_sent;
+    bool private_transport_discriminators_sent;
     char download_path[32];
     char upload_path[32];
     char latency_path[32];
@@ -1414,7 +1414,7 @@ static int probe_transport(const cf_options *options, cf_transport *transport,
     snprintf(transport->capability_source,
              sizeof(transport->capability_source), "%s", "behavioral-probe");
     transport->provider_defaults_only = true;
-    transport->query_discriminators_sent = false;
+    transport->private_transport_discriminators_sent = false;
     snprintf(transport->download_path, sizeof(transport->download_path), "%s",
              "/__down");
     snprintf(transport->upload_path, sizeof(transport->upload_path), "%s",
@@ -2227,9 +2227,12 @@ static void print_transport_json(const cf_transport *transport)
 {
     fputs("{\"capabilitySource\":", stdout);
     json_string(transport->capability_source);
-    printf(",\"providerDefaultsOnly\":%s,\"queryDiscriminatorsSent\":%s,",
+    printf(",\"providerDefaultsOnly\":%s,"
+           "\"privateTransportDiscriminatorsSent\":%s,"
+           "\"compatibilityQueryParameters\":["
+           "\"attempt\",\"bytes\",\"compat\",\"during\",\"id\",\"seq\"],",
            transport->provider_defaults_only ? "true" : "false",
-           transport->query_discriminators_sent ? "true" : "false");
+           transport->private_transport_discriminators_sent ? "true" : "false");
     fputs("\"downloadPath\":", stdout); json_string(transport->download_path);
     fputs(",\"uploadPath\":", stdout); json_string(transport->upload_path);
     fputs(",\"latencyPath\":", stdout); json_string(transport->latency_path);

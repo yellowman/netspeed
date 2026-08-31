@@ -49,26 +49,32 @@ input, select { border:0!important; border-bottom:1px solid var(--phosphor)!impo
 main { display:block!important; width:100%!important; }
 section, article, .card, .panel, [class*="card"], [class*="panel"] { border:1px solid var(--phosphor)!important; margin:.65rem 0!important; padding:.5rem 1ch!important; }
 section::before, article::before { color:var(--phosphor-dim); }
-.grid, [class*="grid"], [class*="metrics"], [class*="summary"] { display:grid!important; grid-template-columns:repeat(4,minmax(12ch,1fr))!important; gap:0!important; }
-.grid > *, [class*="grid"] > *, [class*="metrics"] > *, [class*="summary"] > * { min-width:0!important; border:1px solid var(--phosphor-faint)!important; padding:.45rem 1ch!important; }
+.grid, .ledger-grid { display:grid!important; grid-template-columns:repeat(4,minmax(0,1fr))!important; gap:0!important; }
+.hero-metrics-row { display:grid!important; grid-template-columns:repeat(5,minmax(0,1fr))!important; gap:0!important; }
+.measurements-grid { display:grid!important; grid-template-columns:1fr 1fr 1.35fr!important; gap:.5rem!important; }
+.details-row-grid { display:grid!important; grid-template-columns:repeat(2,minmax(0,1fr))!important; gap:.5rem!important; }
+.extras-grid { display:grid!important; grid-template-columns:repeat(3,minmax(0,1fr))!important; gap:.5rem!important; }
+.grid > *, .ledger-grid > *, .hero-metrics-row > *, .measurements-grid > *, .details-row-grid > *, .extras-grid > * { min-width:0!important; border:1px solid var(--phosphor-faint)!important; padding:.45rem 1ch!important; }
 .metric-value, [class*="value"], [class*="number"] { font-size:1.25em!important; line-height:1!important; color:var(--phosphor)!important; font-variant-numeric:tabular-nums; }
 .metric-label, [class*="label"], small { color:var(--phosphor-dim)!important; font-size:.78em!important; }
-.progress, [class*="progress"] { height:1.2em!important; border:1px solid var(--phosphor)!important; background:#000!important; }
-.progress > *, [class*="progress"] > * { background:repeating-linear-gradient(90deg,var(--phosphor) 0 1ch,transparent 1ch 1.25ch)!important; }
+.progress, .progress-bar-inline { height:1.2em!important; border:1px solid var(--phosphor)!important; background:#000!important; }
+.progress > *, .progress-bar-inline > *, .progress-fill { background:repeating-linear-gradient(90deg,var(--phosphor) 0 1ch,transparent 1ch 1.25ch)!important; }
 canvas, svg, img { filter: grayscale(1) sepia(1) saturate(8) hue-rotate(72deg) brightness(1.15) contrast(1.35)!important; background:#000!important; border:1px solid var(--phosphor)!important; }
 .mapboxgl-map, .leaflet-container { filter: grayscale(1) sepia(1) saturate(8) hue-rotate(72deg) brightness(.62) contrast(1.8)!important; }
 .modal, dialog { background:#000!important; color:var(--phosphor)!important; border:2px solid var(--phosphor)!important; }
 footer { margin-top:1rem!important; padding-top:.4rem!important; border-top:2px solid var(--phosphor)!important; text-align:left!important; }
 footer::before { content:"] CAT /NETSPEED/INTERFACES\A"; white-space:pre; }
 .sr-only { position:absolute!important;width:1px!important;height:1px!important;padding:0!important;margin:-1px!important;overflow:hidden!important;clip:rect(0,0,0,0)!important;white-space:nowrap!important;border:0!important; }
-@media (max-width: 760px) { body{padding:1rem 1ch 2rem!important;font-size:12px!important}.grid,[class*="grid"],[class*="metrics"],[class*="summary"]{grid-template-columns:repeat(2,minmax(12ch,1fr))!important}.apple-boot{grid-template-columns:1fr}.apple-boot div{text-align:left!important}.prodos-menu{display:grid;grid-template-columns:1fr 1fr} }
+@media (max-width: 760px) { body{padding:1rem 1ch 2rem!important;font-size:12px!important}.grid,.ledger-grid,.hero-metrics-row,.measurements-grid,.details-row-grid,.extras-grid{grid-template-columns:1fr!important}.apple-boot{grid-template-columns:1fr}.apple-boot div{text-align:left!important}.prodos-menu{display:grid;grid-template-columns:1fr 1fr} }
 @media (prefers-reduced-motion:no-preference){ body{animation:phosphor-flicker 9s infinite steps(2,end)} @keyframes phosphor-flicker{0%,97%,100%{opacity:1}98%{opacity:.965}99%{opacity:.99}} }
 
 
 /* Apple II text mode replaces modern chart chrome with character graphics. */
 .apple2-text-mode canvas { position:absolute!important; width:1px!important; height:1px!important; overflow:hidden!important; clip:rect(0,0,0,0)!important; opacity:0!important; }
 .apple-ascii-plot { margin:.35rem 0!important; overflow:hidden; white-space:pre; color:var(--phosphor)!important; font:inherit!important; line-height:1!important; letter-spacing:0!important; text-shadow:0 0 .25rem var(--phosphor); }
-.apple-text-meter { display:block; white-space:nowrap; overflow:hidden; color:var(--phosphor)!important; }
+.apple2-text-mode .progress-bar-inline { position:absolute!important; width:1px!important; height:1px!important; overflow:hidden!important; clip:rect(0,0,0,0)!important; opacity:0!important; }
+.apple2-text-mode .progress-inline { max-width:none!important; min-width:0!important; }
+.apple-text-meter { display:block; flex:0 0 auto; white-space:nowrap; overflow:hidden; color:var(--phosphor)!important; }
 [data-apple-file]::before { content:"] BLOAD PANEL." attr(data-apple-file); display:block; margin:-.2rem 0 .35rem; color:var(--phosphor-dim); }
 .apple-prompt { border-top:1px solid var(--phosphor); margin-top:.5rem; padding-top:.35rem; min-height:2em; }
 .apple-cursor { animation:apple-cursor 1s steps(1,end) infinite; }

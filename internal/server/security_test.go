@@ -20,7 +20,7 @@ func TestAuthenticationMiddlewareProtectsServiceButNotHealth(t *testing.T) {
 		w.WriteHeader(http.StatusNoContent)
 	}))
 
-	for _, path := range []string{"/meta", "/__ping"} {
+	for _, path := range []string{"/meta", "/__ping", "/__ws"} {
 		unauthorized := httptest.NewRecorder()
 		handler.ServeHTTP(unauthorized, httptest.NewRequest(http.MethodGet, path, nil))
 		if unauthorized.Code != http.StatusUnauthorized {

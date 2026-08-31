@@ -64,7 +64,11 @@ JSON output records this under `httpTransport`, including:
 
 - `capabilitySource: "behavioral-probe"`;
 - `providerDefaultsOnly: true`;
-- `queryDiscriminatorsSent: false`;
+- `privateTransportDiscriminatorsSent: false`, meaning no Netspeed-only
+  `payload`, `framing`, `chunkBytes`, or `flush` controls were sent;
+- `compatibilityQueryParameters`, listing the ordinary measurement labels that
+  may still be present (`bytes`, `id`, `during`, `seq`, `attempt`, and
+  `compat`);
 - requested and selected payload/framing/chunk/flush values and evidence;
 - download, upload, latency, and byte-parameter names;
 - request and response anti-transformation evidence.
@@ -128,6 +132,10 @@ Each latency result records `connectionReused`, `warmSamples`,
 A server that closes every response produces unavailable latency rather than a
 handshake-contaminated number.
 
+Cloudflare compatibility mode is deliberately HTTP-only. It never probes or
+guesses Netspeed's private `/__ws` path, even though strict Netspeed mode may
+prefer the advertised `netspeed.ping.v1` echo.
+
 ## Netspeed daemon transport extension
 
 A Netspeed daemon advertises transport-controls version 1. Its `/__down`
@@ -135,8 +143,11 @@ endpoint accepts `payload=random|zero`, `framing=fixed|chunked`, `chunkBytes=N`,
 and `flush=true|false` while preserving Cloudflare-compatible `bytes=N`
 defaults. `POST /__up?bytes=N` verifies the byte discriminator and rejects
 compressed request bodies. `GET` or `HEAD /__ping` provides a dedicated
-zero-body warm-connection path; `GET /__down?bytes=0` remains the compatibility
-fallback.
+zero-body warm-connection fallback. When the exact `/__ws`,
+`netspeed.ping.v1`, and 16-byte payload fields are advertised, strict Go, C, and
+browser clients prefer one persistent application echo and permanently fall
+back to HTTP after the first WebSocket failure. `GET /__down?bytes=0` remains
+the final compatibility fallback.
 
 The strict Go and native C Netspeed paths validate and negotiate that
 advertisement, including custom same-origin paths and parameter names. Their

@@ -175,6 +175,118 @@ static int validate_status(speedtest_t *test, http_session_t *session,
     return ERR_HTTP;
 }
 
+static void disable_websocket_latency_locked(speedtest_t *test,
+                                              const char *reason)
+{
+    test->websocket_latency_disabled = true;
+    snprintf(test->websocket_latency_fallback_reason,
+             sizeof(test->websocket_latency_fallback_reason),
+             "WebSocket latency unavailable: %.430s; using warm HTTP fallback",
+             reason && *reason ? reason : "unknown WebSocket transport error");
+    websocket_ping_session_cleanup(&test->websocket_latency);
+}
+
+static bool measure_websocket_latency(speedtest_t *test,
+                                      const char *condition,
+                                      int sequence,
+                                      latency_sample_t *sample,
+                                      char *fallback_reason,
+                                      size_t fallback_capacity)
+{
+    const measurement_selection_t *selection =
+        &test->results.meta.measurement_selection;
+    if (!selection->websocket_ping_path[0]) {
+        return false;
+    }
+
+    pthread_mutex_lock(&test->websocket_latency_mutex);
+    if (test->websocket_latency_disabled) {
+        snprintf(fallback_reason, fallback_capacity, "%s",
+                 test->websocket_latency_fallback_reason);
+        pthread_mutex_unlock(&test->websocket_latency_mutex);
+        return false;
+    }
+
+    if (!websocket_ping_supported()) {
+        disable_websocket_latency_locked(
+            test, "this libcurl build does not provide the required connected-socket API");
+        snprintf(fallback_reason, fallback_capacity, "%s",
+                 test->websocket_latency_fallback_reason);
+        pthread_mutex_unlock(&test->websocket_latency_mutex);
+        return false;
+    }
+
+    if (!test->websocket_latency.connected) {
+        int status = websocket_ping_open(
+            &test->websocket_latency,
+            selection->websocket_ping_path,
+            selection->websocket_ping_protocol,
+            selection->websocket_ping_payload_bytes);
+        if (status != ERR_OK) {
+            char reason[MAX_ERROR_LEN];
+            snprintf(reason, sizeof(reason), "%s",
+                     websocket_ping_error(&test->websocket_latency));
+            disable_websocket_latency_locked(test, reason);
+            snprintf(fallback_reason, fallback_capacity, "%s",
+                     test->websocket_latency_fallback_reason);
+            pthread_mutex_unlock(&test->websocket_latency_mutex);
+            return false;
+        }
+        test->websocket_latency_connections++;
+
+        double ignored_rtt = 0;
+        status = websocket_ping_measure(&test->websocket_latency,
+                                        UINT32_MAX, &ignored_rtt);
+        if (status != ERR_OK) {
+            char reason[MAX_ERROR_LEN];
+            snprintf(reason, sizeof(reason), "warmup failed: %s",
+                     websocket_ping_error(&test->websocket_latency));
+            disable_websocket_latency_locked(test, reason);
+            snprintf(fallback_reason, fallback_capacity, "%s",
+                     test->websocket_latency_fallback_reason);
+            pthread_mutex_unlock(&test->websocket_latency_mutex);
+            return false;
+        }
+        test->websocket_latency_warmups++;
+    }
+
+    int64_t started = timing_now_ms();
+    double rtt_ms = 0;
+    int status = websocket_ping_measure(&test->websocket_latency,
+                                        (uint32_t)sequence, &rtt_ms);
+    int64_t ended = timing_now_ms();
+    if (status != ERR_OK) {
+        char reason[MAX_ERROR_LEN];
+        snprintf(reason, sizeof(reason), "message echo failed: %s",
+                 websocket_ping_error(&test->websocket_latency));
+        disable_websocket_latency_locked(test, reason);
+        snprintf(fallback_reason, fallback_capacity, "%s",
+                 test->websocket_latency_fallback_reason);
+        pthread_mutex_unlock(&test->websocket_latency_mutex);
+        return false;
+    }
+    test->websocket_latency_pings++;
+
+    memset(sample, 0, sizeof(*sample));
+    sample->ts = ended;
+    sample->started_at = started;
+    sample->ended_at = ended;
+    sample->rtt_ms = rtt_ms;
+    snprintf(sample->condition, sizeof(sample->condition), "%s", condition);
+    snprintf(sample->timing_source, sizeof(sample->timing_source), "%s",
+             "websocket-message");
+    sample->connection_reused = true;
+    snprintf(sample->probe_transport, sizeof(sample->probe_transport), "%s",
+             "websocket");
+    snprintf(sample->probe_method, sizeof(sample->probe_method), "%s", "MESSAGE");
+    snprintf(sample->probe_path, sizeof(sample->probe_path), "%s",
+             selection->websocket_ping_path);
+    snprintf(sample->websocket_protocol, sizeof(sample->websocket_protocol), "%s",
+             selection->websocket_ping_protocol);
+    pthread_mutex_unlock(&test->websocket_latency_mutex);
+    return true;
+}
+
 static int measure_latency_with_session(speedtest_t *test, http_session_t *session,
                                         const char *condition, int sequence,
                                         latency_sample_t *sample)
@@ -182,6 +294,12 @@ static int measure_latency_with_session(speedtest_t *test, http_session_t *sessi
     if (test_expired(test)) {
         ns_progress("latency probes");
         return ERR_TIMEOUT;
+    }
+    char websocket_fallback[MAX_ERROR_LEN] = {0};
+    if (measure_websocket_latency(test, condition, sequence, sample,
+                                  websocket_fallback,
+                                  sizeof(websocket_fallback))) {
+        return ERR_OK;
     }
     const measurement_selection_t *selection =
         &test->results.meta.measurement_selection;
@@ -256,6 +374,11 @@ static int measure_latency_with_session(speedtest_t *test, http_session_t *sessi
                  selection->latency_method);
         snprintf(sample->probe_path, sizeof(sample->probe_path), "%s",
                  selection->latency_path);
+        if (websocket_fallback[0]) {
+            snprintf(sample->probe_fallback_reason,
+                     sizeof(sample->probe_fallback_reason), "%s",
+                     websocket_fallback);
+        }
         http_response_free(&response);
         return ERR_OK;
     }
@@ -1138,6 +1261,7 @@ void speedtest_init(speedtest_t *test, config_t *config)
 {
     memset(test, 0, sizeof(*test));
     pthread_mutex_init(&test->error_mutex, NULL);
+    pthread_mutex_init(&test->websocket_latency_mutex, NULL);
     test->config = config;
     struct timespec now;
     timing_now(&now);
@@ -1155,6 +1279,7 @@ void speedtest_init(speedtest_t *test, config_t *config)
     }
     http_client_init(&test->http, config->server_url, config->access_token,
                      request_timeout, &test->aborted);
+    websocket_ping_session_init(&test->websocket_latency, &test->http);
 }
 
 void speedtest_set_progress(speedtest_t *test, progress_fn progress)
@@ -1172,6 +1297,10 @@ void speedtest_abort(speedtest_t *test)
 void speedtest_cleanup(speedtest_t *test)
 {
     if (test) {
+        pthread_mutex_lock(&test->websocket_latency_mutex);
+        websocket_ping_session_cleanup(&test->websocket_latency);
+        pthread_mutex_unlock(&test->websocket_latency_mutex);
+        pthread_mutex_destroy(&test->websocket_latency_mutex);
         pthread_mutex_destroy(&test->error_mutex);
     }
 }

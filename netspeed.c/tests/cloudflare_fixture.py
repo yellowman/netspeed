@@ -237,7 +237,15 @@ def validate_transport(payload: dict[str, object]) -> None:
     assert isinstance(transport, dict)
     assert transport["capabilitySource"] == "behavioral-probe"
     assert transport["providerDefaultsOnly"] is True
-    assert transport["queryDiscriminatorsSent"] is False
+    assert transport["privateTransportDiscriminatorsSent"] is False
+    assert transport["compatibilityQueryParameters"] == [
+        "attempt",
+        "bytes",
+        "compat",
+        "during",
+        "id",
+        "seq",
+    ]
     assert transport["downloadPath"] == "/__down"
     assert transport["uploadPath"] == "/__up"
     assert transport["latencyPath"] == "/__down"

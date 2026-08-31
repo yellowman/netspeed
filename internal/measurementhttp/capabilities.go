@@ -11,6 +11,15 @@ import (
 
 const preferenceAuto = "auto"
 
+const (
+	// WebSocketPingSubprotocol identifies the application-level binary echo
+	// protocol used for low-overhead latency probes. Browsers cannot originate
+	// WebSocket control ping frames, so all capable clients use this common
+	// subprotocol instead.
+	WebSocketPingSubprotocol  = "netspeed.ping.v1"
+	WebSocketPingPayloadBytes = 16
+)
+
 // Capabilities is the versioned HTTP measurement-transport contract advertised
 // by /meta. Paths must remain same-origin relative paths; clients must never
 // treat capability metadata as permission to send measurement traffic to a
@@ -28,6 +37,8 @@ type Capabilities struct {
 	HTTPPingPath                  string   `json:"httpPingPath"`
 	HTTPPingMethods               []string `json:"httpPingMethods"`
 	WebSocketPingPath             string   `json:"webSocketPingPath,omitempty"`
+	WebSocketPingProtocol         string   `json:"webSocketPingProtocol,omitempty"`
+	WebSocketPingPayloadBytes     int      `json:"webSocketPingPayloadBytes,omitempty"`
 	WarmConnectionPing            bool     `json:"warmConnectionPing"`
 	DownloadPayloads              []string `json:"downloadPayloads"`
 	DownloadFramings              []string `json:"downloadFramings"`
@@ -57,45 +68,52 @@ type Preferences struct {
 // test run. It is safe to expose in machine-readable results so a zero-fill run
 // is never mistaken for a pseudorandom run.
 type Selection struct {
-	CapabilityVersion    int     `json:"capabilityVersion"`
-	LegacyFallback       bool    `json:"legacyFallback"`
-	DownloadPath         string  `json:"downloadPath"`
-	DownloadBytesKey     string  `json:"downloadBytesParameter"`
-	DownloadPayloadKey   string  `json:"downloadPayloadParameter,omitempty"`
-	DownloadFramingKey   string  `json:"downloadFramingParameter,omitempty"`
-	DownloadChunkKey     string  `json:"downloadChunkBytesParameter,omitempty"`
-	DownloadFlushKey     string  `json:"downloadFlushParameter,omitempty"`
-	DownloadPayload      Payload `json:"downloadPayload"`
-	DownloadFraming      Framing `json:"downloadFraming"`
-	DownloadChunkBytes   int     `json:"downloadChunkBytes"`
-	DownloadFlush        bool    `json:"downloadFlush"`
-	UploadPath           string  `json:"uploadPath"`
-	UploadBytesKey       string  `json:"uploadBytesParameter,omitempty"`
-	UploadEncoding       string  `json:"uploadContentEncoding"`
-	LatencyPath          string  `json:"latencyPath"`
-	LatencyMethod        string  `json:"latencyMethod"`
-	LatencyUsesDownload  bool    `json:"latencyUsesDownloadEndpoint"`
-	WarmConnectionPing   bool    `json:"warmConnectionPing"`
-	NoTransform          bool    `json:"noTransform"`
-	ResponseCacheControl string  `json:"responseCacheControl,omitempty"`
+	CapabilityVersion         int     `json:"capabilityVersion"`
+	LegacyFallback            bool    `json:"legacyFallback"`
+	DownloadPath              string  `json:"downloadPath"`
+	DownloadBytesKey          string  `json:"downloadBytesParameter"`
+	DownloadPayloadKey        string  `json:"downloadPayloadParameter,omitempty"`
+	DownloadFramingKey        string  `json:"downloadFramingParameter,omitempty"`
+	DownloadChunkKey          string  `json:"downloadChunkBytesParameter,omitempty"`
+	DownloadFlushKey          string  `json:"downloadFlushParameter,omitempty"`
+	DownloadPayload           Payload `json:"downloadPayload"`
+	DownloadFraming           Framing `json:"downloadFraming"`
+	DownloadChunkBytes        int     `json:"downloadChunkBytes"`
+	DownloadFlush             bool    `json:"downloadFlush"`
+	UploadPath                string  `json:"uploadPath"`
+	UploadBytesKey            string  `json:"uploadBytesParameter,omitempty"`
+	UploadEncoding            string  `json:"uploadContentEncoding"`
+	LatencyPath               string  `json:"latencyPath"`
+	LatencyMethod             string  `json:"latencyMethod"`
+	LatencyUsesDownload       bool    `json:"latencyUsesDownloadEndpoint"`
+	WebSocketPingPath         string  `json:"webSocketPingPath,omitempty"`
+	WebSocketPingProtocol     string  `json:"webSocketPingProtocol,omitempty"`
+	WebSocketPingPayloadBytes int     `json:"webSocketPingPayloadBytes,omitempty"`
+	PreferredLatencyTransport string  `json:"preferredLatencyTransport"`
+	HTTPFallbackAvailable     bool    `json:"httpFallbackAvailable"`
+	WarmConnectionPing        bool    `json:"warmConnectionPing"`
+	NoTransform               bool    `json:"noTransform"`
+	ResponseCacheControl      string  `json:"responseCacheControl,omitempty"`
 }
 
 // LegacySelection preserves the measurement-protocol-v2 endpoint defaults for
 // servers that predate the optional transport-capability object.
 func LegacySelection() Selection {
 	return Selection{
-		LegacyFallback:      true,
-		DownloadPath:        "/__down",
-		DownloadBytesKey:    "bytes",
-		DownloadPayload:     PayloadRandom,
-		DownloadFraming:     FramingFixed,
-		DownloadChunkBytes:  DefaultChunkBytes,
-		UploadPath:          "/__up",
-		UploadEncoding:      "identity",
-		LatencyPath:         "/__down",
-		LatencyMethod:       http.MethodGet,
-		LatencyUsesDownload: true,
-		WarmConnectionPing:  false,
+		LegacyFallback:            true,
+		DownloadPath:              "/__down",
+		DownloadBytesKey:          "bytes",
+		DownloadPayload:           PayloadRandom,
+		DownloadFraming:           FramingFixed,
+		DownloadChunkBytes:        DefaultChunkBytes,
+		UploadPath:                "/__up",
+		UploadEncoding:            "identity",
+		LatencyPath:               "/__down",
+		LatencyMethod:             http.MethodGet,
+		LatencyUsesDownload:       true,
+		PreferredLatencyTransport: "http",
+		HTTPFallbackAvailable:     true,
+		WarmConnectionPing:        false,
 	}
 }
 
@@ -157,28 +175,37 @@ func Negotiate(capabilities *Capabilities, preferences Preferences) (Selection, 
 		latencyMethod = http.MethodGet
 		latencyUsesDownload = true
 	}
+	preferredLatencyTransport := "http"
+	if capabilities.WebSocketPingPath != "" {
+		preferredLatencyTransport = "websocket"
+	}
 
 	return Selection{
-		CapabilityVersion:    capabilities.Version,
-		DownloadPath:         capabilities.DownloadPath,
-		DownloadBytesKey:     capabilities.DownloadBytesParameter,
-		DownloadPayloadKey:   capabilities.DownloadPayloadParameter,
-		DownloadFramingKey:   capabilities.DownloadFramingParameter,
-		DownloadChunkKey:     capabilities.DownloadChunkBytesParameter,
-		DownloadFlushKey:     capabilities.DownloadFlushParameter,
-		DownloadPayload:      payload,
-		DownloadFraming:      framing,
-		DownloadChunkBytes:   chunkBytes,
-		DownloadFlush:        flush,
-		UploadPath:           capabilities.UploadPath,
-		UploadBytesKey:       capabilities.UploadBytesParameter,
-		UploadEncoding:       "identity",
-		LatencyPath:          latencyPath,
-		LatencyMethod:        latencyMethod,
-		LatencyUsesDownload:  latencyUsesDownload,
-		WarmConnectionPing:   capabilities.WarmConnectionPing,
-		NoTransform:          capabilities.NoTransform,
-		ResponseCacheControl: capabilities.ResponseCacheControl,
+		CapabilityVersion:         capabilities.Version,
+		DownloadPath:              capabilities.DownloadPath,
+		DownloadBytesKey:          capabilities.DownloadBytesParameter,
+		DownloadPayloadKey:        capabilities.DownloadPayloadParameter,
+		DownloadFramingKey:        capabilities.DownloadFramingParameter,
+		DownloadChunkKey:          capabilities.DownloadChunkBytesParameter,
+		DownloadFlushKey:          capabilities.DownloadFlushParameter,
+		DownloadPayload:           payload,
+		DownloadFraming:           framing,
+		DownloadChunkBytes:        chunkBytes,
+		DownloadFlush:             flush,
+		UploadPath:                capabilities.UploadPath,
+		UploadBytesKey:            capabilities.UploadBytesParameter,
+		UploadEncoding:            "identity",
+		LatencyPath:               latencyPath,
+		LatencyMethod:             latencyMethod,
+		LatencyUsesDownload:       latencyUsesDownload,
+		WebSocketPingPath:         capabilities.WebSocketPingPath,
+		WebSocketPingProtocol:     capabilities.WebSocketPingProtocol,
+		WebSocketPingPayloadBytes: capabilities.WebSocketPingPayloadBytes,
+		PreferredLatencyTransport: preferredLatencyTransport,
+		HTTPFallbackAvailable:     true,
+		WarmConnectionPing:        capabilities.WarmConnectionPing,
+		NoTransform:               capabilities.NoTransform,
+		ResponseCacheControl:      capabilities.ResponseCacheControl,
 	}, nil
 }
 
@@ -205,6 +232,18 @@ func ValidateCapabilities(capabilities *Capabilities) error {
 	}
 	if err := validateEndpointPath("webSocketPingPath", capabilities.WebSocketPingPath, false); err != nil {
 		return err
+	}
+	if capabilities.WebSocketPingPath == "" {
+		if capabilities.WebSocketPingProtocol != "" || capabilities.WebSocketPingPayloadBytes != 0 {
+			return fmt.Errorf("WebSocket ping protocol metadata is advertised without webSocketPingPath")
+		}
+	} else {
+		if capabilities.WebSocketPingProtocol != WebSocketPingSubprotocol {
+			return fmt.Errorf("unsupported WebSocket ping protocol %q", capabilities.WebSocketPingProtocol)
+		}
+		if capabilities.WebSocketPingPayloadBytes != WebSocketPingPayloadBytes {
+			return fmt.Errorf("unsupported WebSocket ping payload size %d; need %d", capabilities.WebSocketPingPayloadBytes, WebSocketPingPayloadBytes)
+		}
 	}
 	downloadParameters := map[string]string{
 		"downloadBytesParameter":      capabilities.DownloadBytesParameter,

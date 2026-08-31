@@ -91,7 +91,7 @@ func TestCloudflareTransportProbeObservesDefaultsAndDoesNotSendDiscriminators(t 
 	if summary.Selection.DownloadPayload != "random" || summary.Selection.DownloadFraming != "fixed" {
 		t.Fatalf("selection=%+v", summary.Selection)
 	}
-	if summary.QueryDiscriminatorsSent || !summary.ProviderDefaultsOnly {
+	if summary.PrivateTransportDiscriminatorsSent || !summary.ProviderDefaultsOnly {
 		t.Fatalf("unsafe negotiation summary=%+v", summary)
 	}
 	for _, forbidden := range []string{"payload", "pattern", "fill", "framing", "stream", "chunkBytes", "flush"} {
@@ -160,6 +160,15 @@ func TestCloudflareTransportRejectsEncodedResponse(t *testing.T) {
 	_, err := probeAndNegotiateCloudflareTransport(context.Background(), newHTTPClient(o), o)
 	if err == nil || !strings.Contains(err.Error(), "Content-Encoding") {
 		t.Fatalf("error=%v; want encoded-response rejection", err)
+	}
+}
+
+func TestCloudflareTransportRejectsLaterRepeatedEncoding(t *testing.T) {
+	response := &http.Response{Header: make(http.Header)}
+	response.Header.Add("Content-Encoding", "identity")
+	response.Header.Add("Content-Encoding", "gzip")
+	if err := verifyCloudflareIdentityResponse(response); err == nil || !strings.Contains(err.Error(), "Content-Encoding") {
+		t.Fatalf("error=%v; want repeated encoded-response rejection", err)
 	}
 }
 

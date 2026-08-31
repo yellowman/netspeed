@@ -4,6 +4,7 @@
 
 #include "http.h"
 #include "types.h"
+#include "websocket_ping.h"
 
 #include <pthread.h>
 #include <signal.h>
@@ -19,6 +20,13 @@ typedef struct speedtest {
     struct timespec deadline;
     pthread_mutex_t error_mutex;
     char last_error[MAX_ERROR_LEN];
+    pthread_mutex_t websocket_latency_mutex;
+    websocket_ping_session_t websocket_latency;
+    bool websocket_latency_disabled;
+    char websocket_latency_fallback_reason[MAX_ERROR_LEN];
+    int websocket_latency_connections;
+    int websocket_latency_warmups;
+    int websocket_latency_pings;
 } speedtest_t;
 
 void speedtest_init(speedtest_t *test, config_t *config);

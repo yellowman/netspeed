@@ -12,21 +12,24 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/yellowman/netspeed/internal/measurementhttp"
 )
 
 const cloudflareTransportProbeBytes = 64 * 1024
 
 type cloudflareTransportSummary struct {
-	CapabilitySource        string                       `json:"capabilitySource"`
-	ProviderDefaultsOnly    bool                         `json:"providerDefaultsOnly"`
-	QueryDiscriminatorsSent bool                         `json:"queryDiscriminatorsSent"`
-	DownloadPath            string                       `json:"downloadPath"`
-	UploadPath              string                       `json:"uploadPath"`
-	LatencyPath             string                       `json:"latencyPath"`
-	BytesParameter          string                       `json:"bytesParameter"`
-	UploadPayload           string                       `json:"uploadPayload"`
-	Selection               cloudflareTransportSelection `json:"selection"`
-	AntiTransform           cloudflareAntiTransform      `json:"antiTransform"`
+	CapabilitySource                   string                       `json:"capabilitySource"`
+	ProviderDefaultsOnly               bool                         `json:"providerDefaultsOnly"`
+	PrivateTransportDiscriminatorsSent bool                         `json:"privateTransportDiscriminatorsSent"`
+	CompatibilityQueryParameters       []string                     `json:"compatibilityQueryParameters"`
+	DownloadPath                       string                       `json:"downloadPath"`
+	UploadPath                         string                       `json:"uploadPath"`
+	LatencyPath                        string                       `json:"latencyPath"`
+	BytesParameter                     string                       `json:"bytesParameter"`
+	UploadPayload                      string                       `json:"uploadPayload"`
+	Selection                          cloudflareTransportSelection `json:"selection"`
+	AntiTransform                      cloudflareAntiTransform      `json:"antiTransform"`
 }
 
 type cloudflareTransportSelection struct {
@@ -85,14 +88,15 @@ func normalizedCloudflareTransportOptions(o options) (payload, framing, flush st
 func probeAndNegotiateCloudflareTransport(ctx context.Context, client *http.Client, o options) (cloudflareTransportSummary, error) {
 	payloadRequested, framingRequested, flushRequested, chunkRequested := normalizedCloudflareTransportOptions(o)
 	summary := cloudflareTransportSummary{
-		CapabilitySource:        "behavioral-probe",
-		ProviderDefaultsOnly:    true,
-		QueryDiscriminatorsSent: false,
-		DownloadPath:            "/__down",
-		UploadPath:              "/__up",
-		LatencyPath:             "/__down",
-		BytesParameter:          "bytes",
-		UploadPayload:           "ascii-zero",
+		CapabilitySource:                   "behavioral-probe",
+		ProviderDefaultsOnly:               true,
+		PrivateTransportDiscriminatorsSent: false,
+		CompatibilityQueryParameters:       []string{"attempt", "bytes", "compat", "during", "id", "seq"},
+		DownloadPath:                       "/__down",
+		UploadPath:                         "/__up",
+		LatencyPath:                        "/__down",
+		BytesParameter:                     "bytes",
+		UploadPayload:                      "ascii-zero",
 		Selection: cloudflareTransportSelection{
 			DownloadPayloadRequested:    payloadRequested,
 			DownloadFramingRequested:    framingRequested,
@@ -158,15 +162,16 @@ func probeAndNegotiateCloudflareTransport(ctx context.Context, client *http.Clie
 	summary.Selection.DownloadFlush = flush
 	summary.Selection.DownloadFlushEvidence = flushEvidence
 
-	encoding := strings.TrimSpace(response.Header.Get("Content-Encoding"))
-	if encoding == "" {
-		encoding = "identity"
-	}
+	encoding := "identity"
 	cacheControl := strings.Join(response.Header.Values("Cache-Control"), ",")
 	summary.AntiTransform.ResponseContentEncoding = strings.ToLower(encoding)
 	summary.AntiTransform.ResponseNoStore = headerHasDirectiveCF(cacheControl, "no-store")
 	summary.AntiTransform.ResponseNoTransform = headerHasDirectiveCF(cacheControl, "no-transform")
-	summary.AntiTransform.ProxyBufferSuppressionObserved = strings.EqualFold(strings.TrimSpace(response.Header.Get("X-Accel-Buffering")), "no")
+	proxyBuffering, proxyBufferingPresent, err := measurementhttp.UniqueHeaderValue(response.Header, "X-Accel-Buffering")
+	if err != nil {
+		return summary, err
+	}
+	summary.AntiTransform.ProxyBufferSuppressionObserved = proxyBufferingPresent && strings.EqualFold(proxyBuffering, "no")
 
 	if payloadRequested != "auto" && payloadRequested != payload {
 		return summary, controlError("Cloudflare endpoint provider-default payload is %q (%s), so --download-payload=%s cannot be honored without sending a Netspeed-specific payload query parameter", payload, payloadEvidence, payloadRequested)
@@ -201,7 +206,14 @@ func cloudflareTransportProbeID() int64 {
 
 func inspectCloudflarePayload(response *http.Response, body []byte) (string, string, error) {
 	classification, evidence := classifyCloudflarePayload(body)
-	claimed := strings.ToLower(strings.TrimSpace(response.Header.Get("X-Netspeed-Payload")))
+	claimedValue, claimedPresent, err := measurementhttp.UniqueHeaderValue(response.Header, "X-Netspeed-Payload")
+	if err != nil {
+		return "", "", err
+	}
+	claimed := ""
+	if claimedPresent {
+		claimed = strings.ToLower(claimedValue)
+	}
 	if claimed == "" {
 		return classification, evidence, nil
 	}
@@ -260,7 +272,14 @@ func classifyCloudflarePayload(body []byte) (string, string) {
 }
 
 func inspectCloudflareFraming(response *http.Response, expectedBytes int) (string, string, error) {
-	claimed := strings.ToLower(strings.TrimSpace(response.Header.Get("X-Netspeed-Framing")))
+	claimedValue, claimedPresent, err := measurementhttp.UniqueHeaderValue(response.Header, "X-Netspeed-Framing")
+	if err != nil {
+		return "", "", err
+	}
+	claimed := ""
+	if claimedPresent {
+		claimed = strings.ToLower(claimedValue)
+	}
 	chunked := containsFoldCF(response.TransferEncoding, "chunked")
 	if claimed != "" {
 		switch claimed {
@@ -294,8 +313,11 @@ func inspectCloudflareFraming(response *http.Response, expectedBytes int) (strin
 }
 
 func inspectOptionalPositiveIntHeader(header http.Header, name string) (*int, string, error) {
-	raw := strings.TrimSpace(header.Get(name))
-	if raw == "" {
+	raw, present, err := measurementhttp.UniqueHeaderValue(header, name)
+	if err != nil {
+		return nil, "", err
+	}
+	if !present {
 		return nil, "", nil
 	}
 	value, err := strconv.Atoi(raw)
@@ -306,8 +328,11 @@ func inspectOptionalPositiveIntHeader(header http.Header, name string) (*int, st
 }
 
 func inspectOptionalBoolHeader(header http.Header, name string) (*bool, string, error) {
-	raw := strings.TrimSpace(header.Get(name))
-	if raw == "" {
+	raw, present, err := measurementhttp.UniqueHeaderValue(header, name)
+	if err != nil {
+		return nil, "", err
+	}
+	if !present {
 		return nil, "", nil
 	}
 	value, err := strconv.ParseBool(raw)
@@ -321,11 +346,7 @@ func verifyCloudflareIdentityResponse(response *http.Response) error {
 	if response.Uncompressed {
 		return fmt.Errorf("measurement response was transparently decompressed by the HTTP transport")
 	}
-	encoding := strings.TrimSpace(response.Header.Get("Content-Encoding"))
-	if encoding != "" && !strings.EqualFold(encoding, "identity") {
-		return fmt.Errorf("measurement response used unsupported Content-Encoding %q", encoding)
-	}
-	return nil
+	return measurementhttp.ValidateIdentityResponseEncoding(response.Header)
 }
 
 func verifyCloudflareDownloadSelection(response *http.Response, bodyPrefix []byte, expectedBytes int64, transport *cloudflareTransportSummary) error {
@@ -345,8 +366,14 @@ func verifyCloudflareDownloadSelection(response *http.Response, bodyPrefix []byt
 	if transport.AntiTransform.ResponseNoTransform && !headerHasDirectiveCF(cacheControl, "no-transform") {
 		return fmt.Errorf("download response lost the probed Cache-Control no-transform directive")
 	}
-	if transport.AntiTransform.ProxyBufferSuppressionObserved && !strings.EqualFold(strings.TrimSpace(response.Header.Get("X-Accel-Buffering")), "no") {
-		return fmt.Errorf("download response lost the probed X-Accel-Buffering: no evidence")
+	if transport.AntiTransform.ProxyBufferSuppressionObserved {
+		proxyBuffering, present, err := measurementhttp.UniqueHeaderValue(response.Header, "X-Accel-Buffering")
+		if err != nil {
+			return err
+		}
+		if !present || !strings.EqualFold(proxyBuffering, "no") {
+			return fmt.Errorf("download response lost the probed X-Accel-Buffering: no evidence")
+		}
 	}
 	payload, _, err := inspectCloudflarePayload(response, bodyPrefix)
 	if err != nil {

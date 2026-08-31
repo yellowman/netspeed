@@ -147,7 +147,10 @@ func TestCloudflareRunEmitsIdentifiedResult(t *testing.T) {
 		t.Fatalf("missing provider identity: %#v", got)
 	}
 	transport, ok := got["httpTransport"].(map[string]any)
-	if !ok || transport["capabilitySource"] != "behavioral-probe" || transport["queryDiscriminatorsSent"] != false {
+	parameters, parametersOK := transport["compatibilityQueryParameters"].([]any)
+	if !ok || transport["capabilitySource"] != "behavioral-probe" ||
+		transport["privateTransportDiscriminatorsSent"] != false ||
+		!parametersOK || len(parameters) != 6 {
 		t.Fatalf("missing transport evidence: %#v", got["httpTransport"])
 	}
 	latency, ok := got["latency"].(map[string]any)

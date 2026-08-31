@@ -79,7 +79,7 @@ fi
 
 optflags=""
 if test "${NETSPEED_DEBUG}" = yes; then optflags="-O0 -g -DDEBUG"; fi
-common_sources="src/http.c src/json.c src/measurement_transport.c src/output.c src/packet_loss.c src/speedtest.c src/stats.c src/timing.c src/progress.c"
+common_sources="src/http.c src/json.c src/measurement_transport.c src/output.c src/packet_loss.c src/speedtest.c src/stats.c src/timing.c src/websocket_ping.c src/progress.c"
 if test -n "${NETSPEED_TEST_SOURCE}"; then
   sources="${NETSPEED_TEST_SOURCE} ${common_sources}"
 else

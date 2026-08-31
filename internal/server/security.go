@@ -85,7 +85,7 @@ func (s *Server) authenticationMiddleware(next http.Handler) http.Handler {
 
 func isProtectedServicePath(path string) bool {
 	switch path {
-	case "/meta", "/__down", "/__up", "/__ping", "/locations", "/cdn-cgi/trace":
+	case "/meta", "/__down", "/__up", "/__ping", "/__ws", "/locations", "/cdn-cgi/trace":
 		return true
 	default:
 		return strings.HasPrefix(path, "/api/")

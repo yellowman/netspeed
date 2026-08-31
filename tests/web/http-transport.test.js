@@ -80,7 +80,11 @@ function response(body, headers) {
         responseCacheControl: 'no-store, no-transform',
         proxyBufferSuppressionHeader: 'X-Accel-Buffering: no',
         proxyRequestBufferingAdvisory: true,
-        webSocketPingPath: ''
+        webSocketPingPath: '',
+        webSocketPingProtocol: '',
+        webSocketPingPayloadBytes: 0,
+        preferredLatencyTransport: 'http',
+        httpFallbackAvailable: true
     });
 
     const download = new URL(Transport.buildDownloadPath(selection, 8192, {
@@ -106,6 +110,26 @@ function response(body, headers) {
         method: 'GET',
         path: '/measure/ping?seq=7'
     });
+}
+
+{
+    const websocket = Transport.negotiate(capabilities({
+        webSocketPingPath: '/measure/ws',
+        webSocketPingProtocol: 'netspeed.ping.v1',
+        webSocketPingPayloadBytes: 16
+    }), {});
+    assert.equal(websocket.preferredLatencyTransport, 'websocket');
+    assert.equal(websocket.webSocketPingPath, '/measure/ws');
+    assert.equal(websocket.webSocketPingProtocol, Transport.WEBSOCKET_PING_PROTOCOL);
+    assert.equal(websocket.webSocketPingPayloadBytes, Transport.WEBSOCKET_PING_PAYLOAD_BYTES);
+    assert.equal(websocket.httpFallbackAvailable, true);
+    assert.throws(() => Transport.validateCapabilities(capabilities({
+        webSocketPingPath: '/measure/ws'
+    })), /unsupported WebSocket ping protocol/);
+    assert.throws(() => Transport.validateCapabilities(capabilities({
+        webSocketPingProtocol: 'netspeed.ping.v1',
+        webSocketPingPayloadBytes: 16
+    })), /without webSocketPingPath/);
 }
 
 {

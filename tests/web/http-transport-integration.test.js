@@ -530,6 +530,178 @@ async function testUnverifiableSetupIsRejected() {
     assert.equal(evidence.latency.unobservableReuseSamples, 0);
 }
 
+
+function websocketCapabilities(overrides = {}) {
+    return capabilities({
+        webSocketPingPath: '/measure/ws',
+        webSocketPingProtocol: 'netspeed.ping.v1',
+        webSocketPingPayloadBytes: 16,
+        ...overrides
+    });
+}
+
+async function testWebSocketLatencyPreferredAndPersistent() {
+    hooks.setServerCapabilities(1_000_000, 1);
+    let connections = 0;
+    let messages = 0;
+    class FakeWebSocket {
+        constructor(url, protocol) {
+            this.url = url;
+            this.protocol = protocol;
+            this.readyState = 0;
+            connections++;
+            setImmediate(() => {
+                this.readyState = 1;
+                this.onopen?.({});
+            });
+        }
+        send(payload) {
+            messages++;
+            const copy = new Uint8Array(payload).slice();
+            setImmediate(() => this.onmessage?.({ data: copy.buffer }));
+        }
+        close(code = 1000, reason = '') {
+            if (this.readyState === 3) return;
+            this.readyState = 3;
+            setImmediate(() => this.onclose?.({ code, reason }));
+        }
+    }
+    global.WebSocket = FakeWebSocket;
+    let fetches = 0;
+    global.fetch = async () => {
+        fetches++;
+        throw new Error('HTTP fallback must not run for a healthy WebSocket');
+    };
+
+    const selection = hooks.setMeasurementTransport(websocketCapabilities());
+    assert.equal(selection.preferredLatencyTransport, 'websocket');
+    const first = await hooks.runLatencyProbe('unloaded', 1);
+    const second = await hooks.runLatencyProbe('download', 2);
+    for (const sample of [first, second]) {
+        assert.equal(sample.probeTransport, 'websocket');
+        assert.equal(sample.probeMethod, 'MESSAGE');
+        assert.equal(sample.probePath, '/measure/ws');
+        assert.equal(sample.timingSource, 'websocket-message');
+        assert.equal(sample.connectionReused, true);
+        assert.equal(sample.connectionSetupExcluded, true);
+        assert.equal(sample.webSocketProtocol, 'netspeed.ping.v1');
+    }
+    assert.equal(connections, 1);
+    assert.equal(messages, 3, 'one warmup and two measured messages expected');
+    assert.equal(fetches, 0);
+    const evidence = hooks.getTransportEvidence();
+    assert.equal(evidence.latency.preferredTransport, 'websocket');
+    assert.equal(evidence.latency.activeTransport, 'websocket');
+    assert.equal(evidence.latency.webSocket.connections, 1);
+    assert.equal(evidence.latency.webSocket.warmups, 1);
+    assert.equal(evidence.latency.webSocket.successfulPings, 2);
+    assert.equal(evidence.latency.fallbackUsed, false);
+    hooks.closeWebSocketLatency();
+}
+
+async function testWebSocketFailurePermanentlyFallsBackToHTTP() {
+    hooks.setServerCapabilities(1_000_000, 1);
+    let connections = 0;
+    class FailingWebSocket {
+        constructor() {
+            this.protocol = '';
+            this.readyState = 0;
+            connections++;
+            setImmediate(() => {
+                this.onerror?.({});
+                this.readyState = 3;
+                this.onclose?.({ code: 1006, reason: 'blocked by proxy' });
+            });
+        }
+        close() { this.readyState = 3; }
+    }
+    global.WebSocket = FailingWebSocket;
+    let fetches = 0;
+    global.fetch = async url => {
+        fetches++;
+        setTiming(url);
+        return new Response(null, {
+            status: 200,
+            headers: strictHeaders('latency', {
+                'Content-Type': 'application/octet-stream',
+                'Content-Length': '0'
+            })
+        });
+    };
+
+    hooks.setMeasurementTransport(websocketCapabilities());
+    const first = await hooks.runLatencyProbe('unloaded', 1);
+    const second = await hooks.runLatencyProbe('upload', 2);
+    for (const sample of [first, second]) {
+        assert.equal(sample.probeTransport, 'http');
+        assert.equal(sample.connectionReused, true);
+        assert.match(sample.probeFallbackReason, /WebSocket/i);
+    }
+    assert.equal(connections, 1, 'failed WebSocket must not be retried for every sample');
+    assert.equal(fetches, 2);
+    const evidence = hooks.getTransportEvidence();
+    assert.equal(evidence.latency.activeTransport, 'http');
+    assert.equal(evidence.latency.fallbackUsed, true);
+    assert.match(evidence.latency.fallbackReason, /WebSocket/i);
+    assert.equal(evidence.latency.webSocket.disabled, true);
+    hooks.closeWebSocketLatency();
+}
+
+async function testCrossOriginSameOriginCredentialsSkipBrowserWebSocket() {
+    hooks.setServerCapabilities(1_000_000, 1);
+    global.NETSPEED_CONFIG = {
+        apiBaseUrl: 'https://speed-api.example.test/',
+        credentials: 'same-origin'
+    };
+    let connections = 0;
+    global.WebSocket = class {
+        constructor() { connections++; }
+    };
+    global.fetch = async url => {
+        setTiming(url);
+        return new Response(null, {
+            status: 200,
+            headers: strictHeaders('latency', {
+                'Content-Type': 'application/octet-stream',
+                'Content-Length': '0'
+            })
+        });
+    };
+    hooks.setMeasurementTransport(websocketCapabilities());
+    const sample = await hooks.runLatencyProbe('unloaded', 1);
+    assert.equal(sample.probeTransport, 'http');
+    assert.match(sample.probeFallbackReason, /same-origin.*cross-origin/);
+    assert.equal(connections, 0);
+    global.NETSPEED_CONFIG = {};
+    hooks.closeWebSocketLatency();
+}
+
+async function testBearerTokenSkipsBrowserWebSocket() {
+    hooks.setServerCapabilities(1_000_000, 1);
+    global.NETSPEED_CONFIG = { accessToken: 'secret' };
+    let connections = 0;
+    global.WebSocket = class {
+        constructor() { connections++; }
+    };
+    global.fetch = async url => {
+        setTiming(url);
+        return new Response(null, {
+            status: 200,
+            headers: strictHeaders('latency', {
+                'Content-Type': 'application/octet-stream',
+                'Content-Length': '0'
+            })
+        });
+    };
+    hooks.setMeasurementTransport(websocketCapabilities());
+    const sample = await hooks.runLatencyProbe('unloaded', 1);
+    assert.equal(sample.probeTransport, 'http');
+    assert.match(sample.probeFallbackReason, /bearer token/);
+    assert.equal(connections, 0);
+    global.NETSPEED_CONFIG = {};
+    hooks.closeWebSocketLatency();
+}
+
 async function main() {
     await testNegotiatedDownloadAndUpload();
     await testXHRUploadPreservesTransportHeaders();
@@ -538,6 +710,11 @@ async function main() {
     await testWarmLatencyRejectsOnlyColdAttempts();
     await testUnobservableReuseIsNotMislabeled();
     await testUnverifiableSetupIsRejected();
+    await testWebSocketLatencyPreferredAndPersistent();
+    await testWebSocketFailurePermanentlyFallsBackToHTTP();
+    await testCrossOriginSameOriginCredentialsSkipBrowserWebSocket();
+    await testBearerTokenSkipsBrowserWebSocket();
+    delete global.WebSocket;
     hooks.setMeasurementTransport(null);
     console.log('browser HTTP transport integration tests passed');
 }

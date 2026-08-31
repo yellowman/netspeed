@@ -3,9 +3,13 @@
 
 from __future__ import annotations
 
+import base64
+import hashlib
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 from pathlib import Path
+import socket
+import struct
 import subprocess
 import sys
 import threading
@@ -20,6 +24,10 @@ MAX_CHUNK = 1024 * 1024
 DOWNLOAD_PATH = "/measure/down"
 UPLOAD_PATH = "/measure/up"
 PING_PATH = "/measure/ping"
+WEBSOCKET_PING_PATH = "/measure/ws"
+WEBSOCKET_PING_PROTOCOL = "netspeed.ping.v1"
+WEBSOCKET_PING_PAYLOAD_BYTES = 16
+WEBSOCKET_GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
 
 # Deterministic, non-zero-fill bytes. The native client verifies the advertised
 # discriminator and exact length; the fixture keeps the payload stable so a
@@ -40,6 +48,9 @@ def capabilities() -> dict[str, object]:
         "uploadBytesParameter": "expected",
         "httpPingPath": PING_PATH,
         "httpPingMethods": ["GET", "HEAD"],
+        "webSocketPingPath": WEBSOCKET_PING_PATH,
+        "webSocketPingProtocol": WEBSOCKET_PING_PROTOCOL,
+        "webSocketPingPayloadBytes": WEBSOCKET_PING_PAYLOAD_BYTES,
         "warmConnectionPing": True,
         "downloadPayloads": ["random", "zero"],
         "downloadFramings": ["fixed", "chunked"],
@@ -220,6 +231,112 @@ class ProtocolHandler(BaseHTTPRequestHandler):
         except (BrokenPipeError, ConnectionResetError):
             return
 
+    def _read_exact(self, length: int) -> bytes:
+        result = bytearray()
+        while len(result) < length:
+            chunk = self.connection.recv(length - len(result))
+            if not chunk:
+                raise ConnectionError("WebSocket peer closed")
+            result.extend(chunk)
+        return bytes(result)
+
+    def _read_websocket_frame(self) -> tuple[int, bytes]:
+        header = self._read_exact(2)
+        opcode = header[0] & 0x0F
+        masked = bool(header[1] & 0x80)
+        length = header[1] & 0x7F
+        if length == 126:
+            length = struct.unpack("!H", self._read_exact(2))[0]
+        elif length == 127:
+            length = struct.unpack("!Q", self._read_exact(8))[0]
+        if not masked:
+            raise ValueError("client WebSocket frame was not masked")
+        mask = self._read_exact(4)
+        payload = bytearray(self._read_exact(length))
+        for index in range(length):
+            payload[index] ^= mask[index % 4]
+        return opcode, bytes(payload)
+
+    def _send_websocket_frame(self, opcode: int, payload: bytes) -> None:
+        first = 0x80 | opcode
+        length = len(payload)
+        if length < 126:
+            header = bytes((first, length))
+        elif length <= 0xFFFF:
+            header = bytes((first, 126)) + struct.pack("!H", length)
+        else:
+            header = bytes((first, 127)) + struct.pack("!Q", length)
+        self.connection.sendall(header + payload)
+
+    def _serve_websocket_ping(self, mode: str) -> None:
+        upgrade = self.headers.get("Upgrade", "").lower()
+        connection = self.headers.get("Connection", "").lower()
+        key = self.headers.get("Sec-WebSocket-Key", "")
+        protocol = self.headers.get("Sec-WebSocket-Protocol", "")
+        if (
+            upgrade != "websocket"
+            or "upgrade" not in {token.strip() for token in connection.split(",")}
+            or self.headers.get("Sec-WebSocket-Version") != "13"
+            or not key
+            or protocol != WEBSOCKET_PING_PROTOCOL
+            or not self._measurement_request_valid()
+        ):
+            return
+        with self.server.websocket_lock:  # type: ignore[attr-defined]
+            self.server.websocket_upgrade_attempts += 1  # type: ignore[attr-defined]
+        if mode == "websocket-reject":
+            body = b'{"error":"websocket disabled"}'
+            self.send_response(503)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("Connection", "close")
+            self.end_headers()
+            self.wfile.write(body)
+            self.close_connection = True
+            return
+
+        accept = base64.b64encode(
+            hashlib.sha1((key + WEBSOCKET_GUID).encode("ascii")).digest()
+        ).decode("ascii")
+        self.send_response(101, "Switching Protocols")
+        self.send_header("Upgrade", "websocket")
+        self.send_header("Connection", "Upgrade")
+        self.send_header("Sec-WebSocket-Accept", accept)
+        self.send_header("Sec-WebSocket-Protocol", WEBSOCKET_PING_PROTOCOL)
+        self.send_header("Cache-Control", "no-store, no-transform")
+        self.send_header("Pragma", "no-cache")
+        self.send_header("X-Accel-Buffering", "no")
+        if mode == "websocket-stacked-encoding":
+            self.send_header("Content-Encoding", "identity")
+            self.send_header("Content-Encoding", "gzip")
+        self.send_header("X-Netspeed-Measurement", "latency")
+        self.end_headers()
+        self.wfile.flush()
+        self.connection.settimeout(15)
+        with self.server.websocket_lock:  # type: ignore[attr-defined]
+            self.server.websocket_connections += 1  # type: ignore[attr-defined]
+        try:
+            while True:
+                opcode, payload = self._read_websocket_frame()
+                if opcode == 0x8:
+                    self._send_websocket_frame(0x8, payload[:125])
+                    break
+                if opcode == 0x9:
+                    self._send_websocket_frame(0xA, payload[:125])
+                    continue
+                if opcode != 0x2 or len(payload) != WEBSOCKET_PING_PAYLOAD_BYTES:
+                    self._send_websocket_frame(0x8, b"\x03\xea")
+                    break
+                if mode == "websocket-bad-echo":
+                    payload = payload[:-1] + bytes((payload[-1] ^ 0xFF,))
+                self._send_websocket_frame(0x2, payload)
+                with self.server.websocket_lock:  # type: ignore[attr-defined]
+                    self.server.websocket_messages += 1  # type: ignore[attr-defined]
+        except (BrokenPipeError, ConnectionError, ConnectionResetError, socket.timeout):
+            pass
+        finally:
+            self.close_connection = True
+
     def do_HEAD(self) -> None:  # noqa: N802
         if not self._authorized():
             return
@@ -259,8 +376,18 @@ class ProtocolHandler(BaseHTTPRequestHandler):
                 advertised = capabilities()
                 if mode == "head-only-ping":
                     advertised["httpPingMethods"] = ["HEAD"]
+                    advertised.pop("webSocketPingPath", None)
+                    advertised.pop("webSocketPingProtocol", None)
+                    advertised.pop("webSocketPingPayloadBytes", None)
+                elif mode == "cold-latency":
+                    advertised.pop("webSocketPingPath", None)
+                    advertised.pop("webSocketPingProtocol", None)
+                    advertised.pop("webSocketPingPayloadBytes", None)
                 document["measurementCapabilities"] = advertised
             self._json(document)
+            return
+        if parsed.path == WEBSOCKET_PING_PATH:
+            self._serve_websocket_ping(mode)
             return
         if parsed.path == PING_PATH:
             self._serve_ping(mode)
@@ -440,6 +567,9 @@ def validate(payload: dict[str, object], direction: str) -> None:
     assert advertised["downloadPath"] == DOWNLOAD_PATH
     assert advertised["uploadPath"] == UPLOAD_PATH
     assert advertised["httpPingPath"] == PING_PATH
+    assert advertised["webSocketPingPath"] == WEBSOCKET_PING_PATH
+    assert advertised["webSocketPingProtocol"] == WEBSOCKET_PING_PROTOCOL
+    assert advertised["webSocketPingPayloadBytes"] == WEBSOCKET_PING_PAYLOAD_BYTES
 
     selection = meta["measurementSelection"]
     assert isinstance(selection, dict)
@@ -461,6 +591,11 @@ def validate(payload: dict[str, object], direction: str) -> None:
     assert selection["latencyPath"] == PING_PATH
     assert selection["latencyMethod"] == "GET"
     assert selection["latencyUsesDownloadEndpoint"] is False
+    assert selection["webSocketPingPath"] == WEBSOCKET_PING_PATH
+    assert selection["webSocketPingProtocol"] == WEBSOCKET_PING_PROTOCOL
+    assert selection["webSocketPingPayloadBytes"] == WEBSOCKET_PING_PAYLOAD_BYTES
+    assert selection["preferredLatencyTransport"] == "websocket"
+    assert selection["httpFallbackAvailable"] is True
     assert selection["warmConnectionPing"] is True
     assert selection["noTransform"] is True
     assert selection["proxyBufferSuppressionHeader"] == "X-Accel-Buffering: no"
@@ -489,9 +624,14 @@ def validate(payload: dict[str, object], direction: str) -> None:
     assert len(unloaded) >= 3
     assert len(loaded) >= 2, loaded
     assert all(sample.get("connectionReused") is True for sample in latency)
-    assert all(sample.get("probeTransport") == "http" for sample in latency)
-    assert all(sample.get("probeMethod") == "GET" for sample in latency)
-    assert all(sample.get("probePath") == PING_PATH for sample in latency)
+    assert all(sample.get("probeTransport") == "websocket" for sample in latency)
+    assert all(sample.get("probeMethod") == "MESSAGE" for sample in latency)
+    assert all(sample.get("probePath") == WEBSOCKET_PING_PATH for sample in latency)
+    assert all(
+        sample.get("webSocketProtocol") == WEBSOCKET_PING_PROTOCOL
+        for sample in latency
+    )
+    assert all("probeFallbackReason" not in sample for sample in latency)
     assert all(sample.get("loadOverlapped") is True for sample in loaded)
     assert all(sample.get("loadTrackingAccurate") is True for sample in loaded)
     assert all(sample["startedAt"] <= sample["endedAt"] for sample in loaded)
@@ -508,6 +648,10 @@ def main() -> int:
     binary = Path(sys.argv[1]).resolve()
     server = ThreadingHTTPServer(("127.0.0.1", 0), ProtocolHandler)
     server.mode = "normal"  # type: ignore[attr-defined]
+    server.websocket_lock = threading.Lock()  # type: ignore[attr-defined]
+    server.websocket_upgrade_attempts = 0  # type: ignore[attr-defined]
+    server.websocket_connections = 0  # type: ignore[attr-defined]
+    server.websocket_messages = 0  # type: ignore[attr-defined]
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     try:
@@ -558,9 +702,49 @@ def main() -> int:
         server.mode = "head-only-ping"  # type: ignore[attr-defined]
         head_only = run_client(binary, url, "download", provider="netspeed")
         assert head_only["meta"]["measurementSelection"]["latencyMethod"] == "HEAD"
+        assert head_only["meta"]["measurementSelection"]["preferredLatencyTransport"] == "http"
         assert all(
             sample.get("probeMethod") == "HEAD"
             for sample in head_only["latencySamples"]
+        )
+
+        server.mode = "websocket-reject"  # type: ignore[attr-defined]
+        with server.websocket_lock:  # type: ignore[attr-defined]
+            attempts_before = server.websocket_upgrade_attempts  # type: ignore[attr-defined]
+        websocket_fallback = run_client(
+            binary, url, "download", label="WebSocket fallback", provider="netspeed"
+        )
+        fallback_samples = websocket_fallback["latencySamples"]
+        assert fallback_samples
+        assert all(sample.get("probeTransport") == "http" for sample in fallback_samples)
+        assert all(sample.get("probeMethod") == "GET" for sample in fallback_samples)
+        assert all(sample.get("probePath") == PING_PATH for sample in fallback_samples)
+        assert all(
+            "websocket" in sample.get("probeFallbackReason", "").lower()
+            for sample in fallback_samples
+        )
+        with server.websocket_lock:  # type: ignore[attr-defined]
+            attempts_after = server.websocket_upgrade_attempts  # type: ignore[attr-defined]
+        assert attempts_after - attempts_before == 1
+
+        server.mode = "websocket-bad-echo"  # type: ignore[attr-defined]
+        bad_echo_fallback = run_client(
+            binary, url, "download", label="WebSocket bad echo fallback", provider="netspeed"
+        )
+        assert all(
+            sample.get("probeTransport") == "http"
+            and "websocket" in sample.get("probeFallbackReason", "").lower()
+            for sample in bad_echo_fallback["latencySamples"]
+        )
+
+        server.mode = "websocket-stacked-encoding"  # type: ignore[attr-defined]
+        stacked_encoding_fallback = run_client(
+            binary, url, "download", label="WebSocket encoding fallback", provider="netspeed"
+        )
+        assert all(
+            sample.get("probeTransport") == "http"
+            and "content-encoding" in sample.get("probeFallbackReason", "").lower()
+            for sample in stacked_encoding_fallback["latencySamples"]
         )
 
         server.mode = "old-protocol"  # type: ignore[attr-defined]

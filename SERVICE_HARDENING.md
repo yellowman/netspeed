@@ -80,7 +80,8 @@ scheme and length validation.
 
 Protected routes are:
 
-- `/meta`, `/__down`, `/__up`, `/__ping`, `/locations`, and `/cdn-cgi/trace`;
+- `/meta`, `/__down`, `/__up`, `/__ws`, `/__ping`, `/locations`, and
+  `/cdn-cgi/trace`;
 - every `/api/` route, including ICE configuration and packet-test signaling.
 
 `/health` and static web assets remain public. CORS preflight requests are
@@ -120,10 +121,22 @@ browser. This mode is suitable for controlled installations or a token supplied
 by an authenticated upstream application, not for hiding a long-lived secret in
 a public static site.
 
+The browser WebSocket API cannot attach this bearer header. A browser run with
+`accessToken` therefore does not attempt `/__ws`; it records the reason and uses
+the authenticated warm HTTP latency path. Native Go and C clients can send the
+bearer token during the WebSocket upgrade. Browser credential modes that cannot
+be reproduced safely by the WebSocket constructor likewise select HTTP before
+opening a socket. The daemon applies the configured origin allowlist to the
+upgrade; with Fetch CORS disabled it still rejects cross-host browser Origins
+while accepting native clients that omit Origin.
+
 ## 4. transfer admission and byte quotas
 
-`GET /__down` and `POST /__up` acquire a global and per-client transfer slot
-before performing measurement work.
+`GET /__down`, `POST /__up`, and an upgraded `/__ws` latency session acquire a
+global and per-client transfer slot before performing measurement work. A
+WebSocket session holds its slot until the connection closes or the transfer
+deadline expires. Its 16-byte echo messages do not consume byte quota; download
+and upload bodies retain the existing reservation rules.
 
 | rejection | status | retry behavior |
 |---|---:|---|
@@ -152,9 +165,10 @@ Successful known-size reservations expose
 }
 ```
 
-Both supported clients cap their concurrency to the advertised per-client
-ceiling. Sustained-load testing reserves one slot for a loaded-latency probe, so
-at most `maxConcurrentTransfersPerClient - 1` traffic flows run at once.
+All supported clients cap their concurrency to the advertised per-client
+ceiling. Sustained-load testing reserves one slot for the persistent WebSocket
+or its warm HTTP fallback, so at most
+`maxConcurrentTransfersPerClient - 1` traffic flows run at once.
 
 ## 5. WebRTC admission and report ownership
 

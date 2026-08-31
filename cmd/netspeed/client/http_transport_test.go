@@ -14,6 +14,7 @@ import (
 
 	"github.com/yellowman/netspeed/internal/measurementhttp"
 	"github.com/yellowman/netspeed/internal/protocol"
+	"github.com/yellowman/netspeed/internal/websocketping"
 )
 
 func clientTransportCapabilities() *measurementhttp.Capabilities {
@@ -262,5 +263,123 @@ func TestNegotiatedResponseRejectsTransformationOrWrongDiscriminator(t *testing.
 	response.TransferEncoding = []string{"chunked"}
 	if err := client.verifyDownloadMeasurementResponse(response, 4096, "download"); err == nil || !strings.Contains(err.Error(), "payload") {
 		t.Fatalf("verifyDownloadMeasurementResponse error = %v; want payload mismatch rejection", err)
+	}
+}
+
+func TestWebSocketLatencyPreferredAndWarm(t *testing.T) {
+	capabilities := clientTransportCapabilities()
+	capabilities.WebSocketPingPath = "/measure/ws"
+	capabilities.WebSocketPingProtocol = measurementhttp.WebSocketPingSubprotocol
+	capabilities.WebSocketPingPayloadBytes = measurementhttp.WebSocketPingPayloadBytes
+	selection, err := measurementhttp.Negotiate(capabilities, measurementhttp.Preferences{})
+	if err != nil {
+		t.Fatalf("Negotiate: %v", err)
+	}
+	var httpPings atomic.Int64
+	var websocketPings atomic.Int64
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		switch request.URL.Path {
+		case "/measure/ws":
+			if err := websocketping.Serve(writer, request, func() { websocketPings.Add(1) }); err != nil && !strings.Contains(strings.ToLower(err.Error()), "eof") {
+				t.Errorf("WebSocket server: %v", err)
+			}
+		case "/measure/ping":
+			httpPings.Add(1)
+			measurementhttp.SetResponseHeaders(writer.Header(), "latency")
+			writer.Header().Set("Content-Length", "0")
+			writer.WriteHeader(http.StatusOK)
+		default:
+			http.NotFound(writer, request)
+		}
+	}))
+	defer server.Close()
+
+	client := testClient(server)
+	client.cfg.ServerURL = server.URL
+	client.measurementTransport = selection
+	client.websocketLatency = newWebSocketLatencyProbe(client.cfg, selection)
+	defer client.closeWebSocketLatency()
+
+	sample, err := client.measureLatencySample(context.Background(), "unloaded", 4)
+	if err != nil {
+		t.Fatalf("measureLatencySample: %v", err)
+	}
+	if sample.ProbeTransport != "websocket" || sample.ProbeMethod != "MESSAGE" || sample.ProbePath != "/measure/ws" ||
+		sample.TimingSource != "websocket-message" || !sample.ConnectionReused || sample.ProbeFallbackReason != "" ||
+		sample.WebSocketProtocol != measurementhttp.WebSocketPingSubprotocol {
+		t.Fatalf("WebSocket latency sample = %#v", sample)
+	}
+	if httpPings.Load() != 0 {
+		t.Fatalf("HTTP fallback used %d times", httpPings.Load())
+	}
+	if websocketPings.Load() != 2 {
+		t.Fatalf("WebSocket messages = %d; want warmup plus measured ping", websocketPings.Load())
+	}
+}
+
+func TestWebSocketLatencyFailureFallsBackToWarmHTTP(t *testing.T) {
+	capabilities := clientTransportCapabilities()
+	capabilities.WebSocketPingPath = "/measure/ws"
+	capabilities.WebSocketPingProtocol = measurementhttp.WebSocketPingSubprotocol
+	capabilities.WebSocketPingPayloadBytes = measurementhttp.WebSocketPingPayloadBytes
+	selection, err := measurementhttp.Negotiate(capabilities, measurementhttp.Preferences{})
+	if err != nil {
+		t.Fatalf("Negotiate: %v", err)
+	}
+	var websocketAttempts atomic.Int64
+	var httpPings atomic.Int64
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		switch request.URL.Path {
+		case "/measure/ws":
+			websocketAttempts.Add(1)
+			http.Error(writer, "upgrade blocked", http.StatusBadGateway)
+		case "/measure/ping":
+			httpPings.Add(1)
+			measurementhttp.SetResponseHeaders(writer.Header(), "latency")
+			writer.Header().Set("Content-Length", "0")
+			writer.WriteHeader(http.StatusOK)
+		default:
+			http.NotFound(writer, request)
+		}
+	}))
+	defer server.Close()
+
+	client := testClient(server)
+	client.cfg.ServerURL = server.URL
+	client.measurementTransport = selection
+	client.websocketLatency = newWebSocketLatencyProbe(client.cfg, selection)
+	defer client.closeWebSocketLatency()
+
+	first, err := client.measureLatencySample(context.Background(), "unloaded", 1)
+	if err != nil {
+		t.Fatalf("first latency sample: %v", err)
+	}
+	second, err := client.measureLatencySample(context.Background(), "unloaded", 2)
+	if err != nil {
+		t.Fatalf("second latency sample: %v", err)
+	}
+	for _, sample := range []LatencySample{first, second} {
+		if sample.ProbeTransport != "http" || !sample.ConnectionReused || !strings.Contains(sample.ProbeFallbackReason, "upgrade failed") {
+			t.Fatalf("fallback latency sample = %#v", sample)
+		}
+	}
+	if websocketAttempts.Load() != 1 {
+		t.Fatalf("WebSocket attempts = %d; want one permanent-fallback attempt", websocketAttempts.Load())
+	}
+	if httpPings.Load() < 3 {
+		t.Fatalf("HTTP pings = %d; want one cold discard and two measured warm requests", httpPings.Load())
+	}
+}
+
+func TestGoClientRejectsLaterRepeatedContentEncoding(t *testing.T) {
+	client := New(Config{})
+	client.measurementTransport = selectedClientTransport(t)
+	response := &http.Response{Header: make(http.Header)}
+	response.Header.Add("Content-Encoding", "identity")
+	response.Header.Add("Content-Encoding", "gzip")
+	response.Header.Set("Cache-Control", measurementhttp.CacheControl)
+	response.Header.Set("X-Netspeed-Measurement", "download")
+	if err := client.verifyCommonMeasurementResponse(response, "download"); err == nil || !strings.Contains(strings.ToLower(err.Error()), "content-encoding") {
+		t.Fatalf("verifyCommonMeasurementResponse error = %v; want repeated encoding rejection", err)
 	}
 }

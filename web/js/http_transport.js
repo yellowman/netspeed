@@ -12,6 +12,8 @@ const NetspeedHTTPTransport = (function() {
     const DEFAULT_CHUNK_BYTES = 1 << 20;
     const CACHE_CONTROL = 'no-store, no-transform';
     const PREFERENCE_AUTO = 'auto';
+    const WEBSOCKET_PING_PROTOCOL = 'netspeed.ping.v1';
+    const WEBSOCKET_PING_PAYLOAD_BYTES = 16;
     const PARAMETER_NAME = /^[A-Za-z_.-][A-Za-z0-9_.-]*$/;
     const HEADER_NAME = /^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/;
 
@@ -108,6 +110,22 @@ const NetspeedHTTPTransport = (function() {
         const uploadPath = validateEndpointPath('uploadPath', raw.uploadPath, true);
         const httpPingPath = validateEndpointPath('httpPingPath', raw.httpPingPath ?? '', false);
         const webSocketPingPath = validateEndpointPath('webSocketPingPath', raw.webSocketPingPath ?? '', false);
+        const webSocketPingProtocol = String(raw.webSocketPingProtocol ?? '').trim();
+        const webSocketPingPayloadBytes = raw.webSocketPingPayloadBytes === undefined || raw.webSocketPingPayloadBytes === null
+            ? 0
+            : requireInteger('webSocketPingPayloadBytes', raw.webSocketPingPayloadBytes, 0);
+        if (!webSocketPingPath) {
+            if (webSocketPingProtocol || webSocketPingPayloadBytes !== 0) {
+                throw new Error('WebSocket ping protocol metadata is advertised without webSocketPingPath');
+            }
+        } else {
+            if (webSocketPingProtocol !== WEBSOCKET_PING_PROTOCOL) {
+                throw new Error(`unsupported WebSocket ping protocol ${JSON.stringify(webSocketPingProtocol)}`);
+            }
+            if (webSocketPingPayloadBytes !== WEBSOCKET_PING_PAYLOAD_BYTES) {
+                throw new Error(`unsupported WebSocket ping payload size ${webSocketPingPayloadBytes}; need ${WEBSOCKET_PING_PAYLOAD_BYTES}`);
+            }
+        }
 
         const parameterFields = [
             'downloadBytesParameter',
@@ -196,6 +214,8 @@ const NetspeedHTTPTransport = (function() {
             httpPingMethods,
             preferredPingMethod,
             webSocketPingPath,
+            webSocketPingProtocol,
+            webSocketPingPayloadBytes,
             warmConnectionPing: raw.warmConnectionPing === true,
             downloadPayloads,
             downloadFramings,
@@ -285,7 +305,11 @@ const NetspeedHTTPTransport = (function() {
             responseCacheControl: '',
             proxyBufferSuppressionHeader: '',
             proxyRequestBufferingAdvisory: false,
-            webSocketPingPath: ''
+            webSocketPingPath: '',
+            webSocketPingProtocol: '',
+            webSocketPingPayloadBytes: 0,
+            preferredLatencyTransport: 'http',
+            httpFallbackAvailable: true
         };
     }
 
@@ -352,7 +376,11 @@ const NetspeedHTTPTransport = (function() {
             responseCacheControl: capabilities.responseCacheControl,
             proxyBufferSuppressionHeader: capabilities.proxyBufferSuppressionHeader,
             proxyRequestBufferingAdvisory: capabilities.proxyRequestBufferingAdvisory,
-            webSocketPingPath: capabilities.webSocketPingPath
+            webSocketPingPath: capabilities.webSocketPingPath,
+            webSocketPingProtocol: capabilities.webSocketPingProtocol,
+            webSocketPingPayloadBytes: capabilities.webSocketPingPayloadBytes,
+            preferredLatencyTransport: capabilities.webSocketPingPath ? 'websocket' : 'http',
+            httpFallbackAvailable: true
         };
     }
 
@@ -562,6 +590,8 @@ const NetspeedHTTPTransport = (function() {
     return {
         TRANSPORT_VERSION,
         CACHE_CONTROL,
+        WEBSOCKET_PING_PROTOCOL,
+        WEBSOCKET_PING_PAYLOAD_BYTES,
         validateCapabilities,
         normalizePreferences,
         preferencesFromConfig,

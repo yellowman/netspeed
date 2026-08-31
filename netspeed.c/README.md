@@ -73,8 +73,13 @@ Explicit values fail when the daemon does not advertise support. Measurement
 requests disable content decoding, request identity coding and
 `no-store, no-transform`, and verify the daemon's payload, framing, chunk,
 upload-byte, cache-control, and proxy-buffer diagnostics. Latency uses the
-advertised zero-byte endpoint and reports only a reused keep-alive probe when
-the daemon promises warm-connection support.
+advertised persistent `netspeed.ping.v1` WebSocket echo when its exact path and
+16-byte payload contract are present. The C client lets libcurl establish DNS,
+TCP, proxy tunnels, and TLS, then uses the connected socket for one unreported
+warmup and message-only RTT. Any upgrade, framing, timeout, close, subprotocol,
+or echo failure permanently selects the advertised zero-byte HTTP endpoint.
+HTTP reports only a reused keep-alive probe when the daemon promises
+warm-connection support, and result samples preserve the fallback reason.
 
 Cloudflare mode uses `cloudflare-http-v2`. It behaviorally probes the common
 `/__down?bytes=N` endpoint and treats the same options as requirements on the

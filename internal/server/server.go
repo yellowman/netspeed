@@ -214,11 +214,15 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 	upload := func(handler http.HandlerFunc) http.Handler {
 		return s.withEndpointDeadline(s.cfg.TransferTimeout, true, true, handler)
 	}
+	websocket := func(handler http.HandlerFunc) http.Handler {
+		return s.withEndpointDeadline(s.cfg.TransferTimeout, true, true, handler)
+	}
 
 	mux.Handle("/meta", control(s.handleMeta))
 	mux.Handle("/__down", download(s.handleDown))
 	mux.Handle("/__up", upload(s.handleUp))
 	mux.Handle("/__ping", control(s.handlePing))
+	mux.Handle("/__ws", websocket(s.handleWebSocketPing))
 	mux.Handle("/locations", control(s.handleLocations))
 	mux.Handle("/cdn-cgi/trace", control(s.handleTrace))
 	mux.Handle("/api/turn/credentials", turnCompatibilityMiddleware(control(s.handleTurnCredentials)))
@@ -239,7 +243,7 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 func (s *Server) staticFileHandler(files http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		path := r.URL.Path
-		if path == "/meta" || path == "/__down" || path == "/__up" || path == "/__ping" ||
+		if path == "/meta" || path == "/__down" || path == "/__up" || path == "/__ping" || path == "/__ws" ||
 			path == "/locations" || path == "/health" || path == "/metrics" ||
 			strings.HasPrefix(path, "/api/") || strings.HasPrefix(path, "/cdn-cgi/") {
 			http.NotFound(w, r)

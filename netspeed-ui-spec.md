@@ -6,6 +6,8 @@ that talks to a backend exposing these endpoints:
 - `GET /meta`
 - `GET /__down`
 - `POST /__up`
+- `GET /__ws` (advertised WebSocket upgrade)
+- `GET` or `HEAD /__ping`
 - `GET /locations`
 - `GET /api/turn/credentials`
 - `POST /api/packet-test/offer`
@@ -41,6 +43,11 @@ Fetch and upload fallback. Because XHR cannot suppress same-origin cookies, the
 non-streaming same-origin `omit` case uses Fetch and marks upload-load timing
 imprecise. `include` requires an explicit daemon origin with credentialed CORS;
 wildcard credentialed CORS is invalid.
+
+The WebSocket constructor cannot attach `Authorization` or exactly reproduce
+Fetch credential suppression. Browser latency therefore skips WebSocket when
+`accessToken` is set, credentials are `omit`, or `same-origin` credentials are
+paired with a cross-origin API. The reason is recorded and warm HTTP is used.
 
 All metadata, location, throughput, latency, TURN, offer, and report requests
 go through the same URL and credential helpers. `web/js/http_transport.js` must
@@ -99,6 +106,9 @@ response. Disallowed browser origins receive `403`. See `HTTP_DEPLOYMENT.md`.
     "uploadBytesParameter": "bytes",
     "httpPingPath": "/__ping",
     "httpPingMethods": ["GET", "HEAD"],
+    "webSocketPingPath": "/__ws",
+    "webSocketPingProtocol": "netspeed.ping.v1",
+    "webSocketPingPayloadBytes": 16,
     "warmConnectionPing": true,
     "downloadPayloads": ["random", "zero"],
     "downloadFramings": ["fixed", "chunked"],
@@ -183,7 +193,23 @@ streaming-capable browser emits 64 KiB request chunks. Other browsers reuse a
 payload no larger than 8 MiB and use XHR request lifecycle events. Upload
 activity remains active through verified receipt completion.
 
-#### 1.1.4 `GET` or `HEAD /__ping` — warm HTTP latency
+#### 1.1.4 `GET /__ws` — persistent WebSocket latency echo
+
+When all three WebSocket capability fields match the supported contract, the
+browser opens one persistent socket with subprotocol `netspeed.ping.v1`. It
+sends one unreported warmup and then 16-byte binary messages containing `NSP1`,
+a big-endian sequence number, and an 8-byte random nonce. RTT starts immediately
+before `send()` and ends only when the exact nonce returns. Connection setup,
+HTTP Upgrade, and warmup are excluded.
+
+The browser API cannot originate RFC 6455 control pings or inspect the 101
+headers, so this is an application echo. It validates the selected subprotocol,
+binary type, exact length, magic, sequence, and nonce. The first upgrade,
+timeout, close, framing, subprotocol, or echo failure disables WebSocket for the
+rest of the run. Every later sample uses HTTP and retains the stable
+`probeFallbackReason`.
+
+#### 1.1.5 `GET` or `HEAD /__ping` — warm HTTP latency
 
 The browser prefers the advertised zero-body ping path and method and falls back
 to the advertised download endpoint with zero bytes only when no dedicated path
@@ -193,9 +219,10 @@ discarded when `warmConnectionPing` is true. A request-start interval may be
 kept with `connectionReused: null` when connection fields are hidden but setup
 is excluded from the measured interval. Manual/fetch-start timing that cannot
 exclude setup is rejected. Results record method, path, protocol, reuse evidence,
-and discarded attempts.
+and discarded attempts. This path is also the automatic fallback after a
+WebSocket failure; the advertised zero-byte download remains the final fallback.
 
-#### 1.1.5 `GET /locations` — test locations
+#### 1.1.6 `GET /locations` — test locations
 
 **request**
 
@@ -395,7 +422,8 @@ invalid report makes packet loss unavailable rather than assuming zero.
 The browser executes:
 
 1. capability negotiation and metadata;
-2. 20 unloaded latency probes with adaptive batching;
+2. initialize the advertised persistent WebSocket echo or its warm HTTP
+   fallback, then run 20 unloaded latency probes with adaptive batching;
 3. three verified 100 kB and three verified 1 MB download baselines;
 4. three 1.5-second sustained download windows, with loaded probes in the middle
    window;
@@ -434,6 +462,11 @@ loaded-latency result is retained only if its accepted-probe quorum has already
 been reached; otherwise the direction fails instead of stretching the nominal
 window indefinitely.
 
+The same persistent WebSocket connection may serve unloaded, download-loaded,
+and upload-loaded samples. If it fails during a loaded window, the browser
+closes it permanently and uses the already reserved HTTP connection slot for
+fallback without changing the overlap proof.
+
 ### 2.3 exact packet test
 
 The browser uses an unordered data channel with `maxRetransmits: 0` and sends
@@ -471,6 +504,8 @@ type LatencySample = {
   probeTransport?: 'http' | 'websocket';
   probeMethod?: string;
   probePath?: string;
+  probeFallbackReason?: string;
+  webSocketProtocol?: 'netspeed.ping.v1';
   nextHopProtocol?: string;
 };
 

@@ -9,6 +9,7 @@ it covers:
   - `GET /meta`
   - `GET /__down`
   - `POST /__up`
+  - `GET /__ws` (HTTP/1.1 WebSocket upgrade)
   - `GET` or `HEAD /__ping`
   - `GET /locations`
   - (optional) `GET /cdn-cgi/trace`
@@ -61,13 +62,15 @@ discriminators. Allowed origins receive matching CORS and
 diagnostics; disallowed browser origins receive `403`.
 
 The daemon advertises pseudorandom and zero-fill payloads, fixed and streamed
-framing, identity-only uploads, and warm zero-body HTTP ping. Measurement
-responses carry anti-transform and proxy-buffer-suppression headers; proxy
-configuration is still required for request-body buffering. The HTTP writer
-records only the first status and actual bytes, delegates modern
-streaming/response-controller capabilities, and aborts a committed stream after
-a panic instead of appending a replacement error body. Graceful shutdown drains
-HTTP handlers before WebRTC, GeoIP, or embedded TURN are closed.
+framing, identity-only uploads, a persistent `netspeed.ping.v1` WebSocket echo,
+and warm zero-body HTTP fallback. Measurement responses and the WebSocket
+upgrade carry anti-transform and proxy-buffer-suppression headers; proxy
+configuration is still required for request-body buffering and Upgrade
+forwarding. The HTTP writer records only the first status and actual bytes,
+delegates modern streaming, hijacking, and response-controller capabilities,
+and aborts a committed stream after a panic instead of appending a replacement
+error body. Graceful shutdown drains HTTP handlers before WebRTC, GeoIP, or
+embedded TURN are closed.
 
 Flags and strictly parsed `NETSPEEDD_*` environment variables are the canonical
 configuration surface; there is no YAML loader. Partial or invalid direct-TLS
@@ -122,7 +125,11 @@ returns per-client metadata similar to `https://speed.cloudflare.com/meta`, typi
     "version": 1,
     "downloadPayloads": ["random", "zero"],
     "downloadFramings": ["fixed", "chunked"],
-    "httpPingPath": "/__ping"
+    "httpPingPath": "/__ping",
+    "httpPingMethods": ["GET", "HEAD"],
+    "webSocketPingPath": "/__ws",
+    "webSocketPingProtocol": "netspeed.ping.v1",
+    "webSocketPingPayloadBytes": 16
   }
 }
 ```
@@ -194,17 +201,41 @@ daemon body reading and is the canonical per-request upload duration. The daemon
 sets JSON content type and `Cache-Control: no-store, no-transform`. It never
 returns success for truncated or silently limited input.
 
-### 1.1.4 `GET` or `HEAD /__ping` - warm HTTP latency
+### 1.1.4 `GET /__ws` - persistent WebSocket latency echo
+
+The optional route is used only when `/meta` advertises the exact path,
+`netspeed.ping.v1` subprotocol, and 16-byte message size. It requires an HTTP/1.1
+RFC 6455 upgrade. Each accepted binary message is:
+
+```text
+NSP1 | uint32 sequence in network byte order | 8-byte random nonce
+```
+
+The daemon validates one unfragmented, masked 16-byte binary message and echoes
+it unchanged. It answers WebSocket control pings with pongs and rejects text,
+fragmented, oversized, malformed, or wrong-magic application messages. The 101
+response selects the exact subprotocol and supplies `Cache-Control: no-store,
+no-transform`, `Pragma: no-cache`, `X-Accel-Buffering: no`, and
+`X-Netspeed-Measurement: latency`.
+
+The connection consumes one global and per-client transfer slot until it closes
+or reaches `TransferTimeout`, but its tiny echo messages are not charged against
+the byte quota. Capable clients send one unreported warmup, measure only message
+send to exact nonce echo, and permanently use the warm HTTP fallback after the
+first upgrade or protocol failure. The complete wire contract is in
+[`HTTP_MEASUREMENT_TRANSPORT.md`](HTTP_MEASUREMENT_TRANSPORT.md).
+
+### 1.1.5 `GET` or `HEAD /__ping` - warm HTTP latency
 
 The endpoint returns `200`, `Content-Length: 0`, and no body. Native clients
 reuse one persistent HTTP connection. The browser warms its origin pool and uses
 Resource Timing to reject observed connection setup or an unverifiable manual
 fallback, while labeling hidden reuse evidence as unknown when the measured
 request-start interval still excludes setup. `GET /__down?bytes=0` remains the
-compatibility fallback. A WebSocket latency path is optional and must not be
-assumed unless `/meta` advertises it.
+compatibility fallback. Older clients and any client whose WebSocket upgrade or
+echo fails use this path for the rest of the run.
 
-### 1.1.5 `GET /locations` - colo list
+### 1.1.6 `GET /locations` - colo list
 
 **purpose**
 
@@ -283,7 +314,7 @@ binary name: `netspeedd`
 
 responsibilities:
 
-- serve `/meta`, `/__down`, `/__up`, `/__ping`, `/locations` (and optional `/cdn-cgi/trace`)
+- serve `/meta`, `/__down`, `/__up`, `/__ws`, `/__ping`, `/locations` (and optional `/cdn-cgi/trace`)
 - expose simple configuration (listen address, tls, limits, cors, geo db, locations file)
 - be robust under very high concurrency and long-lived connections
 
@@ -525,7 +556,20 @@ Accept `GET` and `HEAD`, apply the same admission and response controls as a
 zero-byte download, and return `Content-Length: 0` with no body. The control
 endpoint timeout applies and the connection remains reusable.
 
-### 2.5.6 `/locations`
+### 2.5.6 `/__ws`
+
+1. require `GET`, `Upgrade: websocket`, version 13, and the exact
+   `netspeed.ping.v1` subprotocol;
+2. acquire one global and per-client transfer slot before switching protocols;
+3. emit the RFC 6455 accept value, selected subprotocol, anti-transform,
+   latency-measurement, and proxy-buffer-suppression headers;
+4. hijack through the middleware response writer and keep the transfer read and
+   write deadline on the connection;
+5. validate each masked, unfragmented 16-byte `NSP1` application message and
+   echo it unchanged, while handling ping, pong, and close control frames;
+6. release the transfer slot on close, timeout, or protocol error.
+
+### 2.5.7 `/locations`
 
 handler flow:
 
@@ -536,7 +580,7 @@ handler flow:
 
 ---
 
-### 2.5.7 optional `/cdn-cgi/trace`
+### 2.5.8 optional `/cdn-cgi/trace`
 
 handler flow:
 
@@ -586,6 +630,13 @@ preflight and actual requests with a disallowed `Origin` receive `403` so an
 unapproved page cannot consume measurement bandwidth blindly. Requests without
 an `Origin` header are unaffected.
 
+WebSocket handshakes do not use preflight, but browser handshakes carry
+`Origin`. The same origin decision rejects a disallowed `/__ws` request before
+the upgrade and transfer admission. If Fetch CORS is disabled, the WebSocket
+handler must still reject a browser `Origin` whose host differs from the request
+host; native clients without `Origin` remain valid. The response-writer wrapper
+must preserve `http.Hijacker` for an allowed upgrade.
+
 ---
 
 3. performance & robustness
@@ -596,7 +647,9 @@ an `Origin` header are unaffected.
 
 - set `http.Server.ReadHeaderTimeout` to 10 seconds and `IdleTimeout` to two minutes by default;
 - leave whole-request `ReadTimeout` and `WriteTimeout` disabled;
-- apply a 30-second deadline to control/static routes, including `/__ping`, and a five-minute deadline to each upload/download request;
+- apply a 30-second deadline to control/static routes, including `/__ping`, and
+  a five-minute deadline to each upload, download, or persistent `/__ws`
+  session;
 - set only the read/write sides an endpoint needs, attach the same request-context deadline, and clear connection deadlines before keep-alive reuse;
 - when a reverse proxy terminates TLS, disable buffering/compression/transformation on measurement routes and make proxy body/time limits at least as large as the daemon limits.
 
@@ -610,7 +663,8 @@ an `Origin` header are unaffected.
 3.3 safety limits
 -----------------
 
-- `MaxBytes` must be enforced for both `/__down` and `/__up`
+- `MaxBytes` must be enforced for both `/__down` and `/__up`; `/__ws` uses a
+  fixed 16-byte application payload and a bounded frame parser
 - consider tighter defaults (e.g. 256 MiB) and allow override via config
 - implement server-level rate limiting (ip-based, token bucket) if you plan to expose it publicly
 
@@ -651,6 +705,8 @@ the go backend, as designed above, fully satisfies the expectations of this libr
 - `__down` respects `bytes` and streams payload
 - `__up` accepts uploads and finishes quickly
 - `/__ping` provides warm zero-body HTTP latency while `/__down?bytes=0` remains compatible
+- `/__ws` is a private Netspeed extension, not part of the Cloudflare client
+  surface; strict clients use it only after exact capability advertisement
 - optional `Server-Timing` improves latency diagnostics
 
 4.2 your own spa
@@ -703,6 +759,7 @@ this spec defines a go-based speedtest backend that emulates the observable api 
 - `/meta` - per-client metadata (ip, geo, asn, colo)
 - `/__down` - exact download endpoint with payload, framing, chunk, and flush controls
 - `/__up` - identity-only bounded upload endpoint with exact-byte receipt and read-duration proof
+- `/__ws` - optional persistent 16-byte `netspeed.ping.v1` latency echo
 - `/__ping` - zero-body warm-connection HTTP latency endpoint
 - `/locations` - static list of test locations / colos
 - optional `/cdn-cgi/trace` for debugging
@@ -723,6 +780,7 @@ it assumes the existing http api:
 - `GET /meta`
 - `GET /__down`
 - `POST /__up`
+- `GET /__ws` (advertised Netspeed WebSocket echo)
 - `GET` or `HEAD /__ping`
 - `GET /locations`
 
@@ -941,7 +999,8 @@ window orchestration.
 ### 2.1 capabilities and exact transfers
 
 `GET /meta` advertises protocol 2, upload receipt 1, packet frame 1, the
-largest individual request, and optional HTTP transport-controls version 1.
+largest individual request, and optional measurement transport-controls version
+1, including the exact WebSocket echo contract when enabled.
 `/__down` streams exactly the requested bytes under the selected payload and
 framing. `/__up` accepts exactly the declared/generated bytes under identity
 content coding or returns an error and, on success, emits the verified receipt.
@@ -959,10 +1018,13 @@ the client's aggregate window bytes.
 
 ### 2.3 continuous loaded latency
 
-Clients issue zero-byte `/__ping` probes when advertised, falling back to
-`/__down?bytes=0`, while one selected throughput window is active. The browser
-caps load at five workers to reserve one conventional HTTP/1.1 origin
-connection for the probe. A probe is
+Clients prefer one persistent `/__ws` binary echo only when its exact path,
+subprotocol, and 16-byte payload are advertised. One application warmup is not
+reported, and RTT covers only send to matching nonce echo. Any upgrade or
+message failure permanently selects zero-byte `/__ping`, then
+`/__down?bytes=0` when needed, while one selected throughput window is active.
+The browser caps load at five workers to reserve one conventional HTTP/1.1
+origin connection for fallback. A probe is
 retained only if at least one transfer body remains active for
 the entire probe. Upload receipt wait does not count as outbound load. The daemon
 accepts opaque `during`/`measId` labels for logging but does not claim overlap on
@@ -1228,6 +1290,6 @@ relative to the original http-only daemon, this spec adds:
   - snapshots authoritative forward/ack counters, returns them, then closes the
     session.
 
-`/meta` now advertises protocol capabilities, and `/__up` now returns a verified
-exact-byte receipt. These are required protocol changes, not optional storage
-features.
+`/meta` now advertises protocol and transport capabilities, `/__ws` supplies the
+optional persistent latency echo, and `/__up` returns a verified exact-byte
+receipt. These are wire-contract changes, not optional storage features.

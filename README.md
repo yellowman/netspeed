@@ -39,9 +39,12 @@ capabilities
 - Small verified baselines select bounded chunks and reusable concurrent flows
   for fixed-duration throughput windows; high-rate tests do not depend on giant
   requests or allocations.
-- A dedicated zero-body `/__ping` path supports warm keep-alive HTTP latency;
-  loaded-latency probes are accepted only when continuous directional traffic
-  spans the complete probe interval without a zero-load gap.
+- An advertised `/__ws` application-level binary echo provides low-overhead
+  latency on one persistent connection. Capable clients exclude connection
+  setup and one unreported warmup, then permanently fall back to warm
+  `/__ping` HTTP probes after any upgrade or message failure. Loaded-latency
+  probes are accepted only when continuous directional traffic spans the
+  complete probe interval without a zero-load gap.
 - Packet testing uses exact 1,200-byte binary frames and reports transaction,
   forward, and reverse-acknowledgement loss separately.
 - Go, C, and browser clients use the same percentile, filtering, jitter,
@@ -56,8 +59,9 @@ capabilities
   reconciliation.
 - The browser UI negotiates the daemon's HTTP transport contract, supports
   selectable pseudorandom or zero-fill downloads and fixed or streamed framing,
-  verifies anti-transformation diagnostics, uses warm HTTP latency evidence,
-  and retains bounded streaming fallbacks and explicit credential handling.
+  verifies anti-transformation diagnostics, prefers the advertised WebSocket
+  echo when browser credential policy permits it, and retains warm HTTP,
+  bounded streaming, and explicit credential fallbacks.
 - Three browser presentations share the same measurement engine and result
   contract: [`web/index.html`](web/index.html) is the standard interface,
   [`web/alternate.html`](web/alternate.html) is a progressive observatory with
@@ -112,6 +116,12 @@ result contract. The screenshots below use one representative completed result
 so the interface designs can be compared directly. Each image links to its
 corresponding HTML file.
 
+Regenerate the images with `node scripts/capture_interfaces.mjs`. The capture
+harness sends a deterministic result through the same callbacks used by a live
+test, verifies the rendered metrics and structured stage outcomes, and then
+captures the three pages with Chromium. It does not rewrite result elements or
+paint substitute charts into the DOM.
+
 ### standard
 
 [![Standard Netspeed interface showing throughput, latency, jitter, and packet-loss results](web/screenshots/standard.png)](web/index.html)
@@ -133,7 +143,8 @@ The repository is defined by the following canonical contracts:
 - [`SERVICE_HARDENING.md`](SERVICE_HARDENING.md) — admission limits,
   authentication, trusted proxies, TURN defaults, quotas, and metrics;
 - [`HTTP_MEASUREMENT_TRANSPORT.md`](HTTP_MEASUREMENT_TRANSPORT.md) — HTTP
-  payload, framing, latency, compression, caching, and proxy-buffer controls;
+  payload and framing plus WebSocket/HTTP latency, compression, caching, and
+  proxy-buffer controls;
 - [`HTTP_DEPLOYMENT.md`](HTTP_DEPLOYMENT.md) — endpoint deadlines, browser API
   routing, CORS/Resource Timing, TLS, configuration, GeoIP, and shutdown;
 - [`RELEASE_QUALIFICATION.md`](RELEASE_QUALIFICATION.md) — CI, end-to-end,
@@ -288,6 +299,10 @@ A browser-visible token is not secret from that browser. Use this only for a
 controlled installation or inject a short-lived token through an authenticated
 upstream application. For a separate UI origin, configure the matching daemon
 CORS origin; use `credentials: "include"` only with explicit credentialed CORS.
+The browser WebSocket API cannot attach that bearer header or reproduce Fetch's
+`omit` policy. Those configurations, and cross-origin `same-origin`
+credentials, therefore use the warm HTTP latency fallback immediately rather
+than opening an ambiguously credentialed WebSocket.
 See [`HTTP_DEPLOYMENT.md`](HTTP_DEPLOYMENT.md).
 
 ### trusted reverse proxy
@@ -444,6 +459,14 @@ record the evidence in `httpTransport`, and treat explicit controls as
 requirements on the observed provider defaults. They never send Netspeed-only
 discriminator keys to an endpoint that did not advertise them.
 
+When the strict server advertises the exact `/__ws`, `netspeed.ping.v1`, and
+16-byte echo contract, Go, native C, and browser clients prefer one persistent
+WebSocket latency channel. The measured interval is only binary-message send to
+matching nonce echo. Any upgrade, framing, timeout, close, or echo failure
+disables WebSocket for the rest of the run and labels subsequent warm HTTP
+samples with `probeFallbackReason`. Cloudflare mode remains HTTP-only and never
+guesses a private Netspeed route.
+
 what it measures
 ----------------
 
@@ -451,7 +474,8 @@ what it measures
   baseline probes;
 - **upload speed** — three bounded windows whose completed requests are checked
   against exact server receipts;
-- **unloaded latency** — request-write to first-response-byte round trips;
+- **unloaded latency** — persistent WebSocket message round trips when exactly
+  advertised, otherwise warm request-write to first-response-byte HTTP probes;
 - **loaded latency** — probes accepted only when continuous transfer traffic
   spans the complete probe interval;
 - **jitter** — p90 latency minus median latency after warmup removal and
@@ -476,6 +500,7 @@ netspeed/
 │   ├── locations/       # server location data
 │   ├── measurement/     # shared measurement planning/statistics
 │   ├── measurementhttp/ # HTTP transport capability and streaming contract
+│   ├── websocketping/   # dependency-free persistent latency echo protocol
 │   ├── meta/            # client metadata and GeoIP
 │   ├── protocol/        # verified upload and packet-frame protocol
 │   ├── server/          # HTTP routes, security, and metrics

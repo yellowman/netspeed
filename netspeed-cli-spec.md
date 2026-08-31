@@ -6,6 +6,8 @@ that talks to a backend exposing these endpoints:
 - `GET /meta`
 - `GET /__down`
 - `POST /__up`
+- `GET /__ws` (advertised WebSocket upgrade)
+- `GET` or `HEAD /__ping`
 - `GET /locations`
 - `GET /api/turn/credentials`
 - `POST /api/packet-test/offer`
@@ -134,6 +136,10 @@ netspeed -v
     "downloadPath": "/__down",
     "uploadPath": "/__up",
     "httpPingPath": "/__ping",
+    "httpPingMethods": ["GET", "HEAD"],
+    "webSocketPingPath": "/__ws",
+    "webSocketPingProtocol": "netspeed.ping.v1",
+    "webSocketPingPayloadBytes": 16,
     "downloadPayloads": ["random", "zero"],
     "downloadFramings": ["fixed", "chunked"]
   }
@@ -205,12 +211,21 @@ time first response byte through completed body read. For latency, each client
 uses its transport's request-complete-to-first-byte interval. Any status, type,
 length, read, or timing mismatch invalidates the sample.
 
-A daemon advertising `httpPingPath` is probed with its preferred supported
-`GET` or `HEAD` method and a zero-byte response. When it also advertises
-`warmConnectionPing`, the strict Go and native C clients observe connection
-reuse, discard cold attempts, and report only a reused keep-alive sample. JSON
-latency samples include `connectionReused`, `probeTransport`, `probeMethod`, and
-`probePath`. The compatibility fallback remains `GET /__down?bytes=0`.
+A daemon advertising the exact `/__ws`, `netspeed.ping.v1`, and 16-byte payload
+contract is first probed through one persistent application-level binary echo.
+The clients send one unreported warmup, then measure only message send to exact
+nonce echo; DNS, TCP, TLS, HTTP Upgrade, and warmup are excluded. Any upgrade,
+timeout, close, framing, subprotocol, or echo failure disables WebSocket for the
+remainder of the run.
+
+HTTP fallback uses the advertised `httpPingPath` with its preferred supported
+`GET` or `HEAD` method and a zero-byte response. When the server advertises
+`warmConnectionPing`, strict Go and native C clients observe connection reuse,
+discard cold attempts, and report only a reused keep-alive sample. The final
+compatibility fallback is `GET /__down?bytes=0`. JSON latency samples include
+`connectionReused`, `probeTransport`, `probeMethod`, `probePath`, optional
+`webSocketProtocol`, and the stable `probeFallbackReason` on HTTP samples after
+a WebSocket failure.
 
 The Go and native C Cloudflare adapters always use that fallback on a dedicated
 transport limited to one connection. They prime the connection for each idle or
@@ -420,9 +435,15 @@ const (
 )
 
 type LatencySample struct {
-    Timestamp time.Time
-    RTT       time.Duration
-    Condition LatencyCondition
+    Timestamp           time.Time
+    RTT                 time.Duration
+    Condition           LatencyCondition
+    ConnectionReused    bool
+    ProbeTransport      string // websocket or http
+    ProbeMethod         string // MESSAGE, GET, or HEAD
+    ProbePath           string
+    ProbeFallbackReason string
+    WebSocketProtocol   string
 }
 
 type ThroughputDirection string
@@ -708,7 +729,12 @@ with `--json` flag, output matches the web client format exactly:
     {
       "ts": 1705315420456,
       "rttMs": 6.2,
-      "condition": "unloaded"
+      "condition": "unloaded",
+      "connectionReused": true,
+      "probeTransport": "websocket",
+      "probeMethod": "MESSAGE",
+      "probePath": "/__ws",
+      "webSocketProtocol": "netspeed.ping.v1"
     }
   ],
   "packetLoss": {

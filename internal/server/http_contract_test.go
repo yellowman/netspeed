@@ -17,6 +17,35 @@ import (
 	"github.com/yellowman/netspeed/internal/config"
 )
 
+func TestWebSocketOriginPolicyAppliesWhenFetchCORSIsDisabled(t *testing.T) {
+	server := measurementTestServer(1024)
+	server.cfg.EnableCORS = false
+
+	request := httptest.NewRequest(http.MethodGet, "http://speed.example.test/__ws", nil)
+	request.Host = "speed.example.test"
+	request.Header.Set("Origin", "https://hostile.example.test")
+	recorder := httptest.NewRecorder()
+	server.handleWebSocketPing(recorder, request)
+	if recorder.Code != http.StatusForbidden {
+		t.Fatalf("cross-site WebSocket status=%d; want 403", recorder.Code)
+	}
+	if active := server.metrics.activeTransfers.Load(); active != 0 {
+		t.Fatalf("cross-site WebSocket consumed a transfer slot: active=%d", active)
+	}
+
+	request = httptest.NewRequest(http.MethodGet, "http://speed.example.test/__ws", nil)
+	request.Host = "speed.example.test"
+	request.Header.Set("Origin", "https://speed.example.test")
+	if !server.webSocketOriginAllowed(request) {
+		t.Fatal("same-host browser WebSocket rejected while Fetch CORS is disabled")
+	}
+
+	request.Header.Del("Origin")
+	if !server.webSocketOriginAllowed(request) {
+		t.Fatal("native WebSocket request without Origin rejected")
+	}
+}
+
 func TestResponseWriterRecordsFirstStatusAndImplicitWrite(t *testing.T) {
 	recorder := httptest.NewRecorder()
 	writer := newResponseWriter(recorder)

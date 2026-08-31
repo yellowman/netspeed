@@ -30,12 +30,12 @@
       canvas.insertAdjacentElement('afterend', pre);
     }
 
-    for (const progress of document.querySelectorAll('progress, [class*="progress"]')) {
+    for (const progress of document.querySelectorAll('progress, .progress-bar-inline')) {
       if (progress.dataset.appleMeter) continue;
       progress.dataset.appleMeter = 'true';
       const meter = document.createElement('span');
       meter.className = 'apple-text-meter';
-      meter.textContent = '[##############################..........]';
+      meter.textContent = '[############....]';
       progress.insertAdjacentElement('afterend', meter);
     }
 

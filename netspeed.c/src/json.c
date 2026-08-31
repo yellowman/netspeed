@@ -639,6 +639,9 @@ static void write_measurement_capabilities(json_writer_t *w,
     json_end_array(w);
     if (capabilities->websocket_ping_path[0]) {
         json_kv_string(w, "webSocketPingPath", capabilities->websocket_ping_path);
+        json_kv_string(w, "webSocketPingProtocol", capabilities->websocket_ping_protocol);
+        json_kv_int(w, "webSocketPingPayloadBytes",
+                    capabilities->websocket_ping_payload_bytes);
     }
     json_kv_bool(w, "warmConnectionPing", capabilities->warm_connection_ping);
     json_key(w, "downloadPayloads");
@@ -706,6 +709,15 @@ static void write_measurement_selection(json_writer_t *w,
     json_kv_string(w, "latencyMethod", selection->latency_method);
     json_kv_bool(w, "latencyUsesDownloadEndpoint",
                  selection->latency_uses_download_endpoint);
+    if (selection->websocket_ping_path[0]) {
+        json_kv_string(w, "webSocketPingPath", selection->websocket_ping_path);
+        json_kv_string(w, "webSocketPingProtocol", selection->websocket_ping_protocol);
+        json_kv_int(w, "webSocketPingPayloadBytes",
+                    selection->websocket_ping_payload_bytes);
+    }
+    json_kv_string(w, "preferredLatencyTransport",
+                   selection->preferred_latency_transport);
+    json_kv_bool(w, "httpFallbackAvailable", selection->http_fallback_available);
     json_kv_bool(w, "warmConnectionPing", selection->warm_connection_ping);
     json_kv_bool(w, "noTransform", selection->no_transform);
     if (selection->response_cache_control[0]) {
@@ -921,6 +933,14 @@ char *results_to_json(const results_t *results)
         if (sample->probe_transport[0]) json_kv_string(&writer, "probeTransport", sample->probe_transport);
         if (sample->probe_method[0]) json_kv_string(&writer, "probeMethod", sample->probe_method);
         if (sample->probe_path[0]) json_kv_string(&writer, "probePath", sample->probe_path);
+        if (sample->probe_fallback_reason[0]) {
+            json_kv_string(&writer, "probeFallbackReason",
+                           sample->probe_fallback_reason);
+        }
+        if (sample->websocket_protocol[0]) {
+            json_kv_string(&writer, "webSocketProtocol",
+                           sample->websocket_protocol);
+        }
         json_end_object(&writer);
     }
     json_end_array(&writer);
@@ -1000,6 +1020,7 @@ static int parse_measurement_capabilities(json_value_t *root,
     COPY_CAPABILITY(upload_bytes_parameter, "uploadBytesParameter");
     COPY_CAPABILITY(http_ping_path, "httpPingPath");
     COPY_CAPABILITY(websocket_ping_path, "webSocketPingPath");
+    COPY_CAPABILITY(websocket_ping_protocol, "webSocketPingProtocol");
     COPY_CAPABILITY(default_download_payload, "defaultDownloadPayload");
     COPY_CAPABILITY(default_download_framing, "defaultDownloadFraming");
     COPY_CAPABILITY(response_cache_control, "responseCacheControl");
@@ -1021,6 +1042,8 @@ static int parse_measurement_capabilities(json_value_t *root,
     }
     capabilities->warm_connection_ping =
         json_get_bool(object, "warmConnectionPing", false);
+    capabilities->websocket_ping_payload_bytes =
+        json_get_int(object, "webSocketPingPayloadBytes", 0);
     capabilities->default_chunk_bytes = json_get_int(object, "defaultChunkBytes", 0);
     capabilities->minimum_chunk_bytes = json_get_int(object, "minimumChunkBytes", 0);
     capabilities->maximum_chunk_bytes = json_get_int(object, "maximumChunkBytes", 0);

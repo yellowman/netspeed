@@ -87,6 +87,8 @@ typedef struct {
     char probe_transport[16];
     char probe_method[16];
     char probe_path[MAX_MEASUREMENT_PATH];
+    char probe_fallback_reason[MAX_ERROR_LEN];
+    char websocket_protocol[MAX_TRANSPORT_TOKEN];
 } latency_sample_t;
 
 /* A single baseline request or fixed-duration aggregate window. */
@@ -204,6 +206,8 @@ typedef struct {
     bool http_ping_get;
     bool http_ping_head;
     char websocket_ping_path[MAX_MEASUREMENT_PATH];
+    char websocket_ping_protocol[MAX_TRANSPORT_TOKEN];
+    int websocket_ping_payload_bytes;
     bool warm_connection_ping;
     bool download_payload_random;
     bool download_payload_zero;
@@ -240,6 +244,11 @@ typedef struct {
     char latency_path[MAX_MEASUREMENT_PATH];
     char latency_method[16];
     bool latency_uses_download_endpoint;
+    char websocket_ping_path[MAX_MEASUREMENT_PATH];
+    char websocket_ping_protocol[MAX_TRANSPORT_TOKEN];
+    int websocket_ping_payload_bytes;
+    char preferred_latency_transport[16];
+    bool http_fallback_available;
     bool warm_connection_ping;
     bool no_transform;
     char response_cache_control[MAX_HEADER_VALUE];

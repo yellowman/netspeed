@@ -153,3 +153,47 @@ func TestValidateCapabilitiesRejectsEncodedBackslashPath(t *testing.T) {
 		t.Fatalf("ValidateCapabilities error = %v; want encoded-backslash rejection", err)
 	}
 }
+
+func TestNegotiatePrefersExactWebSocketPingContract(t *testing.T) {
+	capabilities := testCapabilities()
+	capabilities.WebSocketPingPath = "/measure/ws"
+	capabilities.WebSocketPingProtocol = WebSocketPingSubprotocol
+	capabilities.WebSocketPingPayloadBytes = WebSocketPingPayloadBytes
+
+	selection, err := Negotiate(capabilities, Preferences{})
+	if err != nil {
+		t.Fatalf("Negotiate WebSocket ping: %v", err)
+	}
+	if selection.PreferredLatencyTransport != "websocket" ||
+		selection.WebSocketPingPath != "/measure/ws" ||
+		selection.WebSocketPingProtocol != WebSocketPingSubprotocol ||
+		selection.WebSocketPingPayloadBytes != WebSocketPingPayloadBytes ||
+		!selection.HTTPFallbackAvailable || selection.LatencyPath != "/measure/ping" {
+		t.Fatalf("unexpected WebSocket latency selection: %#v", selection)
+	}
+}
+
+func TestValidateCapabilitiesRejectsIncompleteWebSocketPingContract(t *testing.T) {
+	mutations := []func(*Capabilities){
+		func(c *Capabilities) { c.WebSocketPingPath = "https://attacker.example/ws" },
+		func(c *Capabilities) {
+			c.WebSocketPingPath = "/measure/ws"
+			c.WebSocketPingProtocol = "other"
+			c.WebSocketPingPayloadBytes = WebSocketPingPayloadBytes
+		},
+		func(c *Capabilities) {
+			c.WebSocketPingPath = "/measure/ws"
+			c.WebSocketPingProtocol = WebSocketPingSubprotocol
+			c.WebSocketPingPayloadBytes = WebSocketPingPayloadBytes + 1
+		},
+		func(c *Capabilities) { c.WebSocketPingProtocol = WebSocketPingSubprotocol },
+		func(c *Capabilities) { c.WebSocketPingPayloadBytes = WebSocketPingPayloadBytes },
+	}
+	for index, mutate := range mutations {
+		capabilities := testCapabilities()
+		mutate(capabilities)
+		if err := ValidateCapabilities(capabilities); err == nil {
+			t.Fatalf("WebSocket mutation %d was accepted: %#v", index, capabilities)
+		}
+	}
+}

@@ -45,6 +45,8 @@ type LatencySample struct {
 	ProbeTransport       string        `json:"-"`
 	ProbeMethod          string        `json:"-"`
 	ProbePath            string        `json:"-"`
+	ProbeFallbackReason  string        `json:"-"`
+	WebSocketProtocol    string        `json:"-"`
 }
 
 // LatencySampleJSON is the JSON format matching the web client.
@@ -61,6 +63,8 @@ type LatencySampleJSON struct {
 	ProbeTransport       string  `json:"probeTransport,omitempty"`
 	ProbeMethod          string  `json:"probeMethod,omitempty"`
 	ProbePath            string  `json:"probePath,omitempty"`
+	ProbeFallbackReason  string  `json:"probeFallbackReason,omitempty"`
+	WebSocketProtocol    string  `json:"webSocketProtocol,omitempty"`
 }
 
 // ToJSON converts LatencySample to JSON format.
@@ -76,6 +80,8 @@ func (s LatencySample) ToJSON() LatencySampleJSON {
 		ProbeTransport:       s.ProbeTransport,
 		ProbeMethod:          s.ProbeMethod,
 		ProbePath:            s.ProbePath,
+		ProbeFallbackReason:  s.ProbeFallbackReason,
+		WebSocketProtocol:    s.WebSocketProtocol,
 	}
 	if !s.StartedAt.IsZero() {
 		out.StartedAt = s.StartedAt.UnixMilli()
