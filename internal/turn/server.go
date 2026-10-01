@@ -16,7 +16,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	pionturn "github.com/pion/turn/v2"
+	pionturn "github.com/pion/turn/v5"
 
 	"github.com/yellowman/netspeed/internal/telemetry"
 )
@@ -108,27 +108,28 @@ func New(cfg Config) (*Server, error) {
 
 	turnServer, err := pionturn.NewServer(pionturn.ServerConfig{
 		Realm: cfg.Realm,
-		AuthHandler: func(username, realm string, _ net.Addr) ([]byte, bool) {
+		AuthHandler: func(attributes *pionturn.RequestAttributes) (string, []byte, bool) {
+			username, realm := attributes.Username, attributes.Realm
 			if realm != cfg.Realm {
-				return nil, false
+				return "", nil, false
 			}
 			parts := strings.SplitN(username, ":", 2)
 			if len(parts) != 2 {
-				return nil, false
+				return "", nil, false
 			}
 			expiry, err := strconv.ParseInt(parts[0], 10, 64)
 			if err != nil {
-				return nil, false
+				return "", nil, false
 			}
 			now := time.Now().Unix()
 			if expiry <= now || expiry > now+cfg.MaxCredentialTTL {
-				return nil, false
+				return "", nil, false
 			}
 
 			mac := hmac.New(sha1.New, []byte(cfg.Secret))
 			_, _ = mac.Write([]byte(username))
 			password := base64.StdEncoding.EncodeToString(mac.Sum(nil))
-			return pionturn.GenerateAuthKey(username, realm, password), true
+			return username, pionturn.GenerateAuthKey(username, realm, password), true
 		},
 		PacketConnConfigs: []pionturn.PacketConnConfig{
 			{

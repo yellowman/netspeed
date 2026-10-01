@@ -12,7 +12,7 @@ import (
 	"strings"
 	"sync"
 
-	pionwebrtc "github.com/pion/webrtc/v3"
+	pionwebrtc "github.com/pion/webrtc/v4"
 	"github.com/yellowman/netspeed/internal/clientaddr"
 	"github.com/yellowman/netspeed/internal/config"
 	"github.com/yellowman/netspeed/internal/limits"
@@ -334,8 +334,6 @@ func getTLSVersion(r *http.Request) string {
 		return "none"
 	}
 	switch r.TLS.Version {
-	case tls.VersionSSL30:
-		return "SSLv3"
 	case tls.VersionTLS10:
 		return "TLSv1.0"
 	case tls.VersionTLS11:

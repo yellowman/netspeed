@@ -10,7 +10,7 @@ import (
 	"sync"
 	"time"
 
-	pion "github.com/pion/webrtc/v3"
+	pion "github.com/pion/webrtc/v4"
 
 	"github.com/yellowman/netspeed/internal/protocol"
 )
@@ -1058,12 +1058,6 @@ func (session *Session) activeError() error {
 		return session.closedErrorLocked()
 	}
 	return nil
-}
-
-func (session *Session) closedError() error {
-	session.mu.RLock()
-	defer session.mu.RUnlock()
-	return session.closedErrorLocked()
 }
 
 func (session *Session) closedErrorLocked() error {

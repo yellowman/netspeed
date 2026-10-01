@@ -1,6 +1,6 @@
 package webrtc
 
-import pion "github.com/pion/webrtc/v3"
+import pion "github.com/pion/webrtc/v4"
 
 // peerConnection is the lifecycle surface Manager needs from Pion. Keeping the
 // surface small lets the session owner be tested deterministically without a

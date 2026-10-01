@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	pion "github.com/pion/webrtc/v3"
+	pion "github.com/pion/webrtc/v4"
 
 	"github.com/yellowman/netspeed/internal/protocol"
 )

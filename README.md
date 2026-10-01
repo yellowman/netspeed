@@ -12,7 +12,7 @@ It has four parts:
    methodology and result model;
 4. **web UI** — browser client with fixed-duration measurements and quality views.
 
-The module requires Go 1.21.3 or newer. Release CI keeps that minimum-
+The module requires Go 1.25.0 or newer. Release CI keeps that minimum-
 version test while pinning the release compiler to Go 1.27.0.
 
 capabilities
@@ -101,7 +101,7 @@ capabilities
 
 - Root and C Makefiles use the common GNU make and BSD pmake subset and build
   `netspeed`, `netspeedd`, and `netspeed-c` through the same public targets.
-- CI covers the real dependency graph, Go 1.21.3 compatibility, race detection,
+- CI covers the real dependency graph, Go 1.25.0 compatibility, race detection,
   vet, static and vulnerability analysis, browser automation, strict GCC/Clang
   C builds, real WebRTC/TURN interoperability, Windows, and OpenBSD.
 - Release archives are deterministic, checksummed, reconstructed twice for

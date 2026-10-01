@@ -11,7 +11,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/pion/webrtc/v3"
+	"github.com/pion/webrtc/v4"
 
 	"github.com/yellowman/netspeed/internal/measurement"
 	"github.com/yellowman/netspeed/internal/protocol"

@@ -32,7 +32,7 @@ it does not silently publish an HTTP-only C build.
 The executable policies live in `.github/workflows/ci.yml` and
 `.github/workflows/release.yml`. Both use the actual modules in `go.mod`;
 compile-time stubs and local `replace` directives are not accepted. Go 1.27.0
-is pinned for release construction and security analysis, while Go 1.21.3
+is pinned for release construction and security analysis, while Go 1.25.0
 remains the module compatibility floor.
 
 `scripts/check_workflow_contract.py` is itself a blocking gate. It fails when a
@@ -44,7 +44,7 @@ job, or the publishing job does not depend on every required qualification job.
 Required gates are:
 
 1. `go mod download`, `go mod verify`, and a clean `go mod tidy` result;
-2. Go tests at Go 1.21.3 and the pinned Go 1.27.0 release toolchain;
+2. Go tests at Go 1.25.0 and the pinned Go 1.27.0 release toolchain;
 3. the race detector, `go vet`, Staticcheck, and `govulncheck`;
 4. browser-engine unit tests and a real Chromium transfer smoke test;
 5. daemon/Go-CLI process tests, HTTP boundary tests, and embedded Pion/TURN
