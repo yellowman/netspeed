@@ -19,6 +19,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/yellowman/netspeed/internal/measurementclock"
 )
 
 const (
@@ -675,7 +677,7 @@ func (observe byteObserver) Write(p []byte) (int, error) {
 
 func transferOnceTracked(ctx context.Context, client *http.Client, o options, upload bool, size int64, onBytes func(int)) (int64, time.Duration, error) {
 	query := url.Values{"bytes": {strconv.FormatInt(size, 10)}, "id": {strconv.FormatInt(time.Now().UnixNano(), 10)}}
-	start := time.Now()
+	start := measurementclock.Now()
 	if upload {
 		// Cloudflare's reference client uses ASCII '0' for upload bodies. Preserve
 		// that provider contract while explicitly forbidding content coding.
@@ -701,7 +703,7 @@ func transferOnceTracked(ctx context.Context, client *http.Client, o options, up
 		if consumed := reader.read.Load(); consumed != size {
 			return 0, 0, fmt.Errorf("transport consumed %d of %d upload bytes", consumed, size)
 		}
-		return size, time.Since(start), nil
+		return size, measurementclock.Since(start), nil
 	}
 
 	response, err := request(ctx, client, o, http.MethodGet, "/__down", query, nil, -1)
@@ -734,7 +736,7 @@ func transferOnceTracked(ctx context.Context, client *http.Client, o options, up
 	if err := verifyCloudflareDownloadSelection(response, evidence, size, o.Transport); err != nil {
 		return 0, 0, err
 	}
-	return received, time.Since(start), nil
+	return received, measurementclock.Since(start), nil
 }
 
 func measureDirection(ctx context.Context, client *http.Client, o options, upload bool) (sampleSummary, latencySummary) {
@@ -770,7 +772,7 @@ func measureDirection(ctx context.Context, client *http.Client, o options, uploa
 
 	runCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
-	windowStart := time.Now()
+	windowStart := measurementclock.Now()
 	deadline := windowStart.Add(windowDuration)
 	var total atomic.Int64
 	var failed atomic.Bool
@@ -791,10 +793,10 @@ func measureDirection(ctx context.Context, client *http.Client, o options, uploa
 		go func() {
 			defer workers.Done()
 			ready <- struct{}{}
-			for time.Now().Before(deadline) {
+			for measurementclock.Now().Before(deadline) {
 				var windowBytes atomic.Int64
 				transferred, elapsed, transferErr := transferOnceTracked(runCtx, client, o, upload, chunk, func(n int) {
-					if time.Now().Before(deadline) {
+					if measurementclock.Now().Before(deadline) {
 						windowBytes.Add(int64(n))
 					}
 				})
@@ -818,7 +820,7 @@ func measureDirection(ctx context.Context, client *http.Client, o options, uploa
 	if latencyPrimeErr != nil {
 		latencyErr = latencyPrimeErr
 	} else {
-		for sequence := 0; sequence < probeCount && time.Now().Before(deadline); sequence++ {
+		for sequence := 0; sequence < probeCount && measurementclock.Now().Before(deadline); sequence++ {
 			value, probeErr := latencySession.Probe(runCtx, condition, sequence)
 			if probeErr != nil {
 				latencyErr = probeErr

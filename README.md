@@ -628,4 +628,9 @@ Set `NETSPEED_BROWSER=/usr/local/bin/chrome` if Chromium is not found automatica
 
 ## Native client progress
 
+Native Go measurements use Windows' high-resolution performance counter for
+RTT, HTTP traces, transfer windows, and upload ingestion timing. Civil dates and
+timeouts remain ordinary Go timestamps; no fabricated minimum RTT is applied.
+See [Windows interval-timing guidance](https://learn.microsoft.com/en-us/windows/win32/sysinfo/acquiring-high-resolution-time-stamps).
+
 The Go and C clients report live work to standard error when run in a terminal or with `-v`. Progress includes provider discovery, idle-latency probes, calibration transfers, sustained download and upload windows, loaded-latency overlap, and packet-path setup. Machine-readable JSON and CSV remain clean on standard output. Set `NETSPEED_PROGRESS=0` to suppress progress or `NETSPEED_PROGRESS=1` to force it when stderr is redirected.

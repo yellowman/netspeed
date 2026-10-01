@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/yellowman/netspeed/internal/measurement"
+	"github.com/yellowman/netspeed/internal/measurementclock"
 	"github.com/yellowman/netspeed/internal/measurementhttp"
 	"github.com/yellowman/netspeed/internal/protocol"
 )
@@ -38,10 +39,10 @@ func createTrace(t *timingInfo) *httptrace.ClientTrace {
 			t.connectionReused = info.Reused
 		},
 		WroteRequest: func(info httptrace.WroteRequestInfo) {
-			t.wroteRequest = time.Now()
+			t.wroteRequest = measurementclock.Now()
 		},
 		GotFirstResponseByte: func() {
-			t.gotFirstByte = time.Now()
+			t.gotFirstByte = measurementclock.Now()
 		},
 	}
 }
@@ -461,9 +462,9 @@ type latencyProbeMeasurement struct {
 func (c *Client) measureLatencySample(ctx context.Context, condition string, seq int) (LatencySample, error) {
 	_netspeedProgress := nsBeginProgress("latency probes")
 	defer _netspeedProgress.Done("complete")
-	startedAt := time.Now()
+	startedAt := measurementclock.Now()
 	probe, err := c.measureLatency(ctx, condition, seq)
-	endedAt := time.Now()
+	endedAt := measurementclock.Now()
 	if err != nil {
 		return LatencySample{}, err
 	}
@@ -966,7 +967,7 @@ func (c *Client) runThroughputWindow(
 		}(workerIndex)
 	}
 
-	windowStart := time.Now()
+	windowStart := measurementclock.Now()
 	close(startGate)
 
 	timer := time.NewTimer(plan.WindowDuration)
@@ -1019,7 +1020,7 @@ func (c *Client) runThroughputWindow(
 
 	stopWorkers()
 	workers.Wait()
-	windowEnd := time.Now()
+	windowEnd := measurementclock.Now()
 	bytesTransferred, requestCount, lastErr := aggregate.snapshot()
 	if bytesTransferred <= 0 || requestCount == 0 {
 		if lastErr == nil {
@@ -1078,9 +1079,9 @@ func (c *Client) runLoadedLatencyProbes(ctx context.Context, condition string, c
 		if before.active <= 0 {
 			continue
 		}
-		startedAt := time.Now()
+		startedAt := measurementclock.Now()
 		probe, err := c.measureLatency(ctx, condition, attempt)
-		endedAt := time.Now()
+		endedAt := measurementclock.Now()
 		if err != nil {
 			lastErr = err
 			if ctx.Err() != nil {
@@ -1168,7 +1169,7 @@ func (c *Client) measureDownloadTracked(
 	}
 	c.setMeasurementRequestHeaders(req)
 
-	requestStart := time.Now()
+	requestStart := measurementclock.Now()
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
 		return ThroughputSample{}, err
@@ -1195,7 +1196,7 @@ func (c *Client) measureDownloadTracked(
 	if err != nil {
 		return ThroughputSample{}, fmt.Errorf("read download body: %w", err)
 	}
-	bodyDone := time.Now()
+	bodyDone := measurementclock.Now()
 	if received != numBytes {
 		return ThroughputSample{}, fmt.Errorf("download received %d bytes; expected %d", received, numBytes)
 	}
@@ -1246,7 +1247,7 @@ func newTimedRequestBodyWithActivity(size int64, activity *loadActivity) *timedR
 }
 
 func (body *timedRequestBody) Read(p []byte) (int, error) {
-	started := time.Now()
+	started := measurementclock.Now()
 	n, err := body.reader.Read(p)
 	if n > 0 {
 		body.mu.Lock()
@@ -1257,7 +1258,7 @@ func (body *timedRequestBody) Read(p []byte) (int, error) {
 				body.activityStarted = true
 			}
 		}
-		body.lastRead = time.Now()
+		body.lastRead = measurementclock.Now()
 		body.bytesRead += int64(n)
 		body.mu.Unlock()
 	}

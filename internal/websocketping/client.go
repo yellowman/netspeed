@@ -16,6 +16,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/yellowman/netspeed/internal/measurementclock"
 	"github.com/yellowman/netspeed/internal/measurementhttp"
 )
 
@@ -182,7 +183,7 @@ func (client *Client) Ping(ctx context.Context, payload []byte) (time.Duration, 
 	}
 	defer client.connection.SetDeadline(time.Time{}) // best-effort cleanup
 
-	started := time.Now()
+	started := measurementclock.Now()
 	if err := writeFrame(client.writer, opBinary, payload, true); err != nil {
 		return 0, fmt.Errorf("send WebSocket ping: %w", err)
 	}
@@ -199,7 +200,7 @@ func (client *Client) Ping(ctx context.Context, payload []byte) (time.Duration, 
 			if len(incoming.payload) != len(payload) || !equalBytes(incoming.payload, payload) {
 				return 0, errors.New("WebSocket ping echo did not match the transmitted nonce")
 			}
-			duration := time.Since(started)
+			duration := measurementclock.Since(started)
 			if duration <= 0 {
 				return 0, errors.New("WebSocket ping produced non-positive latency")
 			}

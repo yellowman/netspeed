@@ -12,6 +12,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/yellowman/netspeed/internal/measurementclock"
 )
 
 const (
@@ -109,10 +111,10 @@ func (session *cloudflareLatencySession) attempt(ctx context.Context, during str
 			timing.reused = info.Reused
 		},
 		WroteRequest: func(info httptrace.WroteRequestInfo) {
-			timing.wroteRequest = time.Now()
+			timing.wroteRequest = measurementclock.Now()
 		},
 		GotFirstResponseByte: func() {
-			timing.firstByte = time.Now()
+			timing.firstByte = measurementclock.Now()
 		},
 	}
 	traceContext := httptrace.WithClientTrace(ctx, trace)

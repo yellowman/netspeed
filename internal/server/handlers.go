@@ -17,6 +17,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/yellowman/netspeed/internal/measurementclock"
 	"github.com/yellowman/netspeed/internal/measurementhttp"
 	"github.com/yellowman/netspeed/internal/protocol"
 	"github.com/yellowman/netspeed/internal/webrtc"
@@ -263,9 +264,9 @@ func (s *Server) handleUp(w http.ResponseWriter, r *http.Request) {
 		bodyReader = &quotaChargingReader{reader: r.Body, quota: s.bandwidthQuota, key: clientIP}
 	}
 
-	readStart := time.Now()
+	readStart := measurementclock.Now()
 	n, err := protocol.ReadUpload(bodyReader, r.ContentLength, s.cfg.MaxBytes)
-	readDuration := time.Since(readStart)
+	readDuration := measurementclock.Since(readStart)
 	if readDuration <= 0 {
 		readDuration = time.Nanosecond
 	}
