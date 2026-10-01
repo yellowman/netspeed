@@ -63,11 +63,26 @@ capabilities
   echo when browser credential policy permits it, and retains warm HTTP,
   bounded streaming, and explicit credential fallbacks.
 - Three browser presentations share the same measurement engine and result
-  contract: [`web/index.html`](web/index.html) is the standard interface,
+  contract, semantic layout, and restrained design tokens:
+  [`web/index.html`](web/index.html) is the standard interface,
   [`web/alternate.html`](web/alternate.html) is a progressive observatory with
   a live test-sequence rail and visible evidence ledger, and
   [`web/phosphor.html`](web/phosphor.html) is a monochrome green-phosphor
   terminal interface.
+- A full-width Details & Evidence workspace separates Overview, Throughput,
+  Latency, Packet delivery, Transport & verification, and Raw evidence. Standard
+  and Phosphor keep it collapsed initially; Observatory exposes it and provides
+  a selectable evidence inspector beside the measurements on wide screens.
+  Arrow keys navigate its accessible tabs. Phosphor also has a `SHOW` selector,
+  F1–F4 inspection shortcuts, and Escape to return to results.
+- Raw JSON and downloads preserve the complete result, including unknown
+  telemetry, per-window transfer records, upload receipts, discarded latency
+  probes, capabilities, selected framing, and verification evidence. Compact
+  shared-result links remain explicitly identified as a subset. Specific
+  measurement notes expose censored timer samples, fallbacks, relay paths,
+  unavailable tests, and incomplete runs without adding permanent dashboard chrome.
+  Compact share links require a resolved metric set; JSON export remains
+  available for incomplete measurements and partial failures.
 
 ### daemon, WebRTC, and operational safety
 
@@ -547,6 +562,17 @@ links
 
 ### Cloudflare compatibility
 
+Cloudflare headline throughput is the aggregate payload bytes observed across
+all workers inside the common load window, divided by that window's duration.
+`windowBytes` and `windowSeconds` expose the inputs; `samplesMbps` retains
+individual request rates for diagnostics. Final in-flight responses are
+validated before their in-window bytes are accepted.
+
+Browser WebSocket echoes that complete within one visible timer tick retain
+`rawRttMs: 0`, `rttMs: null`, and `timingResolutionLimited: true`. They are
+excluded from latency and jitter statistics. If no resolved samples remain,
+latency is unavailable and quality grades are incomplete.
+
 The native clients support `--provider auto`, `--provider netspeed`, and
 `--provider cloudflare`. `netspeed` preserves protocol-v2 metadata and verified
 upload receipts. `cloudflare` uses the common Cloudflare HTTP surface and reports
@@ -587,11 +613,18 @@ identify the selected provider, measurement contract, and packet topology.
 
 ### Interface notes
 
-- **Standard** is the compact general-purpose client.
-- **Observatory** removes the promotional hero and opens directly on the instruments, evidence, loaded-latency, packet-delivery, and confidence views.
-- **Phosphor** is an Apple II/ProDOS-inspired text-mode monitor: uppercase fixed-column typography, inverse-video headings, character plots and meters, scanlines, a block cursor, and a strictly monochrome green-phosphor display. It uses the same measurement engine and result elements as the other interfaces.
+- **Standard** is the carrier-style default: a horizontal results header, quiet technical figures, one accent, and a collapsed evidence workspace.
+- **Observatory** shares Standard's visual system and adds a stage rail, timestamps, and a persistent measurement inspector on wide screens. Select a measurement or stage to inspect its evidence.
+- **Phosphor** is a monochrome fixed-cell terminal with selectable **80/132 columns**, character plots, square controls, and F1–F4/Escape navigation. It reflows on smaller screens instead of forcing horizontal scrolling. Its locally served [Glass TTY VT220 font](web/fonts/README.md) is a period reference, not a claim to emulate a particular machine.
+- All three use `web/js/layout.js` for the shared semantic layout and `web/js/evidence.js` for the same six-section evidence workspace. Full JSON retains telemetry that does not yet have a dedicated figure.
 - The progressive rail consumes structured measurement outcomes. A skipped capability remains `unavailable`, a failed operation remains `failed`, and final analysis never blanket-marks earlier work successful.
 - Presentation links retain the supported shared-result `r` parameter while discarding unrelated query state, so a shared measurement survives switching among Standard, Observatory, and Phosphor.
+
+`make browser-smoke` runs Playwright on supported platforms. On OpenBSD it uses
+Chromium's native debugging protocol with the same real daemon and engine,
+covering receipts, unavailable/failed stages, all three interfaces at
+320/390/768/1440 pixels, both themes, evidence navigation, and shared results.
+Set `NETSPEED_BROWSER=/usr/local/bin/chrome` if Chromium is not found automatically.
 
 ## Native client progress
 
