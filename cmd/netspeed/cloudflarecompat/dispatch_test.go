@@ -126,16 +126,24 @@ func TestCloudflareRunEmitsIdentifiedResult(t *testing.T) {
 	defer s.Close()
 
 	old := os.Stdout
-	r, w, err := os.Pipe()
+	// The result includes per-request evidence and can exceed an OS pipe's
+	// capacity. A file lets the producer finish before this test reads it.
+	output, err := os.CreateTemp(t.TempDir(), "cloudflare-stdout-*")
 	if err != nil {
 		t.Fatal(err)
 	}
-	os.Stdout = w
+	defer output.Close()
+	defer func() { os.Stdout = old }()
+	os.Stdout = output
 	code := runCloudflare(options{Provider: providerCloudflare, Server: s.URL, JSON: true, Quick: true, DownloadOnly: true, SkipPacketLoss: true, Timeout: 10 * time.Second})
-	_ = w.Close()
 	os.Stdout = old
-	body, _ := io.ReadAll(r)
-	_ = r.Close()
+	if _, err := output.Seek(0, io.SeekStart); err != nil {
+		t.Fatal(err)
+	}
+	body, err := io.ReadAll(output)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if code != 0 {
 		t.Fatalf("runCloudflare exit=%d output=%s", code, body)
 	}
@@ -347,16 +355,22 @@ func TestDispatchCloudflareTransportControlMismatchIsArgumentError(t *testing.T)
 		os.Stderr = oldStderr
 	}()
 
-	reader, writer, err := os.Pipe()
+	output, err := os.CreateTemp(t.TempDir(), "cloudflare-stderr-*")
 	if err != nil {
 		t.Fatal(err)
 	}
-	os.Stderr = writer
+	defer output.Close()
+	os.Stderr = output
 	os.Args = []string{"netspeed"}
 	handled, code := Dispatch([]string{"--provider", "cloudflare", "--server", server.URL, "--download-payload", "random", "--download-only", "--quick", "--no-packet-loss"})
-	_ = writer.Close()
-	body, _ := io.ReadAll(reader)
-	_ = reader.Close()
+	os.Stderr = oldStderr
+	if _, err := output.Seek(0, io.SeekStart); err != nil {
+		t.Fatal(err)
+	}
+	body, err := io.ReadAll(output)
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	if !handled || code != 2 {
 		t.Fatalf("handled=%v code=%d; want handled argument error", handled, code)
