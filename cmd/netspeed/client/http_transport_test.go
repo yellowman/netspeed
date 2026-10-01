@@ -247,6 +247,7 @@ func TestNegotiatedResponseRejectsTransformationOrWrongDiscriminator(t *testing.
 		Header: http.Header{
 			"Cache-Control":          []string{"no-store"},
 			"X-Netspeed-Measurement": []string{"download"},
+			"X-Accel-Buffering":      []string{"no"},
 		},
 	}
 	if err := client.verifyCommonMeasurementResponse(response, "download"); err == nil || !strings.Contains(err.Error(), "no-transform") {
@@ -263,6 +264,22 @@ func TestNegotiatedResponseRejectsTransformationOrWrongDiscriminator(t *testing.
 	response.TransferEncoding = []string{"chunked"}
 	if err := client.verifyDownloadMeasurementResponse(response, 4096, "download"); err == nil || !strings.Contains(err.Error(), "payload") {
 		t.Fatalf("verifyDownloadMeasurementResponse error = %v; want payload mismatch rejection", err)
+	}
+}
+
+func TestNegotiatedResponseEnforcesProxyBufferSuppression(t *testing.T) {
+	client := New(Config{})
+	client.measurementTransport = selectedClientTransport(t)
+	for _, values := range [][]string{nil, {"yes"}, {"no", "yes"}, {"no, yes"}} {
+		response := &http.Response{Header: make(http.Header)}
+		measurementhttp.SetResponseHeaders(response.Header, "latency")
+		response.Header.Del("X-Accel-Buffering")
+		for _, value := range values {
+			response.Header.Add("X-Accel-Buffering", value)
+		}
+		if err := client.verifyCommonMeasurementResponse(response, "latency"); err == nil {
+			t.Fatalf("accepted proxy buffering headers %v", values)
+		}
 	}
 }
 

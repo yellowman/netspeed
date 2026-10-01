@@ -1518,7 +1518,7 @@ func hasImpreciseTiming(results *Results) bool {
 		}
 	}
 	for _, sample := range results.LatencySamples {
-		if sample.TimingSource != "" && sample.TimingSource != "httptrace" {
+		if sample.TimingSource != "" && sample.TimingSource != "httptrace" && sample.TimingSource != "websocket-message" {
 			return true
 		}
 		if sample.LoadOverlapped && !sample.LoadTrackingAccurate {

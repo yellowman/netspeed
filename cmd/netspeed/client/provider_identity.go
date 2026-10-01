@@ -5,8 +5,8 @@ import (
 	"os"
 )
 
-func (r Summary) MarshalJSON() ([]byte, error) {
-	type raw Summary
+func (r JSONOutput) MarshalJSON() ([]byte, error) {
+	type raw JSONOutput
 	b, err := json.Marshal(raw(r))
 	if err != nil {
 		return nil, err

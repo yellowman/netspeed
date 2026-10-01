@@ -677,6 +677,19 @@ func TestAssessTestConfidenceRequiresBothPacketDirections(t *testing.T) {
 	}
 }
 
+func TestWebSocketTimingIsAccurateUnlessLoadTrackingFallsBack(t *testing.T) {
+	results := &Results{LatencySamples: []LatencySample{{
+		TimingSource: "websocket-message", LoadOverlapped: true, LoadTrackingAccurate: true,
+	}}}
+	if hasImpreciseTiming(results) {
+		t.Fatal("monotonic WebSocket message timing was classified as fallback timing")
+	}
+	results.LatencySamples[0].LoadTrackingAccurate = false
+	if !hasImpreciseTiming(results) {
+		t.Fatal("imprecise load tracking was not detected")
+	}
+}
+
 func TestValidatePacketReportRejectsImpossibleCounters(t *testing.T) {
 	valid := packetTestReportResponse{
 		ForwardReceived: 995, AcknowledgementsSent: 990, AckSendFailures: 5,

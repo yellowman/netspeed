@@ -68,6 +68,10 @@ def compare_results(go_result: dict[str, object], c_result: dict[str, object], d
 def run_direction(fixture: Any, go_binary: Path, c_binary: Path, direction: str) -> None:
     server = ThreadingHTTPServer(("127.0.0.1", 0), fixture.ProtocolHandler)
     server.mode = "normal"  # type: ignore[attr-defined]
+    server.websocket_lock = threading.Lock()  # type: ignore[attr-defined]
+    server.websocket_upgrade_attempts = 0  # type: ignore[attr-defined]
+    server.websocket_connections = 0  # type: ignore[attr-defined]
+    server.websocket_messages = 0  # type: ignore[attr-defined]
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     try:

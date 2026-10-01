@@ -65,6 +65,19 @@ func (c *Client) verifyCommonMeasurementResponse(response *http.Response, expect
 	if c.measurementTransport.LegacyFallback {
 		return nil
 	}
+	if advertised := c.measurementTransport.ProxyBufferSuppressionHeader; advertised != "" {
+		name, expected, ok := strings.Cut(advertised, ":")
+		if !ok || !strings.EqualFold(strings.TrimSpace(name), "X-Accel-Buffering") || !strings.EqualFold(strings.TrimSpace(expected), "no") {
+			return fmt.Errorf("unsupported proxy buffer suppression contract %q", advertised)
+		}
+		buffering, err := requiredUniqueHeaderValue(response.Header, "X-Accel-Buffering")
+		if err != nil {
+			return err
+		}
+		if !strings.EqualFold(buffering, "no") {
+			return fmt.Errorf("measurement response X-Accel-Buffering %q; expected no", buffering)
+		}
+	}
 	cacheControl := strings.Join(response.Header.Values("Cache-Control"), ",")
 	if !headerHasDirective(cacheControl, "no-store") || !headerHasDirective(cacheControl, "no-transform") {
 		return fmt.Errorf("measurement response Cache-Control %q does not preserve no-store, no-transform", cacheControl)
