@@ -25,12 +25,23 @@ func addCloudflareCredentialAliases(payload map[string]any) map[string]any {
 			}
 		}
 	}
-	if s, ok := payload["server"].(string); ok && s != "" {
+	isTURN := func(raw string) bool {
+		lower := strings.ToLower(raw)
+		return strings.HasPrefix(lower, "turn:") || strings.HasPrefix(lower, "turns:")
+	}
+	hasTURN := false
+	for _, raw := range urls {
+		hasTURN = hasTURN || isTURN(raw)
+	}
+	// A bare server is a legacy fallback, not another relay to synthesize when
+	// authoritative URLs exist. Rewrapping must preserve their scheme/transport.
+	if s, ok := payload["server"].(string); !hasTURN && ok && s != "" &&
+		!strings.HasPrefix(strings.ToLower(s), "stun:") && !strings.HasPrefix(strings.ToLower(s), "stuns:") {
 		full := s
-		if !strings.HasPrefix(strings.ToLower(full), "turn:") {
+		if !isTURN(full) {
 			full = "turn:" + full
 		}
-		if !strings.Contains(strings.ToLower(full), "transport=") {
+		if strings.HasPrefix(strings.ToLower(full), "turn:") && !strings.Contains(strings.ToLower(full), "transport=") {
 			full += "?transport=udp"
 		}
 		urls = append(urls, full)
@@ -47,15 +58,21 @@ func addCloudflareCredentialAliases(payload map[string]any) map[string]any {
 		payload["urls"] = out
 		payload["servers"] = out
 		payload["iceServers"] = map[string]any{"urls": out, "username": username, "credential": credential}
-		bare := strings.TrimPrefix(out[0], "turn:")
-		bare = strings.TrimPrefix(bare, "turns:")
-		if i := strings.IndexByte(bare, '?'); i >= 0 {
-			bare = bare[:i]
+		delete(payload, "server")
+		for _, raw := range out {
+			if !isTURN(raw) {
+				continue
+			}
+			_, bare, _ := strings.Cut(raw, ":")
+			if i := strings.IndexByte(bare, '?'); i >= 0 {
+				bare = bare[:i]
+			}
+			if at := strings.LastIndexByte(bare, '@'); at >= 0 {
+				bare = bare[at+1:]
+			}
+			payload["server"] = bare
+			break
 		}
-		if at := strings.LastIndexByte(bare, '@'); at >= 0 {
-			bare = bare[at+1:]
-		}
-		payload["server"] = bare
 	}
 	return payload
 }
