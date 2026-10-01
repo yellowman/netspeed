@@ -197,6 +197,9 @@ async function testWindowRepeatsOnlyBoundedRequests() {
         assert.equal(sample.chunkBytes, chunkBytes);
         assert.equal(sample.concurrency, 3);
         assert.equal(sample.requestCount, requests);
+        assert.equal(sample.transfers.length, requests, 'every verified transfer remains inspectable');
+        assert.equal(sample.transfers.reduce((bytes, transfer) => bytes + transfer.sizeBytes, 0), sample.sizeBytes);
+        assert.deepEqual(sample.rejectedTransfers, []);
         assert.equal(sample.sizeBytes, requests * chunkBytes);
         assert.ok(requests > 3, 'workers should repeat requests without per-request timing lookup stalls');
         assert.ok(maximumActive <= 3);
@@ -298,6 +301,14 @@ async function testSummaryAndConfidenceParity() {
     closeEnough(summary.latencyUploadMs, 38);
     closeEnough(summary.packetLossPercent, 1.2);
 
+    const censored = Array.from({ length: 30 }, () => ({ condition: 'unloaded', rttMs: null, rawRttMs: 0, timingResolutionLimited: true }));
+    hooks.setResults({ throughputSamples, latencySamples: [...censored, ...latencySamples], packetLoss });
+    closeEnough(hooks.calculateSummary().latencyUnloadedMs, 20);
+    closeEnough(hooks.calculateSummary().jitterMs, 8);
+    hooks.setResults({ throughputSamples, latencySamples: censored, packetLoss });
+    assert.equal(hooks.calculateSummary().latencyUnloadedMs, null);
+    assert.equal(hooks.calculateSummary().jitterMs, null);
+
     // Add enough low-variance unloaded samples for all five confidence gates.
     const highLatency = [];
     for (let index = 0; index < 12; index++) {
@@ -316,6 +327,14 @@ async function testSummaryAndConfidenceParity() {
     assert.equal(confidence.metrics.loadedOverlap.complete, true);
     assert.equal(confidence.metrics.timingAccuracy.accurate, true);
     assert.equal(confidence.metrics.packetTest.completed, true);
+
+    const websocketLatency = highLatency.map(sample => ({ ...sample, timingSource: 'websocket-message' }));
+    const websocketConfidence = hooks.assessTestConfidence(throughputSamples, websocketLatency, packetLoss);
+    assert.equal(websocketConfidence.overallScore, 100);
+    assert.equal(websocketConfidence.metrics.timingAccuracy.accurate, true);
+    websocketLatency[0].timingResolutionLimited = true;
+    websocketLatency[0].rttMs = null;
+    assert.equal(hooks.assessTestConfidence(throughputSamples, websocketLatency, packetLoss).metrics.timingAccuracy.accurate, false);
 }
 
 async function main() {

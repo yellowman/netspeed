@@ -657,15 +657,15 @@ async function testWebSocketCoarseTimerDoesNotDeadlock() {
 
         assert.equal(sample.probeTransport, 'websocket');
         assert.equal(sample.rawRttMs, 0);
-        assert.equal(sample.rttMs, 0.01);
+        assert.equal(sample.rttMs, null);
         assert.equal(sample.timingResolutionLimited, true);
-        assert.equal(sample.timerRepresentationFloorMs, 0.01);
+        assert.equal(sample.timerRepresentationFloorMs, undefined);
         assert.equal(messages, 2, 'one warmup and one measured echo expected');
 
         const evidence = hooks.getTransportEvidence();
         assert.equal(evidence.latency.fallbackUsed, false);
         assert.equal(evidence.latency.webSocket.timingResolutionLimitedMessages, 2);
-        assert.equal(evidence.latency.webSocket.timerRepresentationFloorMs, 0.01);
+        assert.equal(evidence.latency.webSocket.timerRepresentationFloorMs, undefined);
     } finally {
         hooks.closeWebSocketLatency();
         global.performance.now = originalNow;

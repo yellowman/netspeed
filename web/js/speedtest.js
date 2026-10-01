@@ -53,10 +53,8 @@ const SpeedTest = (function() {
 
     // Firefox and privacy-hardened browsers may quantize performance.now(). A
     // very fast local WebSocket echo can therefore begin and end in the same
-    // clock tick. Keep that valid sample in the positive-only statistics while
-    // explicitly labeling that the numeric value is a representation floor,
-    // not a claim that the browser measured ten-microsecond precision.
-    const BROWSER_TIMER_REPRESENTATION_FLOOR_MS = 0.01;
+    // clock tick. Preserve the raw observation as censored, without inventing
+    // a numeric RTT or letting it bias median/jitter and quality statistics.
 
     let serverMaxTransferBytes = LEGACY_SERVER_TRANSFER_LIMIT_BYTES;
     let serverMaxConcurrentTransfersPerClient = 24;
@@ -344,9 +342,7 @@ const SpeedTest = (function() {
                             throw new Error(`Invalid WebSocket latency duration: ${rawRttMs}`);
                         }
                         const timingResolutionLimited = rawRttMs === 0;
-                        const rttMs = timingResolutionLimited
-                            ? BROWSER_TIMER_REPRESENTATION_FLOOR_MS
-                            : rawRttMs;
+                        const rttMs = timingResolutionLimited ? null : rawRttMs;
 
                         // Do not remove the request from state.pending until all
                         // validation has succeeded. If parsing or timing fails,
@@ -361,9 +357,6 @@ const SpeedTest = (function() {
                             rttMs,
                             rawRttMs,
                             timingResolutionLimited,
-                            timerRepresentationFloorMs: timingResolutionLimited
-                                ? BROWSER_TIMER_REPRESENTATION_FLOOR_MS
-                                : undefined,
                             startedAt: pending.startedAt,
                             endedAt
                         });
@@ -454,7 +447,6 @@ const SpeedTest = (function() {
                     rttMs: measured.rttMs,
                     rawRttMs: measured.rawRttMs,
                     timingResolutionLimited: measured.timingResolutionLimited,
-                    timerRepresentationFloorMs: measured.timerRepresentationFloorMs,
                     condition,
                     loadOverlapped: false,
                     timingSource: 'websocket-message',
@@ -478,7 +470,6 @@ const SpeedTest = (function() {
                     warmups: state.warmups,
                     successfulPings: state.successfulPings,
                     timingResolutionLimitedMessages: state.timingResolutionLimitedMessages,
-                    timerRepresentationFloorMs: BROWSER_TIMER_REPRESENTATION_FLOOR_MS,
                     disabled: state.disabled,
                     closeReason: state.closeReason
                 };
@@ -554,7 +545,6 @@ const SpeedTest = (function() {
                     warmups: 0,
                     successfulPings: 0,
                     timingResolutionLimitedMessages: 0,
-                    timerRepresentationFloorMs: BROWSER_TIMER_REPRESENTATION_FLOOR_MS,
                     disabled: false,
                     closeReason: ''
                 }
@@ -586,6 +576,23 @@ const SpeedTest = (function() {
     // not expose the duplex getter at all. This feature test avoids attempting
     // a streaming request where fetch would buffer or reject it.
     function supportsStreamingRequestBodies() {
+        // A stream constructor does not guarantee that Fetch can send a
+        // stream over the negotiated HTTP version. Chromium rejects HTTP/1.
+        if (typeof document !== 'undefined') {
+            const endpoint = new URL(apiURL(measurementSelection.uploadPath), browserPageURL());
+            if (endpoint.protocol === 'http:') return false;
+            const entries = typeof performance.getEntriesByType === 'function' ? performance.getEntriesByType('resource') : [];
+            let multiplexed = false;
+            for (let index = entries.length - 1; index >= 0; index--) {
+                const entry = entries[index];
+                if (!entry.name || new URL(entry.name, browserPageURL()).origin !== endpoint.origin) continue;
+                if (/^http\/1(?:\.|$)/i.test(entry.nextHopProtocol || '')) return false;
+                if (/^(h2|h3)(?:$|-)/i.test(entry.nextHopProtocol || '')) { multiplexed = true; break; }
+            }
+            // If protocol evidence is hidden (for example by cross-origin
+            // timing policy), use bounded XHR rather than risk a rejected stream.
+            if (!multiplexed) return false;
+        }
         if (requestStreamingSupport !== undefined) return requestStreamingSupport;
         if (typeof ReadableStream === 'undefined' || typeof Request === 'undefined') {
             requestStreamingSupport = false;
@@ -829,6 +836,8 @@ const SpeedTest = (function() {
         locations: [],
         throughputSamples: [],
         latencySamples: [],
+        discardedLatencySamples: [],
+        measurementErrors: [],
         packetLoss: null,
         httpTransport: null,
         startTime: null,
@@ -1210,7 +1219,8 @@ const SpeedTest = (function() {
             responseReadChunks: bodyEvidence.readChunks,
             minimumResponseReadChunkBytes: bodyEvidence.minimumReadChunkBytes,
             maximumResponseReadChunkBytes: bodyEvidence.maximumReadChunkBytes,
-            payloadEvidence: bodyEvidence.payloadEvidence
+            payloadEvidence: bodyEvidence.payloadEvidence,
+            responseVerification: responseEvidence
         };
     }
 
@@ -1306,7 +1316,9 @@ const SpeedTest = (function() {
                 timingSource: 'server-receipt',
                 transportPayload: 'binary-zero',
                 transportFraming: expectedFraming,
-                transportContentEncoding: 'identity'
+                transportContentEncoding: 'identity',
+                receipt: { ...receipt },
+                responseVerification: responseEvidence
             };
         } finally {
             if (descriptor?.finish) descriptor.finish();
@@ -1465,11 +1477,13 @@ const SpeedTest = (function() {
             const sample = await runLatencyAttempt(condition, seq, attempt);
             if (measurementSelection.warmConnectionPing && sample.connectionReused === false) {
                 lastRejected = { sample, reason: 'cold' };
+                results.discardedLatencySamples.push({ ...sample, discardReason: 'cold-connection' });
                 if (transportEvidence) transportEvidence.latency.discardedColdAttempts++;
                 continue;
             }
             if (measurementSelection.warmConnectionPing && sample.connectionReused === null && !sample.connectionSetupExcluded) {
                 lastRejected = { sample, reason: 'unverifiable' };
+                results.discardedLatencySamples.push({ ...sample, discardReason: 'unverifiable-connection-setup' });
                 if (transportEvidence) transportEvidence.latency.discardedUnverifiableAttempts++;
                 continue;
             }
@@ -1624,8 +1638,8 @@ const SpeedTest = (function() {
         }
 
         // Calculate median RTT from initial probes
-        const sortedRtts = samples.map(s => s.rttMs).sort((a, b) => a - b);
-        const medianRtt = sortedRtts[Math.floor(sortedRtts.length / 2)];
+        const sortedRtts = samples.filter(s => Number.isFinite(s.rttMs) && !s.timingResolutionLimited).map(s => s.rttMs).sort((a, b) => a - b);
+        const medianRtt = sortedRtts.length ? sortedRtts[Math.floor(sortedRtts.length / 2)] : 0;
 
         // Decide batching strategy based on latency and bandwidth
         let useParallel;
@@ -1778,6 +1792,7 @@ const SpeedTest = (function() {
                 } catch (err) {
                     lastError = err;
                     console.error(`${direction} ${profileName} run ${run} failed:`, err);
+                    results.measurementErrors.push({ direction, profile: profileName, runIndex: run, reason: err.message || String(err) });
                 }
             }
             if (successful < requiredSuccessfulRuns(profile.runs)) {
@@ -1811,10 +1826,12 @@ const SpeedTest = (function() {
                     before.gapGeneration === after.gapGeneration;
                 if (!overlapped) {
                     lastError = new Error('probe did not remain inside a continuous load interval');
+                    results.discardedLatencySamples.push({ ...sample, discardReason: 'no-continuous-load-overlap', loadOverlapEvidence: { before, after } });
                     continue;
                 }
 
                 sample.loadOverlapped = true;
+                sample.loadOverlapEvidence = { before, after };
                 sample.loadTrackingAccurate = before.impreciseActive === 0 && after.impreciseActive === 0 &&
                     before.impreciseGeneration === after.impreciseGeneration;
                 samples.push(sample);
@@ -1840,6 +1857,8 @@ const SpeedTest = (function() {
         let stopRequested = false;
         let bytesTransferred = 0;
         let requestCount = 0;
+        const transfers = [];
+        const rejectedTransfers = [];
         let lastError = null;
         const profile = `window-${windowIndex + 1}`;
 
@@ -1862,10 +1881,12 @@ const SpeedTest = (function() {
                         ? await runDownload(plan.chunkBytes, profile, runIndex, direction, activity)
                         : await runUpload(plan.chunkBytes, profile, runIndex, direction, activity, uploadBodySource);
                     bytesTransferred += sample.sizeBytes;
+                    transfers.push({ ...sample, workerIndex });
                     requestCount++;
                 } catch (err) {
                     if (err?.name === 'AbortError') return;
                     lastError = err;
+                    rejectedTransfers.push({ workerIndex, runIndex, reason: err.message || String(err) });
                     await sleep(10);
                 }
             }
@@ -1920,7 +1941,9 @@ const SpeedTest = (function() {
                 concurrency: plan.concurrency,
                 chunkBytes: plan.chunkBytes,
                 requestCount,
-                timingSource: 'aggregate-wall-clock'
+                timingSource: 'aggregate-wall-clock',
+                transfers,
+                rejectedTransfers
             },
             probes
         };
@@ -2338,6 +2361,7 @@ const SpeedTest = (function() {
         const values = [];
         for (const sample of samples) {
             if (sample.condition !== condition || (requireOverlap && sample.loadOverlapped !== true)) continue;
+            if (sample.timingResolutionLimited || !Number.isFinite(sample.rttMs) || sample.rttMs <= 0) continue;
             values.push(sample.rttMs);
         }
         return values;
@@ -2360,10 +2384,10 @@ const SpeedTest = (function() {
         return {
             downloadMbps: percentile(download, 90),
             uploadMbps: percentile(upload, 90),
-            latencyUnloadedMs: percentile(unloaded, 50),
-            latencyDownloadMs: percentile(downloadLoaded, 90),
-            latencyUploadMs: percentile(uploadLoaded, 90),
-            jitterMs: jitter(unloaded),
+            latencyUnloadedMs: unloaded.length ? percentile(unloaded, 50) : null,
+            latencyDownloadMs: downloadLoaded.length ? percentile(downloadLoaded, 90) : null,
+            latencyUploadMs: uploadLoaded.length ? percentile(uploadLoaded, 90) : null,
+            jitterMs: unloaded.length ? jitter(unloaded) : null,
             packetLossPercent: Number.isFinite(transactionLoss) ? transactionLoss : null
         };
     }
@@ -2389,6 +2413,7 @@ const SpeedTest = (function() {
     }
 
     function gradeStreaming(s) {
+        if (!Number.isFinite(s.latencyUnloadedMs) || !Number.isFinite(s.jitterMs)) return 'Incomplete';
         if (!Number.isFinite(s.packetLossPercent)) return 'Incomplete';
         // Ensure we have valid numbers (NaN comparisons always return false)
         const dl = s.downloadMbps || 0;
@@ -2403,6 +2428,7 @@ const SpeedTest = (function() {
     }
 
     function gradeGaming(s) {
+        if (!Number.isFinite(s.latencyUnloadedMs) || !Number.isFinite(s.jitterMs)) return 'Incomplete';
         if (!Number.isFinite(s.packetLossPercent)) return 'Incomplete';
         // Gaming requires low latency and jitter
         const dl = s.downloadMbps || 0;
@@ -2417,6 +2443,7 @@ const SpeedTest = (function() {
     }
 
     function gradeVideoChatting(s) {
+        if (!Number.isFinite(s.latencyUnloadedMs) || !Number.isFinite(s.jitterMs)) return 'Incomplete';
         if (!Number.isFinite(s.packetLossPercent)) return 'Incomplete';
         // Video chat needs good upload and low latency
         const dl = s.downloadMbps || 0;
@@ -2669,6 +2696,8 @@ const SpeedTest = (function() {
             return null;
         }
 
+        if (!Number.isFinite(summary.latencyUnloadedMs) || !Number.isFinite(summary.jitterMs)) return null;
+
         if (!Number.isFinite(summary.packetLossPercent)) {
             console.warn('calculateNetworkQualityScore: packet loss unavailable');
             return null;
@@ -2742,6 +2771,7 @@ const SpeedTest = (function() {
 
     function countLatency(samples, condition, overlapOnly = false) {
         return samples.filter(sample => sample.condition === condition &&
+            !sample.timingResolutionLimited && Number.isFinite(sample.rttMs) && sample.rttMs > 0 &&
             (!overlapOnly || sample.loadOverlapped === true)).length;
     }
 
@@ -2750,7 +2780,8 @@ const SpeedTest = (function() {
             if (sample.sampleKind === 'window' && sample.timingSource !== 'aggregate-wall-clock') return true;
         }
         for (const sample of latency) {
-            if (sample.timingSource && sample.timingSource !== 'resource-timing') return true;
+            if (sample.timingResolutionLimited) return true;
+            if (sample.timingSource && !['resource-timing', 'websocket-message'].includes(sample.timingSource)) return true;
             if (sample.loadOverlapped && sample.loadTrackingAccurate === false) return true;
         }
         return false;
@@ -2985,6 +3016,8 @@ const SpeedTest = (function() {
             locations: [],
             throughputSamples: [],
             latencySamples: [],
+            discardedLatencySamples: [],
+            measurementErrors: [],
             packetLoss: null,
             httpTransport: null,
             startTime: Date.now(),
@@ -3206,18 +3239,10 @@ const SpeedTest = (function() {
         const quality = calculateQuality(summary);
 
         return JSON.stringify({
-            meta: results.meta,
+            ...results,
             summary,
             quality,
-            throughputSamples: results.throughputSamples,
-            latencySamples: results.latencySamples,
-            packetLoss: results.packetLoss,
-            httpTransport: results.httpTransport,
-            bandwidthEstimate: results.bandwidthEstimate,
-            networkQualityScore: results.networkQualityScore,
-            testConfidence: results.testConfidence,
-            startTime: results.startTime,
-            endTime: results.endTime
+            stageOutcomes: getStageOutcomes()
         }, null, 2);
     }
 
@@ -3287,6 +3312,7 @@ const SpeedTest = (function() {
             closeWebSocketLatency,
             getMeasurementTransport() { return HTTPTransport.cloneSelection(measurementSelection); },
             getTransportEvidence() { return transportEvidence ? JSON.parse(JSON.stringify(transportEvidence)) : null; },
+            supportsStreamingRequestBodies,
             resetRequestStreamingSupport() { requestStreamingSupport = undefined; },
             setServerCapabilities(maxBytes, receiptVersion, protocolVersion = 2, frameVersion = 1, maxClientTransfers = 24) {
                 serverMaxTransferBytes = maxBytes;

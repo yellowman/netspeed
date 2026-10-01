@@ -31,6 +31,24 @@ async function expectReject(promise, pattern) {
 }
 
 async function main() {
+    // Feature-testing the Request constructor alone is insufficient: a browser
+    // must also have evidence of HTTP/2 or HTTP/3 for streamed request bodies.
+    global.document = {};
+    assert.equal(hooks.supportsStreamingRequestBodies(), false, 'HTTP/1 cleartext uses bounded fallback');
+    global.window.location.origin = 'https://test.local';
+    global.performance.getEntriesByType = () => [{ name: 'https://test.local/meta', nextHopProtocol: 'http/1.1' }];
+    assert.equal(hooks.supportsStreamingRequestBodies(), false, 'TLS HTTP/1 uses bounded fallback');
+    global.performance.getEntriesByType = () => [{ name: 'https://test.local/meta', nextHopProtocol: '' }];
+    assert.equal(hooks.supportsStreamingRequestBodies(), false, 'hidden protocol uses bounded fallback');
+    global.performance.getEntriesByType = () => [{ name: 'https://test.local/meta', nextHopProtocol: 'h2' }];
+    assert.equal(hooks.supportsStreamingRequestBodies(), true, 'HTTP/2 permits the request feature test');
+    global.performance.getEntriesByType = () => [{ name: 'https://other.local/meta', nextHopProtocol: 'h2' }];
+    assert.equal(hooks.supportsStreamingRequestBodies(), false, 'unrelated origin cannot authorize streaming');
+    delete global.document;
+    delete global.performance.getEntriesByType;
+    global.window.location.origin = 'http://test.local';
+    hooks.resetRequestStreamingSupport();
+
     global.fetch = async () => new Response(JSON.stringify({
         maxTransferBytes: 1_000_000,
         uploadReceiptVersion: 1
@@ -109,6 +127,7 @@ async function main() {
     assert.equal(upload.sizeBytes, 8);
     assert.equal(upload.durationMs, 2);
     assert.equal(upload.timingSource, 'server-receipt');
+    assert.deepEqual(upload.receipt, { ok: true, acceptedBytes: 8, serverDurationNs: 2_000_000 });
 
     const uploadActivity = hooks.createLoadActivity();
     let activeAfterRequestBody = -1;
