@@ -227,7 +227,7 @@
 
         // Event delegation for box plot tooltips
         document.addEventListener('mouseenter', (e) => {
-            const target = e.target.closest('[data-tooltip-target="boxplot"]');
+            const target = e.target.closest?.('[data-tooltip-target="boxplot"]');
             if (target) {
                 const rect = target.getBoundingClientRect();
                 tooltip.style.left = `${rect.left}px`;
@@ -237,7 +237,7 @@
         }, true);
 
         document.addEventListener('mouseleave', (e) => {
-            const target = e.target.closest('[data-tooltip-target="boxplot"]');
+            const target = e.target.closest?.('[data-tooltip-target="boxplot"]');
             if (target) {
                 tooltip.classList.remove('visible');
             }

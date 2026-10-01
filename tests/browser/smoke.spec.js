@@ -189,8 +189,8 @@ test('shared-result state survives switching among all presentation variants', a
             rttStatsMs: { min: 10, median: 12, p90: 15 },
             jitterMs: 3
         };
-        state.downloadSamples = [120, 123.4, 126];
-        state.uploadSamples = [44, 45.6, 47];
+        state.downloadSamples = [120, 123.4, 126].map(mbps => ({ mbps }));
+        state.uploadSamples = [44, 45.6, 47].map(mbps => ({ mbps }));
         state.latencySamples = [
             { condition: 'unloaded', rttMs: 11 },
             { condition: 'unloaded', rttMs: 12 },
@@ -217,7 +217,7 @@ test('shared-result state survives switching among all presentation variants', a
 
     const targetPaths = {
         phosphor: '/phosphor.html',
-        standard: '/index.html',
+        standard: '/', // net/http's FileServer canonicalizes index.html to ./.
         alternate: '/alternate.html'
     };
     for (const target of ['phosphor', 'standard', 'alternate']) {

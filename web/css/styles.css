@@ -199,6 +199,10 @@ th:first-child, td:first-child { text-align: left; }
 .modal-content p + p { margin-top: 16px; }
 .toast { position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%); background: var(--text); color: var(--surface); border-radius: var(--radius); padding: 12px 24px; opacity: 0; pointer-events: none; z-index: 2000; }
 .toast.show { opacity: 1; }
+.boxplot-tooltip { display: none; position: fixed; z-index: 1000; width: 320px; max-width: calc(100vw - 32px); padding: 16px; border: 1px solid var(--rule); border-radius: var(--radius); background: var(--surface-1); color: var(--text); font-size: 12px; pointer-events: none; }
+.boxplot-tooltip.visible { display: block; }
+.boxplot-tooltip h4 { margin: 0 0 8px; }
+.boxplot-tooltip ul { margin: 0; padding-left: 16px; }
 .placeholder { color: var(--muted); }
 body[data-interface="alternate"] .measurement-layout { display: grid; grid-template-columns: minmax(0, 1fr) 280px; gap: 40px; }
 body[data-interface="alternate"] .measurement-evidence { padding: 0 0 0 24px; border-top: 0; border-left: 1px solid var(--rule); margin-top: 0; }
@@ -329,7 +333,7 @@ body[data-interface="phosphor"] .inspection-command { gap: 1ch; }
 body[data-interface="phosphor"] #rawEvidence { padding: 20px 2ch; border-radius: 0; background: transparent; }
 body[data-interface="phosphor"] .confidence-icon { border-radius: 0; }
 body[data-interface="phosphor"] .app-footer { gap: 2ch; padding: 20px 0; }
-body[data-interface="phosphor"] .app-footer nav { gap: 2ch; }
+body[data-interface="phosphor"] .app-footer nav { gap: 2ch; flex-wrap: wrap; }
 @media (max-width: 800px) {
     body[data-interface="phosphor"] .throughput-grid, body[data-interface="phosphor"] .latency-grid,
     body[data-interface="phosphor"] .latency-detail-grid, body[data-interface="phosphor"] .extended-grid { grid-template-columns: 1fr; gap: 20px; }

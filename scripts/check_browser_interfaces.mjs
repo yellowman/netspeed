@@ -39,6 +39,7 @@ try {
     for (const domain of ['Page', 'Runtime', 'Network']) await devtools.send(`${domain}.enable`);
     await devtools.send('Network.setBlockedURLs', { urls: ['https://unpkg.com/*', 'https://*.basemaps.cartocdn.com/*'] });
     const navigate = async page => {
+        devtools.exceptions.length = 0;
         const loaded = devtools.waitFor('Page.loadEventFired');
         const navigation = await devtools.send('Page.navigate', { url: `${baseURL}/${page}` });
         if (navigation.errorText) throw new Error(navigation.errorText);
@@ -111,6 +112,8 @@ try {
             await evaluate(devtools, `(() => {
                 const assert = (ok, reason) => { if (!ok) throw new Error(reason); };
                 const ids = [...document.querySelectorAll('[id]')].map(n => n.id);
+                document.dispatchEvent(new MouseEvent('mouseenter'));
+                document.dispatchEvent(new MouseEvent('mouseleave'));
                 assert(ids.length === new Set(ids).size, 'duplicate DOM IDs');
                 assert(document.documentElement.scrollWidth <= innerWidth, 'horizontal overflow');
                 const line = document.querySelector('#downloadSparkline .sparkline-line');
@@ -151,7 +154,17 @@ try {
                     assert(document.documentElement.scrollWidth <= innerWidth, theme + ' evidence overflow');
                 }
                 assert(document.querySelectorAll('[role="tab"][aria-selected="true"]').length === 1, 'ambiguous selected tab');
+                // Partial evidence and warning text must also fit, not only the
+                // fully populated screenshot fixture.
+                NetspeedEvidence.setResults({
+                    meta: { measurementProtocolVersion: 2 },
+                    latencySamples: [{ condition: 'unloaded', rawRttMs: 0, rttMs: null, timingResolutionLimited: true }],
+                    packetLoss: { unavailable: true, reason: 'TURN relay unavailable' },
+                    futureTelemetry: { zero: 0, disabled: false, missing: null }
+                });
+                assert(document.documentElement.scrollWidth <= innerWidth, 'partial evidence overflow');
             })()`, `${page}: ${width}px responsive evidence controls`);
+            assert.deepEqual(devtools.exceptions, [], `${page}: unexpected page errors`);
             console.log(`native Chromium: ${page} at ${width}px, both themes, keyboard and raw evidence passed`);
         }
     }
@@ -174,6 +187,12 @@ try {
             if (!JSON.parse(document.querySelector('#rawEvidence').textContent).sharedResult) throw new Error('compact evidence subset not disclosed');
             for (const link of document.querySelectorAll('[data-interface-link]')) if (!new URL(link.href).searchParams.get('r')) throw new Error('share parameter lost on presentation link');
         })()`, `${page}: shared result`);
+    }
+    for (const variant of ['standard', 'alternate', 'phosphor']) {
+        const loaded = devtools.waitFor('Page.loadEventFired');
+        await evaluate(devtools, `document.querySelector('.app-footer [data-interface-link="${variant}"]').click()`, 'switch shared presentation');
+        await loaded; await waitForApplication(devtools);
+        await evaluate(devtools, `(() => { if (!location.search.includes('r=') || document.querySelector('#downloadSpeed').textContent !== '486.7') throw new Error('presentation switch lost shared result'); })()`, 'shared presentation roundtrip');
     }
     console.log('native Chromium: shared-result identity and presentation switching passed');
 } catch (error) {
