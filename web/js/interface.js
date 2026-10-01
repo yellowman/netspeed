@@ -27,6 +27,7 @@
     analysis: 'complete', complete: 'complete', results: 'complete'
   };
   const stageState = new Map();
+  const stageTimes = new Map();
   const receivedEvents = new WeakSet();
   let liveClockTimer = null;
 
@@ -100,6 +101,7 @@
     const stage = normalizeStage(stageValue);
     if (!stage) return;
     const outcome = normalizeOutcome(outcomeValue);
+    if (outcome === 'pending') stageTimes.delete(stage);
     stageState.set(stage, { outcome, detail: String(detail || '') });
 
     for (const node of nodesFor(stage)) {
@@ -112,9 +114,12 @@
       node.setAttribute('aria-label', `${label}: ${outcome}${detail ? ` — ${detail}` : ''}`);
       node.title = detail || outcome;
       const stateNode = node.querySelector('[data-stage-state]');
-      if (stateNode) stateNode.textContent = outcome.toUpperCase();
+      if (stateNode) stateNode.textContent = { succeeded: 'Complete', unavailable: 'Unavailable', failed: 'Failed', running: 'Running', pending: 'Pending' }[outcome];
+      const timeNode = node.querySelector('[data-stage-time]');
+      if (outcome !== 'pending' && !stageTimes.has(stage)) stageTimes.set(stage, formatClock(new Date()));
+      if (timeNode) timeNode.textContent = stageTimes.get(stage) || '';
       const detailNode = node.querySelector('[data-stage-detail]');
-      if (detailNode && detail) detailNode.textContent = detail;
+      if (detailNode) detailNode.textContent = detail;
     }
 
     updateSequenceSummary();
@@ -145,6 +150,7 @@
 
   function resetStages() {
     stageState.clear();
+    stageTimes.clear();
     for (const stage of STAGE_ORDER) setStageOutcome(stage, 'pending', '');
   }
 

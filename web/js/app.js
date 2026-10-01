@@ -185,23 +185,11 @@
         elements.shareButton?.addEventListener('click', shareResults);
         elements.downloadButton?.addEventListener('click', downloadResults);
         elements.themeToggle?.addEventListener('click', toggleTheme);
-
-        // Accordion toggles
-        document.querySelectorAll('.accordion-header').forEach(header => {
-            header.addEventListener('click', () => {
-                const accordion = header.closest('.accordion');
-                const isExpanded = header.getAttribute('aria-expanded') === 'true';
-                header.setAttribute('aria-expanded', !isExpanded);
-                accordion.classList.toggle('expanded');
-            });
-        });
-
-        // Latency details toggles
-        document.querySelectorAll('.latency-details-toggle').forEach(toggle => {
-            toggle.addEventListener('click', () => {
-                const isExpanded = toggle.getAttribute('aria-expanded') === 'true';
-                toggle.setAttribute('aria-expanded', !isExpanded);
-            });
+        document.addEventListener('netspeed:copy-evidence', event => copyToClipboard(event.detail.json));
+        document.addEventListener('netspeed:download-evidence', downloadResults);
+        document.addEventListener('netspeed:terminal-width', () => {
+            updateDownloadSparkline();
+            updateUploadSparkline();
         });
 
         // Learn more modal
@@ -286,7 +274,7 @@
     function updateThemeIcon(theme) {
         const icon = elements.themeToggle?.querySelector('.theme-icon');
         if (icon) {
-            icon.textContent = theme === 'dark' ? '\u263E' : '\u2600';
+            icon.textContent = theme === 'dark' ? 'Dark' : 'Light';
         }
     }
 
@@ -362,6 +350,8 @@
                 console.error('Speed test failed:', err);
                 showError('Speed test failed. Please try again.');
             }
+            state.evidence = { ...SpeedTest.getResults(), error: { name: err.name, message: err.message }, stageOutcomes: state.stageOutcomes };
+            window.NetspeedEvidence?.setResults(state.evidence);
         }
 
         state.isRunning = false;
@@ -411,9 +401,13 @@
         state.dataChannelStats = null;
         state.bandwidthEstimate = null;
         state.testConfidence = null;
+        state.evidence = null;
+        window.NetspeedEvidence?.setResults(null);
 
-        // Reset hero values with shimmer placeholders
-        const ph = '<span class="placeholder"></span>';
+        // Reset displayed evidence along with the underlying measurement state.
+        state.httpTransport = null;
+        updateTransportEvidence(null);
+        const ph = '<span class="placeholder" aria-label="Not measured">—</span>';
         if (elements.downloadValue) elements.downloadValue.innerHTML = ph;
         if (elements.uploadValue) elements.uploadValue.innerHTML = ph;
         if (elements.downloadUnit) elements.downloadUnit.textContent = 'Mbps';
@@ -421,6 +415,8 @@
         if (elements.latencyValue) elements.latencyValue.innerHTML = ph;
         if (elements.jitterValue) elements.jitterValue.innerHTML = ph;
         if (elements.packetLossValue) elements.packetLossValue.innerHTML = ph;
+        const packetLossUnit = document.getElementById('packetLossUnit');
+        if (packetLossUnit) packetLossUnit.textContent = '%';
 
         // Clear sparklines
         if (elements.downloadSparkline) elements.downloadSparkline.innerHTML = '';
@@ -444,7 +440,32 @@
         ['unloaded', 'download', 'upload'].forEach(condition => {
             const chartEl = elements[`${condition}LatencyChart`];
             if (chartEl) chartEl.innerHTML = '';
+            const plot = elements[`${condition}LatencyBoxPlot`];
+            if (plot) plot.innerHTML = '';
+            const summary = elements[`${condition}LatencySummary`];
+            if (summary) summary.innerHTML = ph;
+            const count = elements[`${condition}LatencyCount`];
+            if (count) count.textContent = '0 samples';
         });
+        for (const id of ['downloadRange', 'uploadRange', 'downloadSustained', 'uploadSustained',
+            'downloadPeak', 'uploadPeak', 'downloadTrend', 'uploadTrend', 'downloadVariability',
+            'uploadVariability', 'packetsReceived', 'rttMin', 'rttMedian', 'rttP90', 'rttJitter',
+            'connectionPath', 'webrtcConnectionBadge', 'webrtcProtocol', 'iceRtt', 'burstCount',
+            'maxBurst', 'avgBurst', 'lossTypeBadge', 'overallScore', 'scoreGrade', 'scoreDescription']) {
+            const node = document.getElementById(id);
+            if (node) node.textContent = '—';
+        }
+        for (const id of ['sampleCountDetail', 'variabilityDetail', 'timingDetail', 'connectionDetail', 'confidenceBadge']) {
+            const node = document.getElementById(id);
+            if (node) node.textContent = 'Not measured';
+        }
+        for (const id of ['sampleCountIcon', 'variabilityIcon', 'timingIcon', 'connectionIcon']) {
+            const node = document.getElementById(id);
+            if (node) node.className = 'confidence-icon';
+        }
+        if (elements.confidenceWarnings) elements.confidenceWarnings.innerHTML = '';
+        if (elements.lossTimeline) elements.lossTimeline.innerHTML = '';
+        if (elements.measureTime) elements.measureTime.textContent = 'Measuring…';
     }
 
     /**
@@ -460,7 +481,7 @@
             if (isRunning) {
                 elements.startButton.querySelector('span').textContent = 'Running...';
             } else {
-                elements.startButton.querySelector('span').textContent = isComplete ? 'Retest' : 'Start Test';
+                elements.startButton.querySelector('span').textContent = isComplete ? 'Run again' : 'Run test';
             }
         }
 
@@ -469,11 +490,16 @@
         }
 
         if (elements.shareButton) {
-            elements.shareButton.disabled = !isComplete;
+            const shareable = isComplete && Number.isFinite(state.summary?.packetLossPercent) &&
+                Number.isFinite(state.summary?.latencyUnloadedMs) && Number.isFinite(state.summary?.jitterMs);
+            elements.shareButton.disabled = !shareable;
+            elements.shareButton.title = isComplete && !shareable
+                ? 'A compact share link requires resolved latency and packet loss. Export JSON for the complete evidence.'
+                : 'Share a compact result link';
         }
 
         if (elements.downloadButton) {
-            elements.downloadButton.disabled = !isComplete;
+            elements.downloadButton.disabled = !state.evidence;
         }
 
         if (elements.progressContainer) {
@@ -646,13 +672,14 @@
         state.latencySamples.push(sample);
 
         const conditionSamples = state.latencySamples.filter(s => s.condition === condition);
-        const values = conditionSamples.map(s => s.rttMs);
+        const values = conditionSamples.filter(s => !s.timingResolutionLimited && Number.isFinite(s.rttMs)).map(s => s.rttMs);
+        const sampleLabel = Number.isFinite(sample.rttMs) ? `${sample.rttMs.toFixed(1)} ms` : 'Below timer resolution';
 
         if (condition === 'unloaded') {
             // Update hero latency value
             const medianLatency = Charts.median(values);
             if (elements.latencyValue) {
-                elements.latencyValue.textContent = medianLatency.toFixed(1);
+                elements.latencyValue.textContent = values.length ? medianLatency.toFixed(1) : 'Below resolution';
             }
 
             // Update count badge
@@ -664,7 +691,7 @@
             if (elements.unloadedLatencySummary && values.length > 0) {
                 const min = Math.min(...values);
                 const max = Math.max(...values);
-                elements.unloadedLatencySummary.textContent = `${min.toFixed(1)} - ${max.toFixed(1)} ms`;
+                elements.unloadedLatencySummary.textContent = `${Charts.median(values).toFixed(1)} ms`;
             }
 
             // Update stats
@@ -696,13 +723,13 @@
             if (elements.downloadLatencySummary && values.length > 0) {
                 const min = Math.min(...values);
                 const max = Math.max(...values);
-                elements.downloadLatencySummary.textContent = `${min.toFixed(1)} - ${max.toFixed(1)} ms`;
+                elements.downloadLatencySummary.textContent = `${Charts.median(values).toFixed(1)} ms`;
             }
 
             // Update table
             if (elements.downloadLatencyTable) {
                 const row = document.createElement('tr');
-                row.innerHTML = `<td>${current}</td><td>${sample.rttMs.toFixed(1)} ms</td>`;
+                row.innerHTML = `<td>${current}</td><td>${sampleLabel}</td>`;
                 elements.downloadLatencyTable.appendChild(row);
             }
 
@@ -725,13 +752,13 @@
             if (elements.uploadLatencySummary && values.length > 0) {
                 const min = Math.min(...values);
                 const max = Math.max(...values);
-                elements.uploadLatencySummary.textContent = `${min.toFixed(1)} - ${max.toFixed(1)} ms`;
+                elements.uploadLatencySummary.textContent = `${Charts.median(values).toFixed(1)} ms`;
             }
 
             // Update table
             if (elements.uploadLatencyTable) {
                 const row = document.createElement('tr');
-                row.innerHTML = `<td>${current}</td><td>${sample.rttMs.toFixed(1)} ms</td>`;
+                row.innerHTML = `<td>${current}</td><td>${sampleLabel}</td>`;
                 elements.uploadLatencyTable.appendChild(row);
             }
 
@@ -791,17 +818,21 @@
         state.dataChannelStats = results.dataChannelStats;
         state.bandwidthEstimate = results.bandwidthEstimate;
         state.testConfidence = results.testConfidence;
+        state.httpTransport = results.httpTransport || null;
+        updateTransportEvidence(state.httpTransport);
+        state.evidence = { ...results, summary, quality, stageOutcomes: state.stageOutcomes };
+        window.NetspeedEvidence?.setResults(state.evidence);
 
         // Update final hero values
         updateHeroValue('download', summary.downloadMbps);
         updateHeroValue('upload', summary.uploadMbps);
 
         if (elements.latencyValue) {
-            elements.latencyValue.textContent = summary.latencyUnloadedMs.toFixed(1);
+            elements.latencyValue.textContent = Number.isFinite(summary.latencyUnloadedMs) ? summary.latencyUnloadedMs.toFixed(1) : 'N/A';
         }
 
         if (elements.jitterValue) {
-            elements.jitterValue.textContent = summary.jitterMs.toFixed(1);
+            elements.jitterValue.textContent = Number.isFinite(summary.jitterMs) ? summary.jitterMs.toFixed(1) : 'N/A';
         }
 
         if (elements.packetLossValue) {
@@ -809,6 +840,8 @@
                 ? summary.packetLossPercent.toFixed(2)
                 : 'N/A';
         }
+        const packetLossUnit = document.getElementById('packetLossUnit');
+        if (packetLossUnit) packetLossUnit.textContent = Number.isFinite(summary.packetLossPercent) ? '%' : '';
 
         // Update measure time
         if (elements.measureTime) {
@@ -889,7 +922,7 @@
 
         if (elements.serverLocation) {
             elements.serverLocation.textContent = serverLocation
-                ? `${serverLocation.city}, ${serverLocation.cca2}`
+                ? `${serverLocation.city}, ${serverLocation.region || serverLocation.cca2}`
                 : state.meta.colo;
         }
 
@@ -938,7 +971,7 @@
         }
 
         // Only render map once (don't reset on each test start)
-        if (elements.mapContainer && serverLocation && (serverLocation.lat != null && serverLocation.lon != null) && !state.mapRendered) {
+        if (elements.mapContainer && typeof L !== 'undefined' && serverLocation && (serverLocation.lat != null && serverLocation.lon != null) && !state.mapRendered) {
             const clientLat = state.meta.latitude;
             const clientLon = state.meta.longitude;
             const hasClientLocation = (clientLat != null && clientLon != null) && (clientLat !== 0 || clientLon !== 0);
@@ -959,6 +992,11 @@
      * Render map showing server location only (using Leaflet)
      */
     function renderMap(lat, lon, label) {
+        if (!elements.mapContainer) return;
+        if (typeof L === 'undefined') {
+            elements.mapContainer.textContent = 'Map unavailable. Location details remain available above.';
+            return;
+        }
         // Clear container and create map div
         elements.mapContainer.innerHTML = '<div id="leaflet-map" style="width:100%;height:100%"></div>';
 
@@ -991,6 +1029,11 @@
      * Render map showing both server and client locations (using Leaflet)
      */
     function renderMapWithBothLocations(serverLat, serverLon, serverLabel, clientLat, clientLon) {
+        if (!elements.mapContainer) return;
+        if (typeof L === 'undefined') {
+            elements.mapContainer.textContent = 'Map unavailable. Location details remain available above.';
+            return;
+        }
         // Clear container and create map div
         elements.mapContainer.innerHTML = '<div id="leaflet-map" style="width:100%;height:100%"></div>';
 
@@ -1039,7 +1082,7 @@
         // Draw a line between them
         const mapLinkColor = getComputedStyle(document.body)
             .getPropertyValue('--color-map-link')
-            .trim() || '#8b5cf6';
+            .trim() || '#80adf6';
         L.polyline([[clientLat, clientLon], [serverLat, serverLon]], {
             color: mapLinkColor,
             weight: 2,
@@ -1078,13 +1121,15 @@
         const width = elements.downloadSparkline.clientWidth || 150;
         Charts.sparkline(elements.downloadSparkline, speeds, {
             width: width,
-            height: 32,
+            height: 136,
+            showAxes: true,
             strokeColor: 'var(--color-download)',
             fillColor: 'var(--color-download)',
-            fillOpacity: 0.15,
+            fillOpacity: 0.035,
             strokeWidth: 1.5,
-            dotRadius: 2
+            dotRadius: 0
         });
+        updateTransferRange('download', speeds);
     }
 
     /**
@@ -1097,13 +1142,37 @@
         const width = elements.uploadSparkline.clientWidth || 150;
         Charts.sparkline(elements.uploadSparkline, speeds, {
             width: width,
-            height: 32,
+            height: 136,
+            showAxes: true,
             strokeColor: 'var(--color-upload)',
             fillColor: 'var(--color-upload)',
-            fillOpacity: 0.15,
+            fillOpacity: 0.035,
             strokeWidth: 1.5,
-            dotRadius: 2
+            dotRadius: 0
         });
+        updateTransferRange('upload', speeds);
+    }
+
+    function updateTransferRange(direction, samples) {
+        const node = document.getElementById(`${direction}Range`);
+        const valid = samples.filter(Number.isFinite);
+        if (node && valid.length) node.textContent = `${Math.min(...valid).toFixed(1)}–${Math.max(...valid).toFixed(1)} Mbps`;
+    }
+
+    function updateTransportEvidence(evidence) {
+        const set = (id, text) => {
+            const node = document.getElementById(id);
+            if (node) node.textContent = text;
+        };
+        const latency = evidence?.latency;
+        const selection = evidence?.selection;
+        const checks = evidence?.responseVerifications;
+        set('evidenceTransport', latency?.probeTransport || 'Not measured');
+        set('evidenceReuse', latency ? `${latency.verifiedReusedSamples ?? 0} verified · ${latency.unobservableReuseSamples ?? 0} unobservable` : 'Not measured');
+        set('evidenceDiscarded', latency ? `${latency.discardedColdAttempts ?? 0} cold · ${latency.discardedUnverifiableAttempts ?? 0} unverified · ${latency.webSocket?.timingResolutionLimitedMessages ?? 0} below resolution` : 'Not measured');
+        set('evidenceFallback', latency ? (latency.fallbackUsed ? latency.fallbackReason || 'HTTP fallback used' : 'Not used') : 'Not measured');
+        set('evidencePayload', selection ? `${selection.downloadPayload} / ${selection.downloadFraming}` : 'Not measured');
+        set('evidenceVerification', checks ? `DL ${checks.download ?? 0} · UL ${checks.upload ?? 0} · RTT ${checks.latency ?? 0}` : 'Not measured');
     }
 
     /**
@@ -1189,26 +1258,22 @@
      */
     function createTestCard(type, profile, totalRuns) {
         const sizeLabel = formatProfileSize(profile);
-        const card = document.createElement('div');
-        card.className = 'test-card accordion-item';
+        const card = document.createElement('details');
+        card.className = 'test-card details-section';
         card.dataset.profile = profile;
 
         card.innerHTML = `
-            <div class="test-card-header">
+            <summary class="test-card-header">
                 <div class="test-card-info">
                     <span class="test-card-title">${sizeLabel} ${type} test</span>
                     <span class="run-count">(0/${totalRuns})</span>
                 </div>
                 <span class="test-speed"><span class="placeholder"></span></span>
-            </div>
+            </summary>
             <div class="test-card-chart">
                 <div class="test-box-plot" data-tooltip-target="boxplot"></div>
             </div>
-            <div class="accordion-header">
-                <span class="accordion-label">Details</span>
-                <span class="accordion-icon"></span>
-            </div>
-            <div class="accordion-content">
+            <div class="test-evidence">
                 <div class="test-stats"></div>
                 <div class="test-chart-label">Speed over time</div>
                 <div class="test-chart"></div>
@@ -1224,11 +1289,6 @@
                 </table>
             </div>
         `;
-
-        // Add click handler for accordion
-        card.querySelector('.accordion-header').addEventListener('click', () => {
-            card.classList.toggle('expanded');
-        });
 
         return card;
     }
@@ -1252,7 +1312,7 @@
                     ${samples.map((s, i) => `
                         <tr>
                             <td>${i + 1}</td>
-                            <td>${s.rttMs.toFixed(1)} ms</td>
+                            <td>${Number.isFinite(s.rttMs) ? `${s.rttMs.toFixed(1)} ms` : 'Below timer resolution'}</td>
                         </tr>
                     `).join('')}
                 </tbody>
@@ -1321,13 +1381,13 @@
         // Handle unavailable state (WebRTC failed)
         if (packetLoss.unavailable) {
             const errorMsg = `Unable to perform measurement: ${packetLoss.reason || 'Unknown error'}`;
-            const naMarker = '<span class="na-marker"></span>';
+            const naMarker = '<span class="na-marker">Not measured</span>';
             if (elements.packetLossValue) {
                 elements.packetLossValue.innerHTML = naMarker;
                 elements.packetLossValue.classList.add('error');
             }
             if (elements.packetLossBadge) {
-                elements.packetLossBadge.textContent = 'Error';
+                elements.packetLossBadge.textContent = 'Not measured';
             }
             if (elements.packetLossFill) {
                 elements.packetLossFill.style.width = '0%';
@@ -1336,7 +1396,7 @@
                 elements.packetLossDetail.textContent = errorMsg;
             }
             if (elements.packetsReceived) {
-                elements.packetsReceived.textContent = errorMsg;
+                elements.packetsReceived.textContent = 'Not measured';
             }
             if (elements.rttMin) elements.rttMin.innerHTML = naMarker;
             if (elements.rttMedian) elements.rttMedian.innerHTML = naMarker;
@@ -1508,6 +1568,7 @@
         if (!Number.isFinite(state.summary?.packetLossPercent)) {
             return null;
         }
+        if (!Number.isFinite(state.summary.latencyUnloadedMs) || !Number.isFinite(state.summary.jitterMs)) return null;
 
         const values = [
             Math.round(state.summary.downloadMbps * 10),
@@ -1555,9 +1616,10 @@
         // Sample arrays with delta encoding (all samples)
         const dl = encodeSamplesDelta(state.downloadSamples.map(s => s.mbps));
         const ul = encodeSamplesDelta(state.uploadSamples.map(s => s.mbps));
-        const latU = encodeSamplesDelta(state.latencySamples.filter(s => s.condition === 'unloaded').map(s => s.rttMs));
-        const latD = encodeSamplesDelta(state.latencySamples.filter(s => s.condition === 'download').map(s => s.rttMs));
-        const latL = encodeSamplesDelta(state.latencySamples.filter(s => s.condition === 'upload').map(s => s.rttMs));
+        const validLatency = state.latencySamples.filter(s => !s.timingResolutionLimited && Number.isFinite(s.rttMs));
+        const latU = encodeSamplesDelta(validLatency.filter(s => s.condition === 'unloaded').map(s => s.rttMs));
+        const latD = encodeSamplesDelta(validLatency.filter(s => s.condition === 'download').map(s => s.rttMs));
+        const latL = encodeSamplesDelta(validLatency.filter(s => s.condition === 'upload').map(s => s.rttMs));
 
         // Loss distribution (10 segments) with delta encoding
         const lossDist = encodeSamplesDelta(lp?.lossDistribution || []);
@@ -2017,21 +2079,23 @@
         if (results.downloadSamples?.length >= 2 && elements.downloadSparkline) {
             const width = elements.downloadSparkline.clientWidth || 150;
             Charts.sparkline(elements.downloadSparkline, results.downloadSamples, {
-                width, height: 32,
+                width, height: 136, showAxes: true,
                 strokeColor: 'var(--color-download)',
                 fillColor: 'var(--color-download)',
-                fillOpacity: 0.15, strokeWidth: 1.5, dotRadius: 2
+                fillOpacity: 0.035, strokeWidth: 1.5, dotRadius: 0
             });
+            updateTransferRange('download', results.downloadSamples);
         }
 
         if (results.uploadSamples?.length >= 2 && elements.uploadSparkline) {
             const width = elements.uploadSparkline.clientWidth || 150;
             Charts.sparkline(elements.uploadSparkline, results.uploadSamples, {
-                width, height: 32,
+                width, height: 136, showAxes: true,
                 strokeColor: 'var(--color-upload)',
                 fillColor: 'var(--color-upload)',
-                fillOpacity: 0.15, strokeWidth: 1.5, dotRadius: 2
+                fillOpacity: 0.035, strokeWidth: 1.5, dotRadius: 0
             });
+            updateTransferRange('upload', results.uploadSamples);
         }
 
         // Render unloaded latency box plot
@@ -2239,6 +2303,9 @@
         }
 
         publishSharedStageOutcomes(results);
+        state.evidence = { ...results, sharedResult: true, stageOutcomes: state.stageOutcomes };
+        window.NetspeedEvidence?.setResults(state.evidence);
+        if (elements.downloadButton) elements.downloadButton.disabled = false;
         showToast('Viewing shared speed test results', 3000);
     }
 
@@ -2257,7 +2324,7 @@
 
         const shareText = `Download: ${state.summary.downloadMbps.toFixed(1)} Mbps | ` +
                          `Upload: ${state.summary.uploadMbps.toFixed(1)} Mbps | ` +
-                         `Latency: ${state.summary.latencyUnloadedMs.toFixed(1)} ms`;
+                         `Latency: ${Number.isFinite(state.summary.latencyUnloadedMs) ? state.summary.latencyUnloadedMs.toFixed(1) + ' ms' : 'N/A'}`;
 
         const shareData = {
             title: 'Speed Test Results',
@@ -2282,7 +2349,7 @@
      * Download results as JSON
      */
     function downloadResults() {
-        const json = SpeedTest.exportResults();
+        const json = state.evidence ? JSON.stringify(state.evidence, null, 2) : SpeedTest.exportResults();
         const blob = new Blob([json], { type: 'application/json' });
         const url = URL.createObjectURL(blob);
 
@@ -2363,7 +2430,10 @@
     function openModal(modalId) {
         const modal = document.getElementById(modalId);
         if (modal) {
+            modal.hidden = false;
+            modal.dataset.returnFocus = document.activeElement?.id || '';
             modal.classList.add('active');
+            elements.modalClose?.focus();
         }
     }
 
@@ -2373,6 +2443,8 @@
     function closeModals() {
         document.querySelectorAll('.modal.active').forEach(modal => {
             modal.classList.remove('active');
+            modal.hidden = true;
+            document.getElementById(modal.dataset.returnFocus)?.focus();
         });
     }
 
@@ -2639,9 +2711,13 @@
 
         if (elements.confidenceWarnings) {
             const warnings = Array.isArray(confidence.warnings) ? confidence.warnings : [];
-            elements.confidenceWarnings.innerHTML = warnings
-                .map(warning => `<div class="confidence-warning">${warning}</div>`)
-                .join('');
+            elements.confidenceWarnings.replaceChildren();
+            for (const warning of warnings) {
+                const item = document.createElement('div');
+                item.className = 'confidence-warning';
+                item.textContent = String(warning);
+                elements.confidenceWarnings.append(item);
+            }
         }
     }
 

@@ -17,6 +17,59 @@ const Charts = (function() {
         return el;
     }
 
+    function terminalColumns(container, fallback = 36) {
+        const measure = document.createElement('span');
+        measure.textContent = '0';
+        measure.style.cssText = 'position:absolute;visibility:hidden;font:inherit';
+        container.appendChild(measure);
+        const cell = measure.getBoundingClientRect().width;
+        measure.remove();
+        return cell && container.clientWidth ? Math.max(12, Math.min(80, Math.floor(container.clientWidth / cell))) : fallback;
+    }
+
+    function terminalTrace(data, columns = 36, rows = 8) {
+        const valid = data.filter(Number.isFinite);
+        if (!valid.length) return 'Not measured';
+        const maximum = Math.max(1, Math.ceil(Math.max(...valid) / 10) * 10);
+        const plotWidth = Math.max(4, columns - 6);
+        const grid = Array.from({ length: rows }, () => Array(plotWidth).fill(' '));
+        const points = valid.map((value, index) => ({ x: Math.round(index / Math.max(1, valid.length - 1) * (plotWidth - 1)), y: Math.max(0, Math.min(rows - 1, Math.round((1 - value / maximum) * (rows - 1)))) }));
+        for (let index = 0; index < points.length; index++) {
+            const point = points[index], previous = points[Math.max(0, index - 1)];
+            const steps = Math.max(Math.abs(point.x - previous.x), Math.abs(point.y - previous.y), 1);
+            for (let step = 0; step <= steps; step++) {
+                const x = Math.round(previous.x + (point.x - previous.x) * step / steps);
+                const y = Math.round(previous.y + (point.y - previous.y) * step / steps);
+                grid[y][x] = '*';
+            }
+        }
+        return grid.map((cells, index) => {
+            const tick = index === 0 ? maximum : index === rows - 1 ? 0 : null;
+            const label = tick === null ? '' : tick >= 10000 ? `${Math.round(tick / 1000)}k` : String(tick);
+            return `${label.slice(-4).padStart(4)} |${cells.join('')}`;
+        }).join('\n');
+    }
+
+    function terminalBoxPlot(data, columns = 24, unit = 'ms') {
+        const sorted = data.filter(Number.isFinite).sort((a, b) => a - b);
+        if (sorted.length < 2) return { text: 'Not enough data', stats: null };
+        const min = sorted[0], max = sorted.at(-1), med = percentile(sorted, 50);
+        const line = Array(columns).fill(' ');
+        const position = value => Math.round((value - min) / (max - min || 1) * (columns - 1));
+        line.fill('-'); line[0] = '|'; line[columns - 1] = '|';
+        line[position(percentile(sorted, 25))] = '[';
+        line[position(percentile(sorted, 75))] = ']';
+        line[position(med)] = '+';
+        return { text: `${med.toFixed(1)} ${unit}\n${line.join('')}\n${min.toFixed(1)} - ${max.toFixed(1)} ${unit}`, stats: { min, max, median: med, average: sorted.reduce((sum, value) => sum + value, 0) / sorted.length } };
+    }
+
+    function showTerminalPlot(container, text) {
+        const pre = document.createElement('pre');
+        pre.className = 'terminal-plot'; pre.textContent = text;
+        container.replaceChildren(pre);
+        return pre;
+    }
+
     /**
      * Create a sparkline chart
      * @param {HTMLElement} container - Container element
@@ -24,6 +77,7 @@ const Charts = (function() {
      * @param {Object} options - Chart options
      */
     function sparkline(container, data, options = {}) {
+        if (document.body?.dataset?.interface === 'phosphor') return showTerminalPlot(container, terminalTrace(data || [], terminalColumns(container)));
         const {
             width = 120,
             height = 40,
@@ -32,7 +86,8 @@ const Charts = (function() {
             fillOpacity = 0.1,
             strokeWidth = 2,
             dotRadius = 0,
-            animate = true
+            animate = true,
+            showAxes = false
         } = options;
 
         if (!data || data.length === 0) {
@@ -47,13 +102,24 @@ const Charts = (function() {
             class: 'sparkline'
         });
 
-        const min = Math.min(...data);
-        const max = Math.max(...data);
+        const min = showAxes ? 0 : Math.min(...data);
+        const observedMax = Math.max(...data);
+        const max = showAxes ? Math.max(1, Math.ceil(observedMax / 10) * 10) : observedMax;
         const range = max - min || 1;
 
-        const padding = 4;
+        const padding = showAxes ? 28 : 4;
         const chartWidth = width - padding * 2;
         const chartHeight = height - padding * 2;
+
+        if (showAxes) {
+            for (const tick of [0, max / 2, max]) {
+                const y = padding + chartHeight - ((tick - min) / range) * chartHeight;
+                svg.appendChild(createSVG('line', { x1: padding, y1: y, x2: width - padding, y2: y, stroke: 'var(--rule)', 'stroke-width': 1 }));
+                const label = createSVG('text', { x: padding - 8, y: y + 3, 'text-anchor': 'end', fill: 'var(--muted)', 'font-size': 9 });
+                label.textContent = tick >= 1000 ? `${(tick / 1000).toFixed(1)}k` : `${Math.round(tick)}`;
+                svg.appendChild(label);
+            }
+        }
 
         // Calculate points
         const points = data.map((value, index) => {
@@ -288,6 +354,7 @@ const Charts = (function() {
      * @param {Object} options - Options
      */
     function latencyPlot(container, samples, options = {}) {
+        samples = (samples || []).filter(s => typeof s === 'number' ? Number.isFinite(s) : !s.timingResolutionLimited && Number.isFinite(s.rttMs));
         const {
             width = 300,
             height = 100,
@@ -309,7 +376,7 @@ const Charts = (function() {
             class: 'latency-plot'
         });
 
-        const values = samples.map(s => s.rttMs || s);
+        const values = samples.map(s => typeof s === 'number' ? s : s.rttMs);
         const min = Math.min(...values);
         const max = Math.max(...values);
         const range = max - min || 1;
@@ -347,7 +414,7 @@ const Charts = (function() {
 
         // Plot points
         samples.forEach((sample, index) => {
-            const value = sample.rttMs || sample;
+            const value = typeof sample === 'number' ? sample : sample.rttMs;
             const x = padding.left + (index / (samples.length - 1 || 1)) * chartWidth;
             const y = padding.top + chartHeight - ((value - min) / range) * chartHeight;
 
@@ -516,6 +583,11 @@ const Charts = (function() {
      * @param {Object} options - Chart options
      */
     function boxPlot(container, data, options = {}) {
+        if (document.body?.dataset?.interface === 'phosphor') {
+            const plot = terminalBoxPlot(data || [], terminalColumns(container, 24), options.unit || 'ms');
+            showTerminalPlot(container, plot.text);
+            return plot.stats;
+        }
         const {
             width = 300,
             height = 60,
@@ -777,8 +849,9 @@ const Charts = (function() {
     }
 
     // Add CSS for animations
-    const style = document.createElement('style');
-    style.textContent = `
+    if (typeof document !== 'undefined') {
+        const style = document.createElement('style');
+        style.textContent = `
         @keyframes sparkline-draw {
             to {
                 stroke-dashoffset: 0;
@@ -824,7 +897,8 @@ const Charts = (function() {
             padding: 20px;
         }
     `;
-    document.head.appendChild(style);
+        document.head.appendChild(style);
+    }
 
     // Public API
     return {
@@ -838,7 +912,9 @@ const Charts = (function() {
         updateSparkline,
         formatNumber,
         median,
-        percentile
+        percentile,
+        terminalTrace,
+        terminalBoxPlot
     };
 })();
 
