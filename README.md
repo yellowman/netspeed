@@ -613,6 +613,9 @@ identify the selected provider, measurement contract, and packet topology.
 
 ### Interface notes
 
+[`DESIGN_LANGUAGE.md`](DESIGN_LANGUAGE.md) is the canonical visual system,
+information hierarchy, and evidence-workspace specification for all three views.
+
 - **Standard** is the carrier-style default: a horizontal results header, quiet technical figures, one accent, and a collapsed evidence workspace.
 - **Observatory** shares Standard's visual system and adds a stage rail, timestamps, and a persistent measurement inspector on wide screens. Select a measurement or stage to inspect its evidence.
 - **Phosphor** is a monochrome fixed-cell terminal with selectable **80/132 columns**, character plots, square controls, and F1–F4/Escape navigation. It reflows on smaller screens instead of forcing horizontal scrolling. Its locally served [Glass TTY VT220 font](web/fonts/README.md) is a period reference, not a claim to emulate a particular machine.

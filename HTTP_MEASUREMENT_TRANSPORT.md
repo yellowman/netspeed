@@ -107,7 +107,10 @@ type, payload, framing, chunk size, flush value, exact length, identity content
 coding, and `no-store, no-transform` controls. The native C process fixture and
 browser integration tests advertise nonstandard endpoint paths and query names,
 so qualification proves that clients consume the advertisement rather than
-falling back to hard-coded routes.
+falling back to hard-coded routes. Strict Go, native C, and browser measurements
+also require the advertised proxy-buffer suppression header and value;
+advertising `X-Accel-Buffering: no` without returning it is a verification
+failure, not an optional diagnostic.
 
 Browser scripts cannot set the forbidden `Accept-Encoding` request header. The
 browser instead requests `no-store, no-transform`, sends
@@ -296,11 +299,29 @@ The Go, native C, and browser Netspeed clients:
 Firefox and privacy-hardened browsers may quantize `performance.now()` enough
 that a very fast echo begins and ends in the same visible timer tick. Such a
 message is valid rather than a transport failure. The browser preserves it as
-`rawRttMs: 0`, reports the positive statistics-compatible representation floor
-`rttMs: 0.01`, and sets `timingResolutionLimited: true` plus
-`timerRepresentationFloorMs: 0.01`. The transport evidence counts these as
-`timingResolutionLimitedMessages`. A negative or non-finite duration still
-disables WebSocket and falls back to HTTP. The browser keeps the matching
+censored, below-resolution evidence without inventing a positive duration:
+
+```json
+{
+  "rawRttMs": 0,
+  "rttMs": null,
+  "timingResolutionLimited": true
+}
+```
+
+The probe resolves normally and does not select HTTP merely because the clock
+did not advance. The full result retains the observation, but numeric latency
+and jitter statistics and resolved-sample adequacy counts exclude it.
+Confidence and measurement notes expose the limitation. If no resolved samples
+remain after preprocessing, the browser's corresponding summary values are
+`null`, not fabricated measurements. The statistical and availability rules
+are defined in
+[`MEASUREMENT_PROTOCOL_V2.md`](MEASUREMENT_PROTOCOL_V2.md#4-latency-and-continuous-loaded-overlap).
+
+Transport evidence counts zero-tick echoes, including unreported transport
+warmups, as `httpTransport.latency.webSocket.timingResolutionLimitedMessages`.
+A negative or non-finite duration still disables WebSocket and falls back to
+HTTP. The browser keeps the matching
 request pending until payload and timing validation finish, ensuring any
 failure rejects the caller instead of stranding the test in the latency stage.
 
@@ -317,8 +338,12 @@ connected socket for the WebSocket exchange.
 
 The daemon evaluates a browser `Origin` before transfer admission. The
 configured CORS allowlist governs cross-origin WebSocket handshakes; when Fetch
-CORS is disabled, `/__ws` still permits only a same-host browser Origin. Native
-clients normally omit Origin and remain unaffected.
+CORS is disabled, `/__ws` still requires a same-origin browser Origin: matching
+scheme, case-insensitive hostname, and effective port (80 for HTTP, 443 for
+HTTPS when omitted). It does not equate HTTP and HTTPS on the same host.
+Forwarded scheme/host headers are honored only for configured trusted proxy
+peers, which must overwrite them; repeated values or comma-separated forwarding
+chains are rejected. Native clients normally omit Origin and remain unaffected.
 
 The WebSocket remains optional. Older daemons omit the three fields, strict
 clients use HTTP directly, and Cloudflare compatibility mode never infers this

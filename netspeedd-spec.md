@@ -1025,22 +1025,30 @@ message failure permanently selects zero-byte `/__ping`, then
 `/__down?bytes=0` when needed, while one selected throughput window is active.
 The browser caps load at five workers to reserve one conventional HTTP/1.1
 origin connection for fallback. A probe is
-retained only if at least one transfer body remains active for
-the entire probe. Upload receipt wait does not count as outbound load. The daemon
+retained only if directional load remains continuously active for the entire
+probe under the client-side overlap rules in
+[`MEASUREMENT_PROTOCOL_V2.md`](MEASUREMENT_PROTOCOL_V2.md#4-latency-and-continuous-loaded-overlap).
+The daemon
 accepts opaque `during`/`measId` labels for logging but does not claim overlap on
 the client's behalf.
 
 ### 2.4 shared summaries
 
 Supported clients use the R-7 p90 of valid fixed-window throughput values;
-median latency after warmup removal and conservative IQR filtering; R-7
-percentiles; p90-minus-median jitter; and population coefficient of variation.
+unloaded median latency after warmup removal and conservative IQR filtering;
+R-7 p90 loaded latency after continuous-overlap proof and filtering;
+p90-minus-median unloaded jitter; and population coefficient of variation.
 Missing packet loss remains null and grades that require it are incomplete.
 
 ## 3. frontend data model
 
-The detailed browser model lives in `netspeed-ui-spec.md`. The current fields
-that the daemon must preserve on the wire are:
+The canonical wire contracts live in
+[`MEASUREMENT_PROTOCOL_V2.md`](MEASUREMENT_PROTOCOL_V2.md) and
+[`HTTP_MEASUREMENT_TRANSPORT.md`](HTTP_MEASUREMENT_TRANSPORT.md). Browser
+orchestration and result handling live in [`web/js/speedtest.js`](web/js/speedtest.js).
+[`DESIGN_LANGUAGE.md`](DESIGN_LANGUAGE.md) governs visual presentation and
+evidence access. These client result fields summarize transfer observations and
+daemon packet counters; they are not additional daemon endpoint schemas:
 
 ```ts
 type ThroughputSample = {

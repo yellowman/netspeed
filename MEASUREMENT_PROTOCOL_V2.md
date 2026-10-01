@@ -249,11 +249,29 @@ excludes setup. Cross-origin HTTP deployments must preserve
 `Timing-Allow-Origin`.
 
 Reduced browser timer precision can make an otherwise valid, very fast
-WebSocket echo produce a raw zero-tick interval. The browser records
-`rawRttMs: 0`, `timingResolutionLimited: true`, and a documented positive
-`rttMs` representation floor of 0.01 ms so the sample remains visible to the
-positive-only statistics pipeline. Negative and non-finite intervals are still
-errors and trigger the normal permanent HTTP fallback.
+WebSocket echo produce a raw zero-tick interval. The browser completes the
+matching probe without treating it as a transport failure and preserves the
+observation as censored, below-resolution evidence:
+
+```json
+{
+  "rawRttMs": 0,
+  "rttMs": null,
+  "timingResolutionLimited": true
+}
+```
+
+No positive RTT is invented. These observations remain in the full result and
+raw evidence, but are excluded from latency and jitter statistics, valid-sample
+warmup removal, and resolved-sample adequacy counts. If no resolved latency
+samples remain after preprocessing, the browser reports the corresponding
+latency and jitter summaries as `null`; grades requiring those measurements are
+`Incomplete`. Censored measured samples also qualify the confidence timing gate
+and appear in measurement notes. The transport evidence counts zero-tick echoes
+under `httpTransport.latency.webSocket.timingResolutionLimitedMessages`,
+including unreported transport warmups. A censored echo alone does not trigger
+HTTP fallback. Negative and non-finite intervals are still errors and trigger
+the normal permanent fallback.
 
 Accepted samples label `probeTransport`, `probeMethod`, `probePath`,
 `webSocketProtocol`, and any `probeFallbackReason`. Cloudflare compatibility
@@ -287,21 +305,28 @@ instead of extending its nominal duration indefinitely.
 
 ## 5. shared statistics
 
-The Go and browser clients use the same definitions:
+The Go, native C, and browser clients use the same definitions:
 
-- retain finite, positive measurements;
-- remove the configured warmup samples before latency filtering;
+- retain finite, positive measurements for numeric statistics; preserve
+  censored browser observations separately as evidence;
+- remove the first two valid unloaded samples before latency filtering, in
+  addition to excluding the unreported transport warmup;
 - calculate percentiles with the R-7 interpolation rule;
 - apply a 1.5-IQR fence only when it leaves a useful sample set, otherwise keep
   the original set;
 - headline throughput: R-7 p90 of window Mbps values;
-- latency: median of the filtered set;
-- jitter: p90 minus median;
+- unloaded latency: R-7 median of the filtered unloaded set;
+- download-loaded and upload-loaded latency: R-7 p90 of each filtered set of
+  continuously overlap-proven probes; no unloaded warmup removal applies;
+- jitter: unloaded p90 minus unloaded median after warmup removal and filtering;
 - variability: population standard deviation divided by the mean, expressed as
   a percentage.
 
-The shared implementations are in `internal/measurement/stats.go` and the
-matching functions in `web/js/speedtest.js`.
+The shared implementations are in `internal/measurement/stats.go`,
+`netspeed.c/src/stats.c`, and the matching functions in `web/js/speedtest.js`.
+Browser evidence figures may also show medians or untrimmed distributions, but
+must label them separately rather than silently substituting them for these
+summary fields.
 
 ## 6. exact-size packet protocol
 
