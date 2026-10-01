@@ -1,0 +1,164 @@
+name: Qualification
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_call:
+    inputs:
+      gate:
+        description: Run one qualification gate, or all gates
+        type: string
+        default: all
+
+permissions:
+  contents: read
+
+jobs:
+  source-contract:
+    if: inputs.gate == '' || inputs.gate == 'all' || inputs.gate == 'source-contract'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version: '1.27.0'
+      - run: |
+          make fmt-check
+          make hygiene
+          make docs-check
+          make make-portability-check
+          make workflow-contract-check
+          make release-tools
+          make mod-tidy-check
+          go mod verify
+
+  go-minimum:
+    if: inputs.gate == '' || inputs.gate == 'all' || inputs.gate == 'go-minimum'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff
+        with:
+          go-version: '1.25.0'
+      - run: make test-go
+
+  go-release:
+    if: inputs.gate == '' || inputs.gate == 'all' || inputs.gate == 'go-release'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff
+        with:
+          go-version: '1.27.0'
+      - run: |
+          make test-go
+          make vet
+          go install honnef.co/go/tools/cmd/staticcheck@v0.8.1
+          go install golang.org/x/vuln/cmd/govulncheck@v1.8.0
+          make staticcheck
+          make vuln
+
+  race:
+    if: inputs.gate == '' || inputs.gate == 'all' || inputs.gate == 'race'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff
+        with:
+          go-version: '1.27.0'
+      - run: make test-race
+
+  c-client:
+    if: inputs.gate == '' || inputs.gate == 'all' || inputs.gate == 'c-client'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff
+        with:
+          go-version: '1.27.0'
+      - run: sudo apt-get update && sudo apt-get install -y gcc clang libcurl4-openssl-dev zlib1g-dev cmake ninja-build pkg-config libssl-dev
+      - run: |
+          make c-check
+          make c-sanitize
+          make test-parity WEBRTC=no
+      - run: /bin/sh scripts/install_libdatachannel.sh "$RUNNER_TEMP/rtc" "$RUNNER_TEMP/rtc-build"
+      - run: |
+          export PKG_CONFIG_PATH="$RUNNER_TEMP/rtc/lib/pkgconfig:$RUNNER_TEMP/rtc/lib64/pkgconfig"
+          make c-protocol-check WEBRTC_STATIC=yes
+          make c-client WEBRTC=yes WEBRTC_STATIC=yes VERSION="${GITHUB_REF_NAME}" COMMIT="${GITHUB_SHA}" SOURCE_DATE="$(git show -s --format=%cI HEAD)"
+          make integration-c-turn
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: qualified-c-linux-amd64
+          path: bin/netspeed-c
+          if-no-files-found: error
+
+  integration:
+    if: inputs.gate == '' || inputs.gate == 'all' || inputs.gate == 'integration'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff
+        with:
+          go-version: '1.27.0'
+      - run: |
+          make integration
+          make integration-turn
+
+  chromium:
+    if: inputs.gate == '' || inputs.gate == 'all' || inputs.gate == 'chromium'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff
+        with:
+          go-version: '1.27.0'
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '22'
+      - run: |
+          npm install --no-save --package-lock=false @playwright/test@1.55.0
+          npx playwright install --with-deps chromium
+          make web-test
+          make browser-smoke
+
+  windows:
+    if: inputs.gate == '' || inputs.gate == 'all' || inputs.gate == 'windows'
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff
+        with:
+          go-version: '1.27.0'
+      - shell: bash
+        run: |
+          go test ./...
+          go build -mod=readonly -trimpath -o bin/netspeed.exe ./cmd/netspeed
+          go build -mod=readonly -trimpath -o bin/netspeedd.exe ./cmd/netspeedd
+
+  openbsd:
+    if: inputs.gate == '' || inputs.gate == 'all' || inputs.gate == 'openbsd'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      - uses: vmactions/openbsd-vm@5f7b2c933b8846a138361d6843c52af4bef5d945 # v1
+        with:
+          release: '7.8'
+          prepare: pkg_add go curl python3 pkgconf node
+          run: |
+            set -eu
+            make make-portability-check
+            make build WEBRTC=no
+            make test WEBRTC=no
+
+  release-reproducibility:
+    if: inputs.gate == '' || inputs.gate == 'all' || inputs.gate == 'release-reproducibility'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff
+        with:
+          go-version: '1.27.0'
+      - run: sudo apt-get update && sudo apt-get install -y libcurl4-openssl-dev zlib1g-dev pkg-config
+      - run: make release-reproducibility

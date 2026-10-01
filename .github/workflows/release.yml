@@ -1,0 +1,74 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: read
+
+jobs:
+  source-contract:
+    uses: ./.github/workflows/ci.yml
+    with:
+      gate: source-contract
+  go-minimum:
+    uses: ./.github/workflows/ci.yml
+    with:
+      gate: go-minimum
+  go-release:
+    uses: ./.github/workflows/ci.yml
+    with:
+      gate: go-release
+  race:
+    uses: ./.github/workflows/ci.yml
+    with:
+      gate: race
+  c-client:
+    uses: ./.github/workflows/ci.yml
+    with:
+      gate: c-client
+  integration:
+    uses: ./.github/workflows/ci.yml
+    with:
+      gate: integration
+  chromium:
+    uses: ./.github/workflows/ci.yml
+    with:
+      gate: chromium
+  windows:
+    uses: ./.github/workflows/ci.yml
+    with:
+      gate: windows
+  openbsd:
+    uses: ./.github/workflows/ci.yml
+    with:
+      gate: openbsd
+  release-reproducibility:
+    uses: ./.github/workflows/ci.yml
+    with:
+      gate: release-reproducibility
+
+  build-and-publish:
+    needs: [source-contract, go-minimum, go-release, race, c-client, integration, chromium, windows, openbsd, release-reproducibility]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff
+        with:
+          go-version: '1.27.0'
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: qualified-c-linux-amd64
+          path: ${{ runner.temp }}/qualified-c
+      - run: |
+          chmod +x "$RUNNER_TEMP/qualified-c/netspeed-c"
+          python3 scripts/release.py --output "$RUNNER_TEMP/release-a" --c-binary "linux/amd64=$RUNNER_TEMP/qualified-c/netspeed-c" --require-c-platform linux/amd64
+          python3 scripts/release.py --output "$RUNNER_TEMP/release-b" --c-binary "linux/amd64=$RUNNER_TEMP/qualified-c/netspeed-c" --require-c-platform linux/amd64
+          python3 scripts/compare_release_dirs.py "$RUNNER_TEMP/release-a" "$RUNNER_TEMP/release-b"
+      - name: Publish qualified artifacts
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" "$RUNNER_TEMP"/release-a/* --verify-tag --generate-notes

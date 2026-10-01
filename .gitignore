@@ -1,4 +1,11 @@
 # Binaries
+/bin/
+/dist/
+/test-results/
+/playwright-report/
+/node_modules/
+__pycache__/
+*.pyc
 netspeedd
 /netspeed
 *.exe

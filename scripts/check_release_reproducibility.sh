@@ -3,18 +3,19 @@ set -eu
 
 root=$(CDPATH= cd -- "$(dirname "$0")/.." && pwd)
 version=${RELEASE_TEST_VERSION:-v0.0.0-ci}
-tmp=${TMPDIR:-/tmp}/netspeed-release-repro-$$
+tmp=$(mktemp -d "${TMPDIR:-/tmp}/netspeed-release-repro.XXXXXXXX")
 trap 'rm -rf "$tmp"' EXIT HUP INT TERM
 mkdir -p "$tmp/a" "$tmp/b"
 
 cd "$root"
 commit=$(git rev-parse HEAD)
 source_date=$(git show -s --format=%cI HEAD)
-${MAKE:-make} c-client WEBRTC=no VERSION="$version" COMMIT="$commit" SOURCE_DATE="$source_date"
+platform=$(go env GOOS)/$(go env GOARCH)
+${MAKE:-make} -C netspeed.c C_TARGET="$tmp/netspeed-c" WEBRTC=no VERSION="$version" COMMIT="$commit" SOURCE_DATE="$source_date" build
 python3 scripts/release.py --version "$version" --output "$tmp/a" \
-  --c-binary linux/amd64=bin/netspeed-c --require-c-platform linux/amd64
+  --c-binary "$platform=$tmp/netspeed-c" --require-c-platform "$platform"
 python3 scripts/release.py --version "$version" --output "$tmp/b" \
-  --c-binary linux/amd64=bin/netspeed-c --require-c-platform linux/amd64
+  --c-binary "$platform=$tmp/netspeed-c" --require-c-platform "$platform"
 python3 scripts/compare_release_dirs.py "$tmp/a" "$tmp/b"
 
 # Deterministic metadata must identify the compiler, never the build host.
