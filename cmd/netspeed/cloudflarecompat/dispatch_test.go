@@ -234,7 +234,7 @@ func TestDispatchExplicitNetspeedUsesStrictClient(t *testing.T) {
 	if got := os.Getenv("NETSPEED_SELECTED_PROVIDER"); got != providerNetspeed {
 		t.Fatalf("selected provider=%q", got)
 	}
-	if len(os.Args) != 3 || os.Args[1] != "https://strict.example" || os.Args[2] != "--json" {
+	if len(os.Args) != 3 || os.Args[1] != "--json" || os.Args[2] != "https://strict.example" {
 		t.Fatalf("strict args=%#v", os.Args)
 	}
 }

@@ -51,6 +51,8 @@ typedef struct {
     bool upload_only;
     bool skip_packet;
     bool insecure;
+    long timeout_ms;
+    double deadline;
 } cf_options;
 
 typedef struct {
@@ -110,6 +112,9 @@ typedef struct {
     CURL *easy;
     const cf_options *options;
     char error[CURL_ERROR_SIZE];
+    double window_until;
+    bool window_upload;
+    uint64_t window_bytes;
 } cf_http_session;
 
 typedef struct {
@@ -169,6 +174,8 @@ typedef struct {
 typedef struct {
     bool available;
     double mbps;
+    uint64_t window_bytes;
+    double window_seconds;
     doubles samples;
     const char *evidence;
     char error[256];
@@ -791,6 +798,29 @@ static const char *http_protocol_name(long version)
     }
 }
 
+static int track_window_progress(void *opaque, curl_off_t download_total,
+                                 curl_off_t downloaded, curl_off_t upload_total,
+                                 curl_off_t uploaded)
+{
+    (void)download_total;
+    (void)upload_total;
+    cf_http_session *session = opaque;
+    if (session->window_until > 0 && mono() < session->window_until) {
+        curl_off_t bytes = session->window_upload ? uploaded : downloaded;
+        if (bytes > 0) session->window_bytes = (uint64_t)bytes;
+    }
+    return 0;
+}
+
+static long remaining_timeout_ms(const cf_options *options)
+{
+    double remaining = options->deadline > 0
+                           ? (options->deadline - mono()) * 1000.0
+                           : (double)options->timeout_ms;
+    if (remaining < 1) return 1;
+    return (long)ceil(remaining);
+}
+
 static int cf_http_request(cf_http_session *session, const char *method,
                            const char *path, const char *query,
                            uint64_t upload_bytes, int64_t exact_body_bytes,
@@ -803,6 +833,10 @@ static int cf_http_request(cf_http_session *session, const char *method,
         return CF_ERROR;
     }
     response_init(response);
+    if (session->options->deadline > 0 && mono() >= session->options->deadline) {
+        snprintf(session->error, sizeof(session->error), "%s", "test timeout expired");
+        return CF_ERROR;
+    }
     char *url = join_url(session->options->server, path, query);
     if (!url) {
         snprintf(session->error, sizeof(session->error), "%s",
@@ -835,8 +869,13 @@ static int cf_http_request(cf_http_session *session, const char *method,
     curl_easy_setopt(easy, CURLOPT_HTTPHEADER, headers);
     curl_easy_setopt(easy, CURLOPT_FOLLOWLOCATION, 0L);
     curl_easy_setopt(easy, CURLOPT_NOSIGNAL, 1L);
-    curl_easy_setopt(easy, CURLOPT_TIMEOUT, 30L);
-    curl_easy_setopt(easy, CURLOPT_CONNECTTIMEOUT, 15L);
+    curl_easy_setopt(easy, CURLOPT_TIMEOUT_MS, remaining_timeout_ms(session->options));
+    curl_easy_setopt(easy, CURLOPT_CONNECTTIMEOUT_MS, remaining_timeout_ms(session->options));
+    session->window_bytes = 0;
+    session->window_upload = upload;
+    curl_easy_setopt(easy, CURLOPT_NOPROGRESS, 0L);
+    curl_easy_setopt(easy, CURLOPT_XFERINFOFUNCTION, track_window_progress);
+    curl_easy_setopt(easy, CURLOPT_XFERINFODATA, session);
     curl_easy_setopt(easy, CURLOPT_TCP_NODELAY, 1L);
     curl_easy_setopt(easy, CURLOPT_TCP_KEEPALIVE, 1L);
     curl_easy_setopt(easy, CURLOPT_FORBID_REUSE, 0L);
@@ -928,7 +967,7 @@ static int http_get_buffer(const cf_options *options, const char *url,
     curl_easy_setopt(easy, CURLOPT_HTTPHEADER, headers);
     curl_easy_setopt(easy, CURLOPT_FOLLOWLOCATION, 0L);
     curl_easy_setopt(easy, CURLOPT_NOSIGNAL, 1L);
-    curl_easy_setopt(easy, CURLOPT_TIMEOUT, 30L);
+    curl_easy_setopt(easy, CURLOPT_TIMEOUT_MS, remaining_timeout_ms(options));
     curl_easy_setopt(easy, CURLOPT_ACCEPT_ENCODING, "identity");
     curl_easy_setopt(easy, CURLOPT_HTTP_CONTENT_DECODING, 0L);
     curl_easy_setopt(easy, CURLOPT_SSL_VERIFYPEER, options->insecure ? 0L : 1L);
@@ -967,6 +1006,24 @@ static int parse_size_value(const char *text, size_t *value)
     return 0;
 }
 
+static long parse_cf_timeout(const char *text)
+{
+    if (!text || !*text) return -1;
+    errno = 0;
+    char *end = NULL;
+    double value = strtod(text, &end);
+    if (errno || end == text || !isfinite(value) || value <= 0) return -1;
+    double multiplier = 1000;
+    if (*end == '\0' || strcmp(end, "s") == 0) multiplier = 1000;
+    else if (strcmp(end, "ms") == 0) multiplier = 1;
+    else if (strcmp(end, "m") == 0) multiplier = 60000;
+    else if (strcmp(end, "h") == 0) multiplier = 3600000;
+    else return -1;
+    double milliseconds = value * multiplier;
+    if (milliseconds < 1 || milliseconds > 86400000) return -1;
+    return (long)milliseconds;
+}
+
 static int parse_provider(cf_options *options, int *argc, char ***argv)
 {
     char **arguments = *argv;
@@ -979,6 +1036,7 @@ static int parse_provider(cf_options *options, int *argc, char ***argv)
     options->download_payload = "auto";
     options->download_framing = "auto";
     options->download_flush = "auto";
+    options->timeout_ms = 60000;
 
     for (int index = 1; index < *argc; index++) {
         char *argument = arguments[index];
@@ -1066,10 +1124,13 @@ static int parse_provider(cf_options *options, int *argc, char ***argv)
                    strcmp(argument, "-u") == 0) {
             options->upload_only = true;
         } else if (strncmp(argument, "--timeout=", 10) == 0) {
-            /* Strict mode consumes the value if provider selection falls back. */
+            options->timeout_ms = parse_cf_timeout(argument + 10);
+            if (options->timeout_ms <= 0) return -1;
         } else if (strcmp(argument, "--timeout") == 0 ||
                    strcmp(argument, "-t") == 0) {
             if (index + 1 >= *argc) return -1;
+            options->timeout_ms = parse_cf_timeout(arguments[index + 1]);
+            if (options->timeout_ms <= 0) return -1;
             arguments[output++] = arguments[index++];
             arguments[output++] = arguments[index];
             continue;
@@ -1762,6 +1823,7 @@ static void *load_worker(void *opaque)
     load_state *state = opaque;
     cf_http_session session;
     cf_http_session_init(&session, state->options);
+    session.window_until = state->until;
     if (!session.easy) {
         pthread_mutex_lock(&state->mutex);
         state->failed = true;
@@ -1784,7 +1846,9 @@ static void *load_worker(void *opaque)
             break;
         }
         pthread_mutex_lock(&state->mutex);
-        state->completed += state->bytes;
+        /* Count bytes observed inside the common window, accepting them only
+         * after the full transfer has passed its response contract. */
+        state->completed += session.window_bytes;
         if (dpush(&state->samples, mbps) != 0) {
             state->failed = true;
             snprintf(state->error, sizeof(state->error), "%s",
@@ -2117,7 +2181,9 @@ static speed_result direction(const cf_options *options,
         return result;
     }
     result.available = true;
-    result.mbps = percentile(&state.samples, 0.9);
+    result.window_bytes = state.completed;
+    result.window_seconds = seconds;
+    result.mbps = (double)state.completed * 8.0 / seconds / 1000000.0;
     result.samples = state.samples;
     result.evidence = upload ? "client-observed-complete-body"
                              : "exact-response-byte-count";
@@ -2212,6 +2278,8 @@ static void print_speed_json(const speed_result *result, const char *fallback_ev
     printf("{\"available\":%s,\"mbps\":",
            result->available ? "true" : "false");
     if (result->available) printf("%.6f", result->mbps); else fputs("null", stdout);
+    printf(",\"windowBytes\":%" PRIu64 ",\"windowSeconds\":%.6f",
+           result->window_bytes, result->window_seconds);
     fputs(",\"samplesMbps\":", stdout);
     json_doubles(&result->samples);
     fputs(",\"evidence\":", stdout);
@@ -2387,6 +2455,7 @@ int ns_cloudflare_dispatch(int *argc, char ***argv)
         if (strcmp((*argv)[index], "--help") == 0 ||
             strcmp((*argv)[index], "-h") == 0 ||
             strcmp((*argv)[index], "--version") == 0 ||
+            strcmp((*argv)[index], "-V") == 0 ||
             strcmp((*argv)[index], "-version") == 0) {
             return -1;
         }
@@ -2405,6 +2474,7 @@ int ns_cloudflare_dispatch(int *argc, char ***argv)
         fprintf(stderr, "netspeed: failed to initialize libcurl\n");
         return 1;
     }
+    options.deadline = mono() + (double)options.timeout_ms / 1000.0;
     if (strcasecmp(options.provider, "auto") == 0) {
         bool netspeed = false;
         bool incompatible = false;

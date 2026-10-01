@@ -62,12 +62,14 @@ type probeResult struct {
 }
 
 type sampleSummary struct {
-	Available bool      `json:"available"`
-	BPS       *float64  `json:"bps,omitempty"`
-	Mbps      *float64  `json:"mbps,omitempty"`
-	Samples   []float64 `json:"samplesMbps,omitempty"`
-	Evidence  string    `json:"evidence,omitempty"`
-	Error     string    `json:"error,omitempty"`
+	Available     bool      `json:"available"`
+	BPS           *float64  `json:"bps,omitempty"`
+	Mbps          *float64  `json:"mbps,omitempty"`
+	Samples       []float64 `json:"samplesMbps,omitempty"`
+	Evidence      string    `json:"evidence,omitempty"`
+	Error         string    `json:"error,omitempty"`
+	WindowBytes   int64     `json:"windowBytes,omitempty"`
+	WindowSeconds float64   `json:"windowSeconds,omitempty"`
 }
 
 type latencySummary struct {
@@ -181,7 +183,7 @@ func setIdentity(provider, contract, topology string) {
 
 func hasHelpOrVersion(args []string) bool {
 	for _, a := range args {
-		if a == "-h" || a == "--help" || a == "-version" || a == "--version" {
+		if a == "-h" || a == "--help" || a == "-V" || a == "-version" || a == "--version" {
 			return true
 		}
 	}
@@ -200,6 +202,7 @@ func parseOptions(args []string) (options, []string, error) {
 	stripped := make([]string, 0, len(args))
 	serverExplicit := false
 	positionalServer := false
+	var positional []string
 	take := func(i *int, name string) (string, error) {
 		if *i+1 >= len(args) {
 			return "", fmt.Errorf("%s requires a value", name)
@@ -365,10 +368,15 @@ func parseOptions(args []string) (options, []string, error) {
 				}
 				o.Server = a
 				positionalServer = true
+				positional = append(positional, a)
+				continue
 			}
 			stripped = append(stripped, a)
 		}
 	}
+	// flag.Parse stops at the first positional argument. Preserve the URL at
+	// the end so options following it have the same meaning for both engines.
+	stripped = append(stripped, positional...)
 	if v := os.Getenv("NETSPEED_PROVIDER"); !o.ProviderExplicit && v != "" {
 		o.Provider = strings.ToLower(strings.TrimSpace(v))
 	}
@@ -631,7 +639,8 @@ func measureIdleLatency(ctx context.Context, o options) latencySummary {
 
 type zeroReader struct {
 	remaining int64
-	read      int64
+	read      atomic.Int64
+	onBytes   func(int)
 }
 
 func (z *zeroReader) Read(p []byte) (int, error) {
@@ -646,17 +655,31 @@ func (z *zeroReader) Read(p []byte) (int, error) {
 		p[i] = '0'
 	}
 	z.remaining -= n
-	z.read += n
+	z.read.Add(n)
+	if z.onBytes != nil {
+		z.onBytes(int(n))
+	}
 	return int(n), nil
 }
 
 func transferOnce(ctx context.Context, client *http.Client, o options, upload bool, size int64) (int64, time.Duration, error) {
+	return transferOnceTracked(ctx, client, o, upload, size, nil)
+}
+
+type byteObserver func(int)
+
+func (observe byteObserver) Write(p []byte) (int, error) {
+	observe(len(p))
+	return len(p), nil
+}
+
+func transferOnceTracked(ctx context.Context, client *http.Client, o options, upload bool, size int64, onBytes func(int)) (int64, time.Duration, error) {
 	query := url.Values{"bytes": {strconv.FormatInt(size, 10)}, "id": {strconv.FormatInt(time.Now().UnixNano(), 10)}}
 	start := time.Now()
 	if upload {
 		// Cloudflare's reference client uses ASCII '0' for upload bodies. Preserve
 		// that provider contract while explicitly forbidding content coding.
-		reader := &zeroReader{remaining: size}
+		reader := &zeroReader{remaining: size, onBytes: onBytes}
 		response, err := request(ctx, client, o, http.MethodPost, "/__up", query, reader, size)
 		if err != nil {
 			return 0, 0, err
@@ -675,8 +698,8 @@ func transferOnce(ctx context.Context, client *http.Client, o options, upload bo
 		if err := verifyCloudflareIdentityResponse(response); err != nil {
 			return 0, 0, err
 		}
-		if reader.read != size {
-			return 0, 0, fmt.Errorf("transport consumed %d of %d upload bytes", reader.read, size)
+		if consumed := reader.read.Load(); consumed != size {
+			return 0, 0, fmt.Errorf("transport consumed %d of %d upload bytes", consumed, size)
 		}
 		return size, time.Since(start), nil
 	}
@@ -686,7 +709,11 @@ func transferOnce(ctx context.Context, client *http.Client, o options, upload bo
 		return 0, 0, err
 	}
 	capture := newDistributedCapture(size, cloudflareTransportProbeBytes)
-	received, readErr := io.Copy(io.MultiWriter(io.Discard, capture), io.LimitReader(response.Body, size+1))
+	var destination io.Writer = capture
+	if onBytes != nil {
+		destination = io.MultiWriter(capture, byteObserver(onBytes))
+	}
+	received, readErr := io.Copy(destination, io.LimitReader(response.Body, size+1))
 	closeErr := response.Body.Close()
 	if readErr != nil {
 		return 0, 0, readErr
@@ -743,8 +770,10 @@ func measureDirection(ctx context.Context, client *http.Client, o options, uploa
 
 	runCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
-	deadline := time.Now().Add(windowDuration)
+	windowStart := time.Now()
+	deadline := windowStart.Add(windowDuration)
 	var total atomic.Int64
+	var failed atomic.Bool
 	samplesCh := make(chan float64, concurrency*4)
 	values := make([]float64, 0, 128)
 	var collector sync.WaitGroup
@@ -763,14 +792,19 @@ func measureDirection(ctx context.Context, client *http.Client, o options, uploa
 			defer workers.Done()
 			ready <- struct{}{}
 			for time.Now().Before(deadline) {
-				transferred, elapsed, transferErr := transferOnce(runCtx, client, o, upload, chunk)
-				if transferErr != nil {
-					if runCtx.Err() != nil {
-						return
+				var windowBytes atomic.Int64
+				transferred, elapsed, transferErr := transferOnceTracked(runCtx, client, o, upload, chunk, func(n int) {
+					if time.Now().Before(deadline) {
+						windowBytes.Add(int64(n))
 					}
-					continue
+				})
+				if transferErr != nil {
+					failed.Store(true)
+					return
 				}
-				total.Add(transferred)
+				// Validate the complete response before accepting bytes observed
+				// inside the window, including the final in-flight request.
+				total.Add(windowBytes.Load())
 				samplesCh <- float64(transferred*8) / elapsed.Seconds() / 1e6
 			}
 		}()
@@ -803,8 +837,8 @@ func measureDirection(ctx context.Context, client *http.Client, o options, uploa
 		case <-ctx.Done():
 		}
 	}
-	cancel()
 	workers.Wait()
+	cancel()
 	close(samplesCh)
 	collector.Wait()
 	latencyErrorText := "insufficient warm loaded-latency probes"
@@ -812,17 +846,23 @@ func measureDirection(ctx context.Context, client *http.Client, o options, uploa
 		latencyErrorText += ": " + latencyErr.Error()
 	}
 	loadedLatency := latencySession.Summarize(latencyValues, 3, latencyErrorText)
+	if failed.Load() || ctx.Err() != nil {
+		return sampleSummary{Available: false, Error: "throughput window contained an incomplete or invalid transfer"}, loadedLatency
+	}
 	if len(values) == 0 || total.Load() == 0 {
 		return sampleSummary{Available: false, Error: "no complete transfer samples"}, loadedLatency
 	}
-	p90 := percentile(values, 0.90)
-	bps := p90 * 1e6
+	windowBytes := total.Load()
+	bps := float64(windowBytes) * 8 / windowDuration.Seconds()
+	mbps := bps / 1e6
 	return sampleSummary{
-		Available: true,
-		BPS:       &bps,
-		Mbps:      &p90,
-		Samples:   values,
-		Evidence:  map[bool]string{true: "client-observed-complete-body", false: "exact-response-byte-count"}[upload],
+		Available:     true,
+		BPS:           &bps,
+		Mbps:          &mbps,
+		WindowBytes:   windowBytes,
+		WindowSeconds: windowDuration.Seconds(),
+		Samples:       values,
+		Evidence:      map[bool]string{true: "client-observed-complete-body", false: "exact-response-byte-count"}[upload],
 	}, loadedLatency
 }
 

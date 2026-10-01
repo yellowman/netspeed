@@ -85,6 +85,8 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Server-Timing", "cfReqDur;dur=0.1")
 
     def do_GET(self) -> None:  # noqa: N802
+        if self.server.mode == "slow":  # type: ignore[attr-defined]
+            time.sleep(1)
         parsed = urllib.parse.urlsplit(self.path)
         query = urllib.parse.parse_qs(parsed.query)
         if not self._record_query(query):
@@ -330,6 +332,9 @@ def run(binary: str) -> None:
             ],
         )
         assert download["download"]["available"] is True
+        speed = download["download"]
+        assert abs(speed["mbps"] - speed["windowBytes"] * 8 / speed["windowSeconds"] / 1e6) < 1e-5
+        assert speed["mbps"] > sorted(speed["samplesMbps"])[len(speed["samplesMbps"]) // 2] * 1.3
         assert download["upload"]["available"] is False
         assert download["downloadLoadedLatency"]["connectionReused"] is True
 
@@ -350,6 +355,8 @@ def run(binary: str) -> None:
             ],
         )
         assert upload["upload"]["available"] is True
+        speed = upload["upload"]
+        assert abs(speed["mbps"] - speed["windowBytes"] * 8 / speed["windowSeconds"] / 1e6) < 1e-5
         assert upload["upload"]["evidence"] == "client-observed-complete-body"
         assert upload["download"]["available"] is False
         assert upload["uploadLoadedLatency"]["connectionReused"] is True
@@ -548,6 +555,19 @@ def run(binary: str) -> None:
 
         bad = run_process(binary, ["--provider", "other", "--server", base])
         assert bad.returncode == 2, bad
+
+        version = run_process(binary, ["--provider", "cloudflare", "-V"])
+        assert version.returncode == 0 and "netspeed" in version.stdout.lower(), version
+        for invalid_timeout in ("nan", "0", "-1s"):
+            invalid = run_process(binary, ["--provider", "cloudflare", f"--timeout={invalid_timeout}"])
+            assert invalid.returncode == 2, invalid
+
+        reset_server(server, "slow")
+        for timeout_args in (["-t", "150ms"], ["--timeout", "150ms"], ["--timeout=150ms"]):
+            started = time.monotonic()
+            timed_out = run_process(binary, ["--provider", "cloudflare", "--server", base, *timeout_args])
+            assert timed_out.returncode == 1, timed_out
+            assert time.monotonic() - started < 0.8, timed_out
 
         with server.state_lock:  # type: ignore[attr-defined]
             assert not server.forbidden_queries, server.forbidden_queries  # type: ignore[attr-defined]
