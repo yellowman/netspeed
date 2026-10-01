@@ -64,7 +64,7 @@ for (const variant of [
     },
     {
         path: '/phosphor.html',
-        title: 'NETSPEED.SYSTEM - Phosphor Link Monitor',
+        title: 'NetSpeed Phosphor - Link Analyzer',
         bodyClass: 'phosphor-ui'
     }
 ]) {
@@ -79,13 +79,16 @@ for (const variant of [
         await expect(page.locator('.progress-rail [data-progress-stage]')).toHaveCount(7);
         await expect(page.locator('.measurement-ledger')).toBeVisible();
         await expect(page.locator('#packetsReceived')).toBeVisible();
-        await expect(page.locator('details.extras-details')).toHaveAttribute('open', '');
+        if (variant.bodyClass === 'alternate-ui') await expect(page.locator('#detailsWorkspace')).toHaveAttribute('open', '');
+        else await expect(page.locator('#detailsWorkspace')).not.toHaveAttribute('open', '');
         expect(pageErrors).toEqual([]);
     });
 }
 
 test('progress rail preserves unavailable packet-path outcome after completion', async ({ page }) => {
     test.setTimeout(90_000);
+    const session = await page.context().newCDPSession(page);
+    await session.send('Network.emulateNetworkConditions', { offline: false, latency: 5, downloadThroughput: 10000000, uploadThroughput: 2000000 });
 
     await page.route('**/meta', async route => {
         const response = await route.fetch();
@@ -113,7 +116,9 @@ test('progress rail preserves unavailable packet-path outcome after completion',
     await expect(packetStage).toHaveClass(/is-unavailable/);
     await expect(packetStage).not.toHaveClass(/is-complete/);
     await expect(page.locator('[data-progress-stage="complete"]')).toHaveAttribute('data-outcome', 'succeeded');
-    await expect(page.locator('#packetLossValue')).toHaveText('N/A');
+    await expect(page.locator('#packetLossValue')).toHaveText('Not measured');
+    await expect(page.locator('#packetLossDetail')).toContainText('Unable to perform measurement');
+    await expect(page.locator('#measurementNotes')).toBeVisible();
 
     const outcomes = await page.evaluate(() => window.NetspeedApp.state.stageOutcomes);
     expect(outcomes['packet-loss'].outcome).toBe('unavailable');
@@ -153,6 +158,7 @@ test('progress rail preserves a failed transfer stage instead of completing the 
 });
 
 test('shared-result state survives switching among all presentation variants', async ({ page }) => {
+    await page.route('https://unpkg.com/**', route => route.abort());
     await page.addInitScript(() => {
         Object.defineProperty(navigator, 'share', {
             configurable: true,
@@ -194,8 +200,8 @@ test('shared-result state survives switching among all presentation variants', a
             { condition: 'upload', rttMs: 22 },
             { condition: 'upload', rttMs: 23 }
         ];
-        state.meta = { colo: '', latitude: 0, longitude: 0 };
-        state.locations = [];
+        state.meta = { colo: 'RDM', latitude: 44.05, longitude: -121.31 };
+        state.locations = [{ iata: 'RDM', city: 'Redmond', cca2: 'US', lat: 44.27, lon: -121.17 }];
         document.getElementById('shareBtn').disabled = false;
     });
     await page.locator('#shareBtn').click();
@@ -223,3 +229,53 @@ test('shared-result state survives switching among all presentation variants', a
         await expect(page.locator('#downloadSpeed')).toHaveText('123.4');
     }
 });
+
+for (const path of ['/index.html', '/alternate.html', '/phosphor.html']) {
+    test(`${path} evidence is lossless, keyboard accessible, and responsive`, async ({ page }) => {
+        await page.route('https://unpkg.com/**', route => route.abort());
+        await page.goto(path);
+        await page.waitForFunction(() => Boolean(window.NetspeedApp && window.NetspeedEvidence));
+        await page.evaluate(async () => {
+            await document.fonts.ready;
+            window.NetspeedEvidence.setResults({
+                meta: { measurementProtocolVersion: 2 },
+                latencySamples: [{ condition: 'unloaded', rawRttMs: 0, rttMs: null, timingResolutionLimited: true }],
+                packetLoss: { unavailable: true, reason: 'TURN relay unavailable' },
+                futureTelemetry: { zero: 0, disabled: false, missing: null, text: '<img src=x onerror=alert(1)>' }
+            });
+        });
+        await expect(page.locator('#measurementNotes')).toContainText('Browser timer resolution limited 1 latency sample');
+        await expect(page.locator('#measurementNotes')).toContainText('TURN relay unavailable');
+        await page.getByRole('button', { name: 'View details ↓', exact: true }).click();
+        await page.locator('#tab-latency').click();
+        await page.keyboard.press('ArrowRight');
+        await expect(page.locator('#tab-packet')).toBeFocused();
+        await expect(page.locator('#panel-packet')).toBeVisible();
+        await page.keyboard.press('End');
+        await expect(page.locator('#tab-raw')).toBeFocused();
+        await expect(page.locator('#rawEvidence img')).toHaveCount(0);
+        const raw = await page.locator('#rawEvidence').textContent();
+        expect(JSON.parse(raw).futureTelemetry).toEqual({ zero: 0, disabled: false, missing: null, text: '<img src=x onerror=alert(1)>' });
+
+        for (const width of [1440, 768, 390, 320]) {
+            await page.setViewportSize({ width, height: 1200 });
+            for (const theme of ['light', 'dark']) {
+                await page.evaluate(theme => { document.documentElement.dataset.theme = theme; }, theme);
+                expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+            }
+            if (path === '/phosphor.html') {
+                for (const columns of ['132', '80']) {
+                    await page.locator('#terminalColumns').selectOption(columns);
+                    await expect(page.locator('body')).toHaveAttribute('data-columns', columns);
+                    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+                }
+            }
+        }
+        if (path === '/phosphor.html') {
+            await page.keyboard.press('F2');
+            await expect(page.locator('#panel-throughput')).toBeVisible();
+            await page.keyboard.press('Escape');
+            await expect(page.locator('#detailsWorkspace')).not.toHaveAttribute('open', '');
+        }
+    });
+}

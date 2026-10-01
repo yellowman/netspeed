@@ -115,7 +115,7 @@ integration-c-turn:
 	NETSPEED_E2E_TURN=1 NETSPEED_C_CLIENT="$${NETSPEED_C_CLIENT:-$$(pwd)/${BIN_DIR}/netspeed-c}" ${GO} test -tags=integration -run TestCClientEmbeddedTURNPacketLoss -count=1 -timeout=2m ./tests/integration
 
 browser-smoke:
-	npx playwright test --config tests/browser/playwright.config.js
+	@if test "$$(uname -s)" = OpenBSD; then ${NODE} scripts/check_browser_interfaces.mjs; else npx playwright test --config tests/browser/playwright.config.js; fi
 
 release-reproducibility:
 	/bin/sh scripts/check_release_reproducibility.sh

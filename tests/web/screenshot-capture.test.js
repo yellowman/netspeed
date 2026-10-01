@@ -7,8 +7,7 @@ const path = require('node:path');
 const root = path.resolve(__dirname, '..', '..');
 const script = fs.readFileSync(path.join(root, 'scripts', 'capture_interfaces.mjs'), 'utf8');
 const interfaceJS = fs.readFileSync(path.join(root, 'web', 'js', 'interface.js'), 'utf8');
-const phosphorJS = fs.readFileSync(path.join(root, 'web', 'js', 'phosphor-apple2.js'), 'utf8');
-const phosphorCSS = fs.readFileSync(path.join(root, 'web', 'css', 'phosphor-apple2.css'), 'utf8');
+const sharedCSS = fs.readFileSync(path.join(root, 'web', 'css', 'styles.css'), 'utf8');
 const readme = fs.readFileSync(path.join(root, 'README.md'), 'utf8');
 
 for (const required of [
@@ -40,15 +39,9 @@ for (const forbidden of [
   if (script.includes(forbidden)) throw new Error(`capture script still fabricates presentation state: ${forbidden}`);
 }
 
-if (!/\.hero-metrics-row\s*\{[^}]*repeat\(5,minmax\(0,1fr\)\)/s.test(phosphorCSS)) {
-  throw new Error('Apple II stylesheet does not preserve the five-metric hero row');
-}
-if (/\[class\*="progress"\]/.test(phosphorCSS)) {
-  throw new Error('Apple II stylesheet still treats the structured progress rail as a meter');
-}
-if (/\[class\*="progress"\]/.test(phosphorJS)) {
-  throw new Error('Apple II adapter still inserts text meters after every structured progress element');
-}
+if (!sharedCSS.includes('.primary-metrics') || !sharedCSS.includes('.details-workspace')) throw new Error('missing shared result and evidence layout');
+if (!script.includes("'/usr/local/bin/chrome'")) throw new Error('capture tool must find OpenBSD Chromium');
+if (!script.includes('.sparkline-line { stroke-dashoffset: 0')) throw new Error('capture must reveal chart paths when animation is disabled');
 if (!/querySelectorAll\('\[data-live-clock\]'\)/.test(interfaceJS)) {
   throw new Error('presentation adapter does not populate live clocks');
 }

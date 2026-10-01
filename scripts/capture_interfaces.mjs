@@ -68,9 +68,9 @@ const locations = [
 ];
 
 const captures = [
-  { html: 'index.html', file: 'standard.png', width: 1600, height: 1000, clipHeight: 850 },
-  { html: 'alternate.html', file: 'observatory.png', width: 1600, height: 1000, clipHeight: 1000 },
-  { html: 'phosphor.html', file: 'phosphor.png', width: 1600, height: 1000, clipHeight: 1000 }
+  { html: 'index.html', file: 'standard.png', width: 1440, height: 1200, clipHeight: 1120 },
+  { html: 'alternate.html', file: 'observatory.png', width: 1440, height: 1200, clipHeight: 1120 },
+  { html: 'phosphor.html', file: 'phosphor.png', width: 1440, height: 1200, clipHeight: 1120 }
 ];
 
 const mimeTypes = new Map([
@@ -79,7 +79,8 @@ const mimeTypes = new Map([
   ['.js', 'text/javascript; charset=utf-8'],
   ['.json', 'application/json; charset=utf-8'],
   ['.png', 'image/png'],
-  ['.svg', 'image/svg+xml']
+  ['.svg', 'image/svg+xml'],
+  ['.ttf', 'font/ttf']
 ]);
 
 function parseArguments(argv) {
@@ -115,6 +116,7 @@ function parseArguments(argv) {
 function findBrowser(explicitPath) {
   const candidates = [
     explicitPath,
+    '/usr/local/bin/chrome',
     '/usr/bin/chromium',
     '/usr/bin/chromium-browser',
     '/usr/bin/google-chrome',
@@ -197,6 +199,7 @@ class DevToolsConnection {
     this.nextID = 0;
     this.pending = new Map();
     this.waiters = new Map();
+    this.exceptions = [];
   }
 
   async open() {
@@ -208,11 +211,23 @@ class DevToolsConnection {
     this.socket.addEventListener('close', () => {
       for (const { reject } of this.pending.values()) reject(new Error('DevTools connection closed'));
       this.pending.clear();
+      for (const waiters of this.waiters.values()) {
+        for (const waiter of waiters) {
+          clearTimeout(waiter.timer);
+          waiter.reject(new Error('DevTools connection closed'));
+        }
+      }
+      this.waiters.clear();
     });
   }
 
   handleMessage(event) {
     const message = JSON.parse(event.data);
+    if (message.method === 'Runtime.exceptionThrown') {
+      const details = message.params.exceptionDetails;
+      this.exceptions.push(details.exception?.description || details.text);
+      if (this.exceptions.length > 20) this.exceptions.shift();
+    }
     if (message.id) {
       const pending = this.pending.get(message.id);
       if (!pending) return;
@@ -284,7 +299,7 @@ async function launchBrowser(executablePath) {
     '--remote-debugging-port=0',
     `--user-data-dir=${profileDirectory}`,
     'about:blank'
-  ], { stdio: ['ignore', 'ignore', 'pipe'] });
+  ], { stdio: ['ignore', 'ignore', 'pipe'], detached: process.platform !== 'win32' });
 
   let stderr = '';
   const browserWebSocketURL = await new Promise((resolve, reject) => {
@@ -427,6 +442,7 @@ const captureCSS = `
   html, body { scrollbar-width: none !important; }
   body::-webkit-scrollbar, *::-webkit-scrollbar { display: none !important; }
   .toast, .boxplot-tooltip { display: none !important; }
+  .sparkline-line { stroke-dashoffset: 0 !important; }
   .capture-map { position: relative; width: 100%; height: 100%; overflow: hidden; background: linear-gradient(135deg, #172438, #24364c); }
   .capture-map-grid { position: absolute; inset: 0; background-image: linear-gradient(rgba(255,255,255,.055) 1px, transparent 1px), linear-gradient(90deg, rgba(255,255,255,.055) 1px, transparent 1px); background-size: 32px 32px; }
   .capture-map-label { position: absolute; right: 12px; bottom: 10px; font: 10px monospace; letter-spacing: .14em; color: #93a4b8; }
@@ -455,15 +471,18 @@ function fixtureSource() {
       ['100kB', 453.8, 1762], ['100kB', 472.1, 1694], ['100kB', 481.2, 1662],
       ['1MB', 482.4, 16583], ['1MB', 486.7, 16437], ['1MB', 491.3, 16284]
     ].map(([profile, mbps, durationMs]) => ({
-      direction: 'download', profile, mbps, durationMs, bytes: profile === '1MB' ? 1000000 : 100000
+      direction: 'download', profile, mbps, durationMs: durationMs / 1000, sizeBytes: profile === '1MB' ? 1000000 : 100000, sampleKind: 'baseline'
     }));
     const uploadSamples = [
       ['100kB', 84.8, 9434], ['100kB', 88.9, 8999], ['100kB', 91.7, 8724],
       ['1MB', 89.7, 89186], ['1MB', 92.4, 86580], ['1MB', 95.1, 84122]
     ].map(([profile, mbps, durationMs]) => ({
-      direction: 'upload', profile, mbps, durationMs, bytes: profile === '1MB' ? 1000000 : 100000
+      direction: 'upload', profile, mbps, durationMs: durationMs / 1000, sizeBytes: profile === '1MB' ? 1000000 : 100000, sampleKind: 'baseline'
     }));
-    const unloaded = [11.8, 12.0, 12.1, 12.3, 12.4, 12.6, 12.7, 12.8, 13.0, 13.2]
+    for (const samples of [downloadSamples, uploadSamples]) {
+      for (const sample of samples.slice(3)) Object.assign(sample, { profile: 'window', sampleKind: 'window', durationMs: 1500, sizeBytes: Math.round(sample.mbps * 1e6 / 8 * 1.5), concurrency: 4, chunkBytes: 65536 });
+    }
+    const unloaded = [11.8, 12.0, 12.1, 12.3, 12.6, 12.6, 12.7, 12.8, 13.0, 13.2]
       .map(rttMs => ({ condition: 'unloaded', rttMs, connectionReused: true }));
     const loadedDownload = [24.8, 26.1, 27.9, 29.4, 31.2]
       .map(rttMs => ({ condition: 'download', rttMs, loadOverlapped: true, connectionReused: true }));
@@ -533,6 +552,11 @@ function fixtureSource() {
       bandwidthEstimate,
       networkQualityScore,
       testConfidence,
+      httpTransport: {
+        selection: { downloadPayload: 'random', downloadFraming: 'chunked' },
+        responseVerifications: { download: 6, upload: 6, latency: 20 },
+        latency: { probeTransport: 'websocket', verifiedReusedSamples: 20, unobservableReuseSamples: 0, discardedColdAttempts: 1, discardedUnverifiableAttempts: 0, fallbackUsed: false }
+      },
       startTime: Date.now() - 12000,
       endTime: Date.now()
     };
@@ -737,13 +761,25 @@ async function capturePage(devtools, baseURL, definition, outputDirectory) {
 }
 
 async function stopBrowser(browser) {
-  if (browser.exitCode !== null) return;
-  browser.kill('SIGTERM');
-  await Promise.race([
-    new Promise(resolve => browser.once('exit', resolve)),
-    new Promise(resolve => setTimeout(resolve, 3000))
-  ]);
-  if (browser.exitCode === null) browser.kill('SIGKILL');
+  if (!browser.pid) return;
+  // Chromium can leave renderer children holding the DevTools socket open on
+  // OpenBSD. The browser was started in its own process group; own that entire
+  // group rather than signalling only the parent.
+  const signal = name => {
+    try {
+      if (process.platform === 'win32') browser.kill(name);
+      else process.kill(-browser.pid, name);
+    } catch (error) { if (error.code !== 'ESRCH') throw error; }
+  };
+  signal('SIGTERM');
+  if (browser.exitCode === null && browser.signalCode === null) {
+    await new Promise(resolve => {
+      const timer = setTimeout(resolve, 3000);
+      browser.once('exit', () => { clearTimeout(timer); resolve(); });
+    });
+  }
+  // Also reap surviving renderers after a clean parent exit.
+  signal('SIGKILL');
 }
 
 async function main() {
@@ -795,11 +831,16 @@ async function main() {
     launched?.devtools.close();
     if (launched) await stopBrowser(launched.browser);
     if (launched?.profileDirectory) fs.rmSync(launched.profileDirectory, { recursive: true, force: true });
+    server.closeAllConnections();
     await new Promise(resolve => server.close(resolve));
   }
 }
 
-main().catch(error => {
-  console.error(error.stack || error.message || String(error));
-  process.exitCode = 1;
-});
+export { createServer, findBrowser, launchBrowser, stopBrowser, evaluate, waitForApplication, settlePage, fixtureSource, preloadSource };
+
+if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  main().catch(error => {
+    console.error(error.stack || error.message || String(error));
+    process.exitCode = 1;
+  });
+}

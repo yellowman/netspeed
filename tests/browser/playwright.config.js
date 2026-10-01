@@ -8,7 +8,8 @@ module.exports = {
     use: {
         baseURL: 'http://127.0.0.1:18765',
         browserName: 'chromium',
-        headless: true
+        headless: true,
+        launchOptions: process.env.NETSPEED_BROWSER ? { executablePath: process.env.NETSPEED_BROWSER } : {}
     },
     webServer: {
         command: [
