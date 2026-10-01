@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode"
 
 	"github.com/yellowman/netspeed/cmd/netspeed/client"
 )
@@ -37,9 +38,8 @@ type Config struct {
 
 // Output handles formatted terminal output.
 type Output struct {
-	cfg     Config
-	spinner *Spinner
-	mu      sync.Mutex
+	cfg Config
+	mu  sync.Mutex
 }
 
 // New creates a new Output instance.
@@ -132,8 +132,11 @@ func (o *Output) Progress(stage string, current, total int, value float64) {
 		valueStr = fmt.Sprintf("%.1f", value)
 	}
 
-	label := strings.Title(stage)
-	fmt.Printf("\r%-12s [%s] %3.0f%% %s\033[K", label+":", bar, percent*100, valueStr)
+	label := []rune(stage)
+	if len(label) != 0 {
+		label[0] = unicode.ToUpper(label[0])
+	}
+	fmt.Printf("\r%-12s [%s] %3.0f%% %s\033[K", string(label)+":", bar, percent*100, valueStr)
 }
 
 // ClearProgress clears the progress line.

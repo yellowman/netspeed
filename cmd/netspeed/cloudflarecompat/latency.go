@@ -90,7 +90,7 @@ func (session *cloudflareLatencySession) Probe(ctx context.Context, during strin
 		}
 		return measurement.milliseconds, nil
 	}
-	return 0, fmt.Errorf("Cloudflare latency connection was not reused after %d attempts (last protocol %s)", cloudflareLatencyAttempts, last.protocol)
+	return 0, fmt.Errorf("cloudflare latency connection was not reused after %d attempts (last protocol %s)", cloudflareLatencyAttempts, last.protocol)
 }
 
 func (session *cloudflareLatencySession) attempt(ctx context.Context, during string, sequence, attempt int) (cloudflareLatencyAttempt, error) {
@@ -132,10 +132,10 @@ func (session *cloudflareLatencySession) attempt(ctx context.Context, during str
 		return cloudflareLatencyAttempt{}, err
 	}
 	if len(body) != 0 {
-		return cloudflareLatencyAttempt{}, fmt.Errorf("Cloudflare zero-byte latency probe returned %d body bytes", len(body))
+		return cloudflareLatencyAttempt{}, fmt.Errorf("cloudflare zero-byte latency probe returned %d body bytes", len(body))
 	}
 	if !timing.gotConnection || timing.wroteRequest.IsZero() || timing.firstByte.IsZero() {
-		return cloudflareLatencyAttempt{}, errors.New("Cloudflare latency httptrace did not capture connection, request-write, and first-byte events")
+		return cloudflareLatencyAttempt{}, errors.New("cloudflare latency httptrace did not capture connection, request-write, and first-byte events")
 	}
 	rtt := timing.firstByte.Sub(timing.wroteRequest)
 	if rtt <= 0 {

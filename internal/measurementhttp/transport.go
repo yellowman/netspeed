@@ -221,7 +221,8 @@ func SetDownloadHeaders(header http.Header, options DownloadOptions) {
 
 var (
 	streamBufferPool = sync.Pool{New: func() any {
-		return make([]byte, MaxChunkBytes)
+		buffer := make([]byte, MaxChunkBytes)
+		return &buffer
 	}}
 	payloadSeedCounter atomic.Uint64
 )
@@ -272,9 +273,9 @@ func Stream(writer http.ResponseWriter, options DownloadOptions) (int64, error) 
 		return 0, nil
 	}
 
-	buffer := streamBufferPool.Get().([]byte)
-	defer streamBufferPool.Put(buffer)
-	buffer = buffer[:options.ChunkBytes]
+	pooled := streamBufferPool.Get().(*[]byte)
+	defer streamBufferPool.Put(pooled)
+	buffer := (*pooled)[:options.ChunkBytes]
 
 	var generator splitMix64
 	if options.Payload == PayloadZero {

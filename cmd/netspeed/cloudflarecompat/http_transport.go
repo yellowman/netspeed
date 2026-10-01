@@ -133,7 +133,7 @@ func probeAndNegotiateCloudflareTransport(ctx context.Context, client *http.Clie
 		return summary, fmt.Errorf("read Cloudflare transport probe: %w", err)
 	}
 	if len(body) != cloudflareTransportProbeBytes {
-		return summary, fmt.Errorf("Cloudflare transport probe returned %d of %d bytes", len(body), cloudflareTransportProbeBytes)
+		return summary, fmt.Errorf("cloudflare transport probe returned %d of %d bytes", len(body), cloudflareTransportProbeBytes)
 	}
 
 	payload, payloadEvidence, err := inspectCloudflarePayload(response, body)
@@ -218,10 +218,10 @@ func inspectCloudflarePayload(response *http.Response, body []byte) (string, str
 		return classification, evidence, nil
 	}
 	if claimed != "random" && claimed != "zero" {
-		return "", "", fmt.Errorf("Cloudflare-compatible download returned unsupported X-Netspeed-Payload %q", claimed)
+		return "", "", fmt.Errorf("cloudflare-compatible download returned unsupported X-Netspeed-Payload %q", claimed)
 	}
 	if classification != claimed {
-		return "", "", fmt.Errorf("Cloudflare-compatible download claimed payload %q but body inspection classified it as %q", claimed, classification)
+		return "", "", fmt.Errorf("cloudflare-compatible download claimed payload %q but body inspection classified it as %q", claimed, classification)
 	}
 	return classification, "X-Netspeed-Payload=" + claimed + "; " + evidence, nil
 }
@@ -295,7 +295,7 @@ func inspectCloudflareFraming(response *http.Response, expectedBytes int) (strin
 				return "", "", fmt.Errorf("download claimed chunked framing but HTTP/1.x transfer coding was not chunked")
 			}
 		default:
-			return "", "", fmt.Errorf("Cloudflare-compatible download returned unsupported X-Netspeed-Framing %q", claimed)
+			return "", "", fmt.Errorf("cloudflare-compatible download returned unsupported X-Netspeed-Framing %q", claimed)
 		}
 		return claimed, fmt.Sprintf("X-Netspeed-Framing=%s; protocol=%s", claimed, response.Proto), nil
 	}
