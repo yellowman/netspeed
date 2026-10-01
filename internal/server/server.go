@@ -38,6 +38,10 @@ type Server struct {
 	bandwidthQuota        *limits.ByteQuota
 	offerRateLimiter      *limits.KeyedRateLimiter
 	turnCredentialLimiter *limits.KeyedRateLimiter
+	webSocketRateLimiter  *limits.KeyedRateLimiter
+	webSocketMu           sync.Mutex
+	webSocketClosing      bool
+	webSocketSessions     map[*webSocketSession]struct{}
 	metrics               *serviceMetrics
 	relayStats            telemetry.RelayStatsProvider
 
@@ -104,6 +108,7 @@ func New(cfg *config.Config) (*Server, error) {
 		bandwidthQuota:        limits.NewByteQuota(cfg.ClientBandwidthQuotaBytes, cfg.ClientBandwidthQuotaWindow),
 		offerRateLimiter:      limits.NewKeyedRateLimiter(float64(cfg.WebRTCOfferRatePerMinute)/60.0, cfg.WebRTCOfferBurst),
 		turnCredentialLimiter: limits.NewKeyedRateLimiter(float64(cfg.TurnCredentialRatePerMinute)/60.0, cfg.TurnCredentialBurst),
+		webSocketRateLimiter:  limits.NewKeyedRateLimiter(100, 100),
 		metrics:               &serviceMetrics{},
 	}
 	s.dependencyCloser = func() error {
@@ -285,9 +290,17 @@ func (s *Server) Run() error {
 // dependencies remain open so an in-flight handler can never observe a closed
 // resource; the caller may retry with a longer context or use Close to force it.
 func (s *Server) Shutdown(ctx context.Context) error {
+	sessions := s.stopWebSockets()
 	if s.httpServer != nil {
 		if err := s.httpServer.Shutdown(ctx); err != nil {
 			return err
+		}
+	}
+	for _, done := range sessions {
+		select {
+		case <-done:
+		case <-ctx.Done():
+			return ctx.Err()
 		}
 	}
 	return s.closeDependencies()
@@ -296,11 +309,15 @@ func (s *Server) Shutdown(ctx context.Context) error {
 // Close force-closes HTTP connections and then closes dependencies. It is
 // intended for listener/startup failure paths, not normal graceful shutdown.
 func (s *Server) Close() error {
+	sessions := s.stopWebSockets()
 	var closeErrors []error
 	if s.httpServer != nil {
 		if err := s.httpServer.Close(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			closeErrors = append(closeErrors, err)
 		}
+	}
+	for _, done := range sessions {
+		<-done
 	}
 	if err := s.closeDependencies(); err != nil {
 		closeErrors = append(closeErrors, err)

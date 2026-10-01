@@ -158,7 +158,44 @@ func (s *Server) webSocketOriginAllowed(request *http.Request) bool {
 		incoming.RawQuery != "" || incoming.Fragment != "" {
 		return false
 	}
-	return strings.EqualFold(incoming.Host, strings.TrimSpace(request.Host))
+	scheme := "http"
+	if request.TLS != nil {
+		scheme = "https"
+	}
+	host := request.Host
+	// The trusted edge must overwrite these headers. Ambiguous chains are
+	// rejected rather than selecting an attacker-controlled entry.
+	if s.clientAddress.TrustedPeer(request) {
+		for name, destination := range map[string]*string{
+			"X-Forwarded-Proto": &scheme, "X-Forwarded-Host": &host,
+		} {
+			values := request.Header.Values(name)
+			if len(values) == 0 {
+				continue
+			}
+			if len(values) != 1 || strings.Contains(values[0], ",") {
+				return false
+			}
+			*destination = strings.TrimSpace(values[0])
+		}
+	}
+	if scheme != "http" && scheme != "https" {
+		return false
+	}
+	target, err := url.Parse(scheme + "://" + host)
+	if err != nil || target.User != nil || target.Path != "" || target.RawQuery != "" || target.Fragment != "" || target.Hostname() == "" {
+		return false
+	}
+	port := func(origin *url.URL) string {
+		if origin.Port() != "" {
+			return origin.Port()
+		}
+		if origin.Scheme == "https" {
+			return "443"
+		}
+		return "80"
+	}
+	return incoming.Scheme == target.Scheme && strings.EqualFold(incoming.Hostname(), target.Hostname()) && port(incoming) == port(target)
 }
 
 func (s *Server) allowedOrigin(origin string) (allowed, wildcard bool) {

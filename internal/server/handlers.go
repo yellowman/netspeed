@@ -11,6 +11,7 @@ import (
 	"io"
 	"log"
 	"math"
+	"net"
 	"net/http"
 	"strconv"
 	"strings"
@@ -117,13 +118,29 @@ func (s *Server) handleWebSocketPing(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	session, admitted := s.beginWebSocketSession(w)
+	if !admitted {
+		return
+	}
+	defer s.finishWebSocket(session)
 	release, admitted := s.beginTransfer(w, r)
 	if !admitted {
 		return
 	}
 	defer release()
 
-	err := websocketping.Serve(w, r, nil)
+	client := s.clientIP(r)
+	err := websocketping.ServeWithPolicy(w, r, func(connection net.Conn) {
+		s.attachWebSocket(session, connection)
+	}, func(bytes int64) error {
+		if allowed, _ := s.webSocketRateLimiter.Allow(client); !allowed {
+			return fmt.Errorf("WebSocket message rate exceeded")
+		}
+		if !s.bandwidthQuota.Charge(client, bytes).Allowed {
+			return errBandwidthQuotaExceeded
+		}
+		return nil
+	})
 	websocketping.LogServeError(s.clientIP(r), err)
 }
 

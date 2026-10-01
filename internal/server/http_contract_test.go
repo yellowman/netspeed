@@ -35,7 +35,7 @@ func TestWebSocketOriginPolicyAppliesWhenFetchCORSIsDisabled(t *testing.T) {
 
 	request = httptest.NewRequest(http.MethodGet, "http://speed.example.test/__ws", nil)
 	request.Host = "speed.example.test"
-	request.Header.Set("Origin", "https://speed.example.test")
+	request.Header.Set("Origin", "http://speed.example.test")
 	if !server.webSocketOriginAllowed(request) {
 		t.Fatal("same-host browser WebSocket rejected while Fetch CORS is disabled")
 	}

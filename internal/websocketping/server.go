@@ -20,6 +20,17 @@ const websocketGUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
 // Browser clients use an application message because the WebSocket API does not
 // expose RFC 6455 control ping frames.
 func Serve(writer http.ResponseWriter, request *http.Request, onPing func()) error {
+	return serveWithPolicy(writer, request, nil, nil, onPing)
+}
+
+// ServeWithPolicy registers the hijacked connection before writing the upgrade.
+// onFrame admits and accounts every incoming frame, including control traffic.
+// It receives the total frame bytes for the incoming message and its response.
+func ServeWithPolicy(writer http.ResponseWriter, request *http.Request, onConnect func(net.Conn), onFrame func(int64) error) error {
+	return serveWithPolicy(writer, request, onConnect, onFrame, nil)
+}
+
+func serveWithPolicy(writer http.ResponseWriter, request *http.Request, onConnect func(net.Conn), onFrame func(int64) error, onPing func()) error {
 	key, err := validateUpgradeRequest(request)
 	if err != nil {
 		writer.Header().Set("Cache-Control", measurementhttp.CacheControl)
@@ -38,6 +49,9 @@ func Serve(writer http.ResponseWriter, request *http.Request, onPing func()) err
 			_ = connection.Close()
 		}
 	}()
+	if onConnect != nil {
+		onConnect(connection)
+	}
 
 	accept := websocketAccept(key)
 	if _, err := fmt.Fprintf(buffered,
@@ -57,7 +71,7 @@ func Serve(writer http.ResponseWriter, request *http.Request, onPing func()) err
 		return fmt.Errorf("flush WebSocket upgrade: %w", err)
 	}
 	accepted = true
-	return serveConnection(connection, buffered.Reader, buffered.Writer, onPing)
+	return serveConnection(connection, buffered.Reader, buffered.Writer, onFrame, onPing)
 }
 
 func validateUpgradeRequest(request *http.Request) (string, error) {
@@ -89,12 +103,24 @@ func validateUpgradeRequest(request *http.Request) (string, error) {
 	return key, nil
 }
 
-func serveConnection(connection net.Conn, reader *bufio.Reader, writer *bufio.Writer, onPing func()) error {
+func serveConnection(connection net.Conn, reader *bufio.Reader, writer *bufio.Writer, onFrame func(int64) error, onPing ...func()) error {
 	defer connection.Close()
 	for {
 		incoming, err := readFrame(reader, true)
 		if err != nil {
 			return err
+		}
+		if onFrame != nil {
+			// Payload plus masked client and unmasked server frame headers.
+			bytes := int64(len(incoming.payload)*2 + 8)
+			if len(incoming.payload) > 125 {
+				bytes += 4
+			}
+			if err := onFrame(bytes); err != nil {
+				_ = writeClose(writer, 1008, err.Error(), false)
+				_ = writer.Flush()
+				return err
+			}
 		}
 		switch incoming.opcode {
 		case opBinary:
@@ -103,8 +129,8 @@ func serveConnection(connection net.Conn, reader *bufio.Reader, writer *bufio.Wr
 				_ = writer.Flush()
 				return err
 			}
-			if onPing != nil {
-				onPing()
+			if len(onPing) > 0 && onPing[0] != nil {
+				onPing[0]()
 			}
 			if err := writeFrame(writer, opBinary, incoming.payload, false); err != nil {
 				return err

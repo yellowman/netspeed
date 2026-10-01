@@ -135,8 +135,18 @@ while accepting native clients that omit Origin.
 `GET /__down`, `POST /__up`, and an upgraded `/__ws` latency session acquire a
 global and per-client transfer slot before performing measurement work. A
 WebSocket session holds its slot until the connection closes or the transfer
-deadline expires. Its 16-byte echo messages do not consume byte quota; download
-and upload bodies retain the existing reservation rules.
+deadline expires. Every incoming WebSocket frame, including control ping/pong,
+uses a per-client token bucket shared across sessions (100 frames per second,
+burst 100). Payload and frame-header bytes in both directions are charged to
+the bandwidth quota. Exceeding either limit closes the session with policy
+violation code 1008. Download and upload bodies retain their reservation rules.
+
+Shutdown stops WebSocket admission, closes registered hijacked connections,
+and waits for their handlers to release transfer slots before closing shared
+dependencies. An upgrade already in progress belongs to that drain. Same-origin
+WebSocket validation compares scheme, hostname, and effective port; forwarding
+scheme/host headers are accepted only from configured trusted proxy peers,
+which must overwrite those headers. Ambiguous forwarding chains are rejected.
 
 | rejection | status | retry behavior |
 |---|---:|---|

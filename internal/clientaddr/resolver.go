@@ -73,6 +73,15 @@ func (resolver *Resolver) ClientIP(request *http.Request) string {
 	return direct.String()
 }
 
+// TrustedPeer reports whether forwarding headers may describe this request.
+func (resolver *Resolver) TrustedPeer(request *http.Request) bool {
+	if resolver == nil {
+		return false
+	}
+	address, err := netip.ParseAddr(DirectIP(request))
+	return err == nil && resolver.isTrusted(address)
+}
+
 func (resolver *Resolver) forwardedForClient(values []string, direct netip.Addr) string {
 	var chain []netip.Addr
 	for _, value := range values {
