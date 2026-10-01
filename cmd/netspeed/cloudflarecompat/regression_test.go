@@ -124,3 +124,62 @@ func TestCloudflareWindowExcludesWarmupAndLateBytes(t *testing.T) {
 		t.Fatalf("window included warmup or late bytes: %+v", result)
 	}
 }
+
+type observedUploadBody struct {
+	io.ReadCloser
+	consumed *atomic.Int64
+}
+
+func (body observedUploadBody) Read(buffer []byte) (int, error) {
+	n, err := body.ReadCloser.Read(buffer)
+	body.consumed.Add(int64(n))
+	return n, err
+}
+
+type observeUploadTransport struct {
+	base     http.RoundTripper
+	posts    atomic.Int64
+	consumed atomic.Int64
+}
+
+func (transport *observeUploadTransport) RoundTrip(request *http.Request) (*http.Response, error) {
+	if request.Method == http.MethodPost && transport.posts.Add(1) > 1 {
+		// The first POST is the calibration transfer, not part of the window.
+		request.Body = observedUploadBody{request.Body, &transport.consumed}
+	}
+	return transport.base.RoundTrip(request)
+}
+
+func TestCloudflareUploadWindowExcludesBufferedBodyReads(t *testing.T) {
+	var uploads atomic.Int64
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			return // Warm and loaded latency probes.
+		}
+		if uploads.Add(1) > 1 {
+			// The transport has already started consuming the request body, but
+			// the peer does not ingest it until after the 900ms load window.
+			select {
+			case <-time.After(1100 * time.Millisecond):
+			case <-r.Context().Done():
+				return
+			}
+		}
+		_, _ = io.Copy(io.Discard, r.Body)
+	}))
+	defer server.Close()
+	opts := options{Server: server.URL, Timeout: 5 * time.Second, Quick: true}
+	client := newHTTPClient(opts)
+	defer client.CloseIdleConnections()
+	observer := &observeUploadTransport{base: client.Transport}
+	client.Transport = observer
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	result, _ := measureDirection(ctx, client, opts, true)
+	if observer.consumed.Load() == 0 || uploads.Load() < 2 {
+		t.Fatal("fixture did not exercise transport-consumed window upload data")
+	}
+	if result.Available || result.WindowBytes != 0 || result.Error != "no complete transfer samples" {
+		t.Fatalf("buffered upload bytes were credited before peer completion: %+v", result)
+	}
+}

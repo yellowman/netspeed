@@ -12,7 +12,8 @@ The Go and C clients accept `--provider auto`, `--provider netspeed`, and
 - `cloudflare` uses the common `/__down?bytes=N` and `/__up?bytes=N` surface.
   Downloads remain exactly counted. Uploads are accepted only when the local
   HTTP transport consumes the complete body and the endpoint returns success,
-  and are labeled `client-observed-complete-body`.
+  not by an authoritative Netspeed upload-ingestion receipt. Upload evidence
+  identifies the actual observation boundary used by each adapter.
 - `auto` enters Cloudflare mode only after a Cloudflare hostname or response
   fingerprint. Otherwise the strict Netspeed client remains in control.
 
@@ -102,6 +103,25 @@ The compatibility upload stream remains ASCII `0`, matching the common
 Cloudflare client behavior. It is reported separately as
 `uploadPayload: "ascii-zero"`; it is not confused with the daemon's binary
 zero-fill download mode.
+
+## Aggregate throughput windows
+
+Both native adapters report aggregate bytes across concurrent flows divided by
+the bounded load-window duration, not a percentile of individual request rates.
+Calibration traffic and bytes outside that window do not enter the headline.
+
+Downloads credit bytes consumed inside the window only after validating the
+complete response. Go uploads use a conservative completed-transfer rule: the
+entire request and successful response must finish before the window deadline.
+A request-body `Read` is not proof of transmission, so the Go adapter does not
+credit transport-consumed bytes from an upload that finishes after the deadline.
+Its evidence label is
+`client-observed-complete-transfer-before-window-end`. This can undercount the
+boundary transfer, but avoids attributing buffered bytes to the measured window.
+Go plans short upload requests (a nominal 250 ms shared-link budget, split
+across workers, with a 64 KiB minimum) to limit that conservative tail loss.
+The C adapter uses libcurl's upload-progress observations, with final transfer
+validation, and retains its `client-observed-complete-body` evidence label.
 
 ## Warm HTTP latency and loaded jitter
 

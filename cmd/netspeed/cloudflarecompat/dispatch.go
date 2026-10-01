@@ -757,9 +757,17 @@ func measureDirection(ctx context.Context, client *http.Client, o options, uploa
 		windowDuration = 900 * time.Millisecond
 		probeCount = 4
 	}
-	chunk := int64(estimate * windowDuration.Seconds() / 8 / float64(concurrency))
-	if chunk < 256<<10 {
-		chunk = 256 << 10
+	requestDuration := windowDuration
+	minimumChunk := int64(256 << 10)
+	if upload {
+		// Shorter requests bound the conservative completion rule's tail loss
+		// instead of leaving most of a window in one uncredited boundary request.
+		requestDuration = 250 * time.Millisecond
+		minimumChunk = 64 << 10
+	}
+	chunk := int64(estimate * requestDuration.Seconds() / 8 / float64(concurrency))
+	if chunk < minimumChunk {
+		chunk = minimumChunk
 	}
 	if chunk > 32<<20 {
 		chunk = 32 << 20
@@ -795,18 +803,32 @@ func measureDirection(ctx context.Context, client *http.Client, o options, uploa
 			ready <- struct{}{}
 			for measurementclock.Now().Before(deadline) {
 				var windowBytes atomic.Int64
-				transferred, elapsed, transferErr := transferOnceTracked(runCtx, client, o, upload, chunk, func(n int) {
-					if measurementclock.Now().Before(deadline) {
-						windowBytes.Add(int64(n))
+				var observe func(int)
+				if !upload {
+					observe = func(n int) {
+						if measurementclock.Now().Before(deadline) {
+							windowBytes.Add(int64(n))
+						}
 					}
-				})
+				}
+				transferred, elapsed, transferErr := transferOnceTracked(runCtx, client, o, upload, chunk, observe)
 				if transferErr != nil {
 					failed.Store(true)
 					return
 				}
-				// Validate the complete response before accepting bytes observed
-				// inside the window, including the final in-flight request.
-				total.Add(windowBytes.Load())
+				if upload {
+					// Body.Read only proves transport consumption: queued HTTP/2,
+					// TLS, or socket bytes may not reach the peer before the deadline.
+					// Without an authoritative remote timing receipt, conservatively
+					// credit only transfers fully completed inside the load window.
+					if measurementclock.Now().Before(deadline) {
+						total.Add(transferred)
+					}
+				} else {
+					// Validate the full response before accepting download bytes
+					// consumed inside the window, including its boundary request.
+					total.Add(windowBytes.Load())
+				}
 				samplesCh <- float64(transferred*8) / elapsed.Seconds() / 1e6
 			}
 		}()
@@ -864,7 +886,7 @@ func measureDirection(ctx context.Context, client *http.Client, o options, uploa
 		WindowBytes:   windowBytes,
 		WindowSeconds: windowDuration.Seconds(),
 		Samples:       values,
-		Evidence:      map[bool]string{true: "client-observed-complete-body", false: "exact-response-byte-count"}[upload],
+		Evidence:      map[bool]string{true: "client-observed-complete-transfer-before-window-end", false: "exact-response-byte-count"}[upload],
 	}, loadedLatency
 }
 
