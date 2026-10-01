@@ -7,8 +7,27 @@ import (
 
 type quotaEntry struct {
 	windowStart time.Time
-	used        int64
+	committed   int64
+	reserved    int64
 	id          uint64
+}
+
+func (entry quotaEntry) remaining(maxBytes int64) int64 {
+	remaining := maxBytes - entry.committed
+	if entry.reserved >= remaining {
+		return 0
+	}
+	return remaining - entry.reserved
+}
+
+func (entry *quotaEntry) commit(n, maxBytes int64) {
+	// Consumption never decreases. Saturate committed bytes independently of
+	// pending writes so settlement cannot erase a concurrent over-limit read.
+	if n >= maxBytes-entry.committed {
+		entry.committed = maxBytes
+	} else {
+		entry.committed += n
+	}
 }
 
 // ByteQuota is a fixed-window per-key byte quota. Whole-transfer reservations
@@ -49,6 +68,10 @@ func newByteQuota(maxBytes int64, window time.Duration, now func() time.Time) *B
 
 // Reserve charges n bytes to key when the complete reservation fits.
 func (quota *ByteQuota) Reserve(key string, n int64) QuotaResult {
+	return quota.reserve(key, n, false)
+}
+
+func (quota *ByteQuota) reserve(key string, n int64, pendingWrite bool) QuotaResult {
 	if n < 0 {
 		return QuotaResult{Allowed: false}
 	}
@@ -67,7 +90,8 @@ func (quota *ByteQuota) Reserve(key string, n int64) QuotaResult {
 		entry = quotaEntry{windowStart: now, id: quota.nextEntryID}
 	}
 
-	if n > quota.maxBytes-entry.used {
+	remaining := entry.remaining(quota.maxBytes)
+	if n > remaining {
 		retry := quota.window - now.Sub(entry.windowStart)
 		if retry < 0 {
 			retry = 0
@@ -75,34 +99,42 @@ func (quota *ByteQuota) Reserve(key string, n int64) QuotaResult {
 		quota.entries[key] = entry
 		return QuotaResult{
 			Allowed:    false,
-			Remaining:  quota.maxBytes - entry.used,
+			Remaining:  remaining,
 			RetryAfter: retry,
 		}
 	}
 
-	entry.used += n
+	if pendingWrite {
+		entry.reserved += n
+	} else {
+		entry.commit(n, quota.maxBytes)
+	}
 	quota.entries[key] = entry
 	return QuotaResult{
 		Allowed:    true,
-		Remaining:  quota.maxBytes - entry.used,
+		Remaining:  entry.remaining(quota.maxBytes),
 		RetryAfter: quota.window - now.Sub(entry.windowStart),
 		entryID:    entry.id,
 	}
 }
 
 // ReserveWrite admits a bounded write atomically, then settles its actual byte
-// count. Unlike whole-transfer reservations, unwritten bytes are refunded.
+// count. Pending writes are separate from committed traffic; settlement releases
+// only its own reservation and commits the written bytes. Whole-transfer
+// reservations remain committed even when a transfer fails.
 // Settlement is idempotent and cannot credit a newer or recreated quota entry.
 func (quota *ByteQuota) ReserveWrite(key string, n int64) (QuotaResult, func(int64)) {
-	result := quota.Reserve(key, n)
+	result := quota.reserve(key, n, true)
 	var once sync.Once
 	return result, func(written int64) {
 		once.Do(func() {
-			if !result.Allowed || quota.maxBytes <= 0 || written >= n {
+			if !result.Allowed || quota.maxBytes <= 0 || n == 0 {
 				return
 			}
 			if written < 0 {
 				written = 0
+			} else if written > n {
+				written = n
 			}
 			quota.mu.Lock()
 			defer quota.mu.Unlock()
@@ -110,20 +142,17 @@ func (quota *ByteQuota) ReserveWrite(key string, n int64) (QuotaResult, func(int
 			if !exists || entry.id != result.entryID {
 				return
 			}
-			refund := n - written
-			if refund > entry.used {
-				refund = entry.used
-			}
-			entry.used -= refund
+			entry.reserved -= n
+			entry.commit(written, quota.maxBytes)
 			quota.entries[key] = entry
 		})
 	}
 }
 
 // Charge accounts actual bytes already consumed from a stream. When n crosses
-// the remaining allowance, the current window is exhausted and Allowed is
-// false. This differs from Reserve, which is all-or-nothing for a known future
-// transfer.
+// the allowance after pending writes, Allowed is false, but all consumption is
+// still committed independently of those reservations. This differs from
+// Reserve, which is all-or-nothing for a known future transfer.
 func (quota *ByteQuota) Charge(key string, n int64) QuotaResult {
 	if n < 0 {
 		return QuotaResult{Allowed: false}
@@ -142,19 +171,15 @@ func (quota *ByteQuota) Charge(key string, n int64) QuotaResult {
 		quota.nextEntryID++
 		entry = quotaEntry{windowStart: now, id: quota.nextEntryID}
 	}
-	remaining := quota.maxBytes - entry.used
+	remaining := entry.remaining(quota.maxBytes)
 	allowed := n <= remaining
-	if n >= remaining {
-		entry.used = quota.maxBytes
-	} else {
-		entry.used += n
-	}
+	entry.commit(n, quota.maxBytes)
 	quota.entries[key] = entry
 	retry := quota.window - now.Sub(entry.windowStart)
 	if retry < 0 {
 		retry = 0
 	}
-	return QuotaResult{Allowed: allowed, Remaining: quota.maxBytes - entry.used, RetryAfter: retry}
+	return QuotaResult{Allowed: allowed, Remaining: entry.remaining(quota.maxBytes), RetryAfter: retry}
 }
 
 func (quota *ByteQuota) maintainLocked(now time.Time, incomingKey string) {
@@ -185,7 +210,9 @@ func (quota *ByteQuota) maintainLocked(now time.Time, incomingKey string) {
 	}
 }
 
-// Used returns the charged bytes in the current window for key.
+// Used returns committed bytes plus pending writes in the current window for
+// key, capped at the quota ceiling. It is an enforcement counter, not telemetry
+// for traffic consumed beyond that ceiling.
 func (quota *ByteQuota) Used(key string) int64 {
 	if quota.maxBytes <= 0 {
 		return 0
@@ -197,5 +224,5 @@ func (quota *ByteQuota) Used(key string) int64 {
 		delete(quota.entries, key)
 		return 0
 	}
-	return entry.used
+	return quota.maxBytes - entry.remaining(quota.maxBytes)
 }

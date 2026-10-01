@@ -112,6 +112,96 @@ func TestByteQuotaWriteReservationSettlesActualBytesOnce(t *testing.T) {
 	}
 }
 
+func TestByteQuotaWriteSettlementPreservesConcurrentCharge(t *testing.T) {
+	for _, test := range []struct {
+		name          string
+		read, written int64
+		wantUsed      int64
+	}{
+		{"failed write", 10, 0, 90},
+		{"partial write", 10, 5, 95},
+		{"complete write", 10, 20, 100},
+		{"read exhausts actual allowance", 30, 0, 100},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			quota := NewByteQuota(100, time.Minute)
+			quota.Charge("client", 80)
+			result, settle := quota.ReserveWrite("client", 20)
+			if !result.Allowed {
+				t.Fatal("initial write reservation rejected")
+			}
+			// A second session consumes bytes while the first session's write
+			// is still reserved. Its denied read must remain charged.
+			charged := make(chan QuotaResult, 1)
+			go func() { charged <- quota.Charge("client", test.read) }()
+			if result := <-charged; result.Allowed || result.Remaining != 0 {
+				t.Fatalf("concurrent read = %+v; want denied with no allowance", result)
+			}
+			wantCommitted := min(int64(100), 80+test.read)
+			if entry := quota.entries["client"]; entry.committed != wantCommitted || entry.reserved != 20 {
+				t.Fatalf("read mixed consumption with pending writes: %+v", entry)
+			}
+			settle(test.written)
+			if got := quota.Used("client"); got != test.wantUsed {
+				t.Fatalf("settled usage=%d; want %d", got, test.wantUsed)
+			}
+			if entry := quota.entries["client"]; entry.committed != test.wantUsed || entry.reserved != 0 {
+				t.Fatalf("settlement did not commit and release its write: %+v", entry)
+			}
+			remaining := int64(100) - test.wantUsed
+			if quota.Reserve("client", remaining+1).Allowed {
+				t.Fatal("later transfer reclaimed consumed bytes")
+			}
+			if result, settleAgain := quota.ReserveWrite("client", remaining+1); result.Allowed {
+				settleAgain(0)
+				t.Fatal("later write reclaimed consumed bytes")
+			}
+			if remaining > 0 && !quota.Reserve("client", remaining).Allowed {
+				t.Fatal("unused reservation was not released")
+			}
+		})
+	}
+}
+
+func TestByteQuotaConcurrentSettlementsKeepChargedBytes(t *testing.T) {
+	quota := NewByteQuota(100, time.Minute)
+	quota.Charge("client", 80)
+	var settlements []func(int64)
+	for i := 0; i < 20; i++ {
+		result, settle := quota.ReserveWrite("client", 1)
+		if !result.Allowed {
+			t.Fatal("initial write reservation rejected")
+		}
+		settlements = append(settlements, settle)
+	}
+	if quota.Charge("client", 20).Allowed {
+		t.Fatal("read was admitted despite pending writes")
+	}
+	var wg sync.WaitGroup
+	for _, settle := range settlements {
+		wg.Add(1)
+		go func() { defer wg.Done(); settle(0) }()
+	}
+	wg.Wait()
+	if quota.Used("client") != 100 || quota.Reserve("client", 1).Allowed {
+		t.Fatal("concurrent failed writes erased consumed bytes")
+	}
+}
+
+func TestByteQuotaWriteSettlementCannotOverflowCommittedBytes(t *testing.T) {
+	const maximum = int64(1<<63 - 1)
+	quota := NewByteQuota(maximum, time.Minute)
+	quota.Charge("client", maximum-15)
+	_, settle := quota.ReserveWrite("client", 10)
+	if result := quota.Charge("client", maximum); result.Allowed || result.Remaining != 0 {
+		t.Fatalf("overflowing read = %+v", result)
+	}
+	settle(7)
+	if quota.Used("client") != maximum || quota.Reserve("client", 1).Allowed {
+		t.Fatal("large read or settlement overflowed committed usage")
+	}
+}
+
 func TestByteQuotaWriteSettlementCannotCreditNewWindowOrRecreatedEntry(t *testing.T) {
 	for _, recreate := range []bool{false, true} {
 		now := time.Unix(100, 0)

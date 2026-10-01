@@ -140,8 +140,13 @@ uses a per-client token bucket shared across sessions (100 frames per second,
 burst 100). Actual incoming payload and frame-header bytes are charged at the
 network-read boundary, including upgrade-prefetched bytes and malformed or
 incomplete frames. Each outgoing frame reserves its encoded size before the
-network write, then settles
-the actual written byte count; failed or partial writes refund unwritten bytes.
+network write, then settles the actual written byte count; failed or partial
+writes release their unwritten reservation.
+Committed consumption and pending write reservations are tracked separately.
+Admission checks both against the allowance, while settlement releases only its
+own reservation and commits actual written bytes. A concurrent over-limit read
+cannot be erased by another session's failed-write settlement. Committed usage
+saturates at the quota ceiling; it never decreases within the same window.
 Pong frames emit no response and therefore incur no outgoing charge. Invalid
 application messages are charged for the actual close reply, not a presumed
 echo. Exceeding either limit closes the session with policy violation code

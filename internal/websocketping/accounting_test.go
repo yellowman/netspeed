@@ -2,10 +2,12 @@ package websocketping
 
 import (
 	"bufio"
+	"bytes"
 	"encoding/binary"
 	"errors"
 	"io"
 	"net"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -187,6 +189,71 @@ func TestFrameQuotaSettlesPartialAndFailedWrites(t *testing.T) {
 		if !errors.Is(err, io.ErrClosedPipe) || quota.Used("client") != int64(actual) {
 			t.Fatalf("actual=%d charge=%d error=%v", actual, quota.Used("client"), err)
 		}
+	}
+}
+
+type notifiedWriteConnection struct {
+	net.Conn
+	started chan struct{}
+	once    sync.Once
+}
+
+func (connection *notifiedWriteConnection) Write(buffer []byte) (int, error) {
+	connection.once.Do(func() { close(connection.started) })
+	return connection.Conn.Write(buffer)
+}
+
+func TestFailedWriteCannotRefundAnotherSessionRead(t *testing.T) {
+	serverA, clientA := net.Pipe()
+	serverB, clientB := net.Pipe()
+	t.Cleanup(func() { serverA.Close(); clientA.Close(); serverB.Close(); clientB.Close() })
+	for _, connection := range []net.Conn{serverA, clientA, serverB, clientB} {
+		_ = connection.SetDeadline(time.Now().Add(2 * time.Second))
+	}
+	quota := limits.NewByteQuota(100, time.Minute)
+	quota.Charge("client", 60)
+	connectionA := &notifiedWriteConnection{Conn: serverA, started: make(chan struct{})}
+	doneA := make(chan error, 1)
+	go func() {
+		doneA <- serveConnection(connectionA, bufio.NewReader(connectionA), quotaPolicy(quota))
+	}()
+	payload, err := NewPayload(1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := writeFrame(clientA, opBinary, payload, true); err != nil {
+		t.Fatal(err)
+	}
+	// Session A received 22 bytes and reserved an 18-byte echo. Do not read
+	// that echo: its network write stays pending until this client closes.
+	<-connectionA.started
+	if quota.Used("client") != 100 {
+		t.Fatal("session A did not fill the allowance with its pending echo")
+	}
+	doneB := make(chan error, 1)
+	go func() {
+		doneB <- serveConnection(serverB, bufio.NewReader(serverB), quotaPolicy(quota))
+	}()
+	var encoded bytes.Buffer
+	if err := writeFrame(&encoded, opPong, payload, true); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := clientB.Write(encoded.Bytes()); err != nil {
+		t.Fatal(err)
+	}
+	response, err := readFrame(clientB, false)
+	if err != nil || response.opcode != opClose || len(response.payload) < 2 || binary.BigEndian.Uint16(response.payload) != 1008 {
+		t.Fatalf("session B quota response=%+v error=%v", response, err)
+	}
+	if err := <-doneB; err == nil {
+		t.Fatal("session B's over-limit read was admitted")
+	}
+	_ = clientA.Close()
+	if err := <-doneA; err == nil {
+		t.Fatal("session A's blocked echo did not fail")
+	}
+	if quota.Used("client") != 100 || quota.Reserve("client", 1).Allowed {
+		t.Fatal("session A's failed echo erased session B's consumed bytes")
 	}
 }
 
