@@ -96,6 +96,43 @@ func TestByteQuotaChargeExhaustsCurrentWindow(t *testing.T) {
 	}
 }
 
+func TestByteQuotaWriteReservationSettlesActualBytesOnce(t *testing.T) {
+	quota := NewByteQuota(100, time.Minute)
+	result, settle := quota.ReserveWrite("a", 80)
+	if !result.Allowed || quota.Used("a") != 80 {
+		t.Fatal("write was not reserved atomically")
+	}
+	settle(30)
+	settle(0)
+	if got := quota.Used("a"); got != 30 {
+		t.Fatalf("settled charge=%d; want 30", got)
+	}
+	if quota.Reserve("a", 71).Allowed {
+		t.Fatal("settlement credited more than unwritten bytes")
+	}
+}
+
+func TestByteQuotaWriteSettlementCannotCreditNewWindowOrRecreatedEntry(t *testing.T) {
+	for _, recreate := range []bool{false, true} {
+		now := time.Unix(100, 0)
+		quota := newByteQuota(100, time.Minute, func() time.Time { return now })
+		_, settle := quota.ReserveWrite("a", 80)
+		if recreate {
+			// Force eviction and recreation without advancing the clock. A
+			// timestamp alone cannot distinguish these reservations.
+			quota.maxEntries = 1
+			quota.Reserve("b", 10)
+		} else {
+			now = now.Add(time.Minute)
+		}
+		quota.Reserve("a", 25)
+		settle(0)
+		if got := quota.Used("a"); got != 25 {
+			t.Fatalf("recreate=%v: old settlement credited new charge: %d", recreate, got)
+		}
+	}
+}
+
 func TestKeyedRateLimiterRefills(t *testing.T) {
 	now := time.Unix(100, 0)
 	limiter := newKeyedRateLimiter(2, 2, func() time.Time { return now })

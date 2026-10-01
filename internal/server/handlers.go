@@ -131,16 +131,28 @@ func (s *Server) handleWebSocketPing(w http.ResponseWriter, r *http.Request) {
 	defer release()
 
 	client := s.clientIP(r)
-	err := websocketping.ServeWithPolicy(w, r, func(connection net.Conn) {
-		s.attachWebSocket(session, connection)
-	}, func(bytes int64) error {
-		if allowed, _ := s.webSocketRateLimiter.Allow(client); !allowed {
-			return fmt.Errorf("WebSocket message rate exceeded")
-		}
-		if !s.bandwidthQuota.Charge(client, bytes).Allowed {
-			return errBandwidthQuotaExceeded
-		}
-		return nil
+	err := websocketping.ServeWithPolicy(w, r, websocketping.Policy{
+		OnConnect: func(connection net.Conn) { s.attachWebSocket(session, connection) },
+		OnFrame: func() error {
+			if allowed, _ := s.webSocketRateLimiter.Allow(client); !allowed {
+				return fmt.Errorf("WebSocket message rate exceeded")
+			}
+			return nil
+		},
+		OnRead: func(bytes int64) error {
+			if !s.bandwidthQuota.Charge(client, bytes).Allowed {
+				return errBandwidthQuotaExceeded
+			}
+			return nil
+		},
+		ReserveWrite: func(bytes int64) (func(int64), error) {
+			result, settle := s.bandwidthQuota.ReserveWrite(client, bytes)
+			if !result.Allowed {
+				return nil, errBandwidthQuotaExceeded
+			}
+			return settle, nil
+		},
+		OnPolicyClose: func(bytes int64) { s.bandwidthQuota.Charge(client, bytes) },
 	})
 	websocketping.LogServeError(s.clientIP(r), err)
 }

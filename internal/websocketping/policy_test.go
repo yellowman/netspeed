@@ -14,14 +14,18 @@ func TestPolicyLimitsControlPingAndPongFrames(t *testing.T) {
 	defer client.Close()
 	_ = client.SetDeadline(time.Now().Add(2 * time.Second))
 	var charges []int64
+	frames := 0
 	done := make(chan error, 1)
 	go func() {
-		done <- serveConnection(server, bufio.NewReader(server), bufio.NewWriter(server), func(bytes int64) error {
-			charges = append(charges, bytes)
-			if len(charges) > 2 {
-				return fmt.Errorf("message budget exhausted")
-			}
-			return nil
+		done <- serveConnection(server, bufio.NewReader(server), Policy{
+			OnRead: func(bytes int64) error { charges = append(charges, bytes); return nil },
+			OnFrame: func() error {
+				frames++
+				if frames > 2 {
+					return fmt.Errorf("message budget exhausted")
+				}
+				return nil
+			},
 		})
 	}()
 	reader := bufio.NewReader(client)
@@ -45,7 +49,13 @@ func TestPolicyLimitsControlPingAndPongFrames(t *testing.T) {
 	if err := <-done; err == nil {
 		t.Fatal("unbounded control traffic")
 	}
-	if len(charges) != 3 || charges[0] < 14 || charges[1] < 6 {
-		t.Fatalf("control traffic not accounted: %v", charges)
+	var bytes int64
+	for _, charge := range charges {
+		bytes += charge
+	}
+	// Network reads may split a frame's header and payload. The message rate
+	// counts frames, while byte accounting must total only the received bytes.
+	if frames != 3 || bytes != 13+6+6 {
+		t.Fatalf("control traffic not accounted: frames=%d charges=%v", frames, charges)
 	}
 }

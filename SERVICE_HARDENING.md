@@ -127,7 +127,7 @@ the authenticated warm HTTP latency path. Native Go and C clients can send the
 bearer token during the WebSocket upgrade. Browser credential modes that cannot
 be reproduced safely by the WebSocket constructor likewise select HTTP before
 opening a socket. The daemon applies the configured origin allowlist to the
-upgrade; with Fetch CORS disabled it still rejects cross-host browser Origins
+upgrade; with Fetch CORS disabled it still rejects cross-origin browser Origins
 while accepting native clients that omit Origin.
 
 ## 4. transfer admission and byte quotas
@@ -137,9 +137,17 @@ global and per-client transfer slot before performing measurement work. A
 WebSocket session holds its slot until the connection closes or the transfer
 deadline expires. Every incoming WebSocket frame, including control ping/pong,
 uses a per-client token bucket shared across sessions (100 frames per second,
-burst 100). Payload and frame-header bytes in both directions are charged to
-the bandwidth quota. Exceeding either limit closes the session with policy
-violation code 1008. Download and upload bodies retain their reservation rules.
+burst 100). Actual incoming payload and frame-header bytes are charged at the
+network-read boundary, including upgrade-prefetched bytes and malformed or
+incomplete frames. Each outgoing frame reserves its encoded size before the
+network write, then settles
+the actual written byte count; failed or partial writes refund unwritten bytes.
+Pong frames emit no response and therefore incur no outgoing charge. Invalid
+application messages are charged for the actual close reply, not a presumed
+echo. Exceeding either limit closes the session with policy violation code
+1008; one bounded closing notification may exceed the remaining allowance, but
+its actual bytes are still accounted. Whole download and upload bodies retain
+their existing reservation rules.
 
 Shutdown stops WebSocket admission, closes registered hijacked connections,
 and waits for their handlers to release transfer slots before closing shared

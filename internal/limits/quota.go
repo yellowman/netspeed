@@ -8,19 +8,20 @@ import (
 type quotaEntry struct {
 	windowStart time.Time
 	used        int64
+	id          uint64
 }
 
-// ByteQuota is a fixed-window per-key byte quota. It intentionally charges
-// bytes when they are reserved, even if a client disconnects later: an aborted
-// transfer still consumed server and network resources.
+// ByteQuota is a fixed-window per-key byte quota. Whole-transfer reservations
+// retain their charge on disconnect; ReserveWrite instead settles actual I/O.
 type ByteQuota struct {
-	mu         sync.Mutex
-	maxBytes   int64
-	window     time.Duration
-	now        func() time.Time
-	entries    map[string]quotaEntry
-	operations uint64
-	maxEntries int
+	mu          sync.Mutex
+	maxBytes    int64
+	window      time.Duration
+	now         func() time.Time
+	entries     map[string]quotaEntry
+	operations  uint64
+	maxEntries  int
+	nextEntryID uint64
 }
 
 // QuotaResult describes one reservation attempt.
@@ -28,6 +29,7 @@ type QuotaResult struct {
 	Allowed    bool
 	Remaining  int64
 	RetryAfter time.Duration
+	entryID    uint64
 }
 
 // NewByteQuota constructs a quota. maxBytes <= 0 disables enforcement.
@@ -61,7 +63,8 @@ func (quota *ByteQuota) Reserve(key string, n int64) QuotaResult {
 	quota.maintainLocked(now, key)
 	entry := quota.entries[key]
 	if entry.windowStart.IsZero() || now.Sub(entry.windowStart) >= quota.window {
-		entry = quotaEntry{windowStart: now}
+		quota.nextEntryID++
+		entry = quotaEntry{windowStart: now, id: quota.nextEntryID}
 	}
 
 	if n > quota.maxBytes-entry.used {
@@ -83,6 +86,37 @@ func (quota *ByteQuota) Reserve(key string, n int64) QuotaResult {
 		Allowed:    true,
 		Remaining:  quota.maxBytes - entry.used,
 		RetryAfter: quota.window - now.Sub(entry.windowStart),
+		entryID:    entry.id,
+	}
+}
+
+// ReserveWrite admits a bounded write atomically, then settles its actual byte
+// count. Unlike whole-transfer reservations, unwritten bytes are refunded.
+// Settlement is idempotent and cannot credit a newer or recreated quota entry.
+func (quota *ByteQuota) ReserveWrite(key string, n int64) (QuotaResult, func(int64)) {
+	result := quota.Reserve(key, n)
+	var once sync.Once
+	return result, func(written int64) {
+		once.Do(func() {
+			if !result.Allowed || quota.maxBytes <= 0 || written >= n {
+				return
+			}
+			if written < 0 {
+				written = 0
+			}
+			quota.mu.Lock()
+			defer quota.mu.Unlock()
+			entry, exists := quota.entries[key]
+			if !exists || entry.id != result.entryID {
+				return
+			}
+			refund := n - written
+			if refund > entry.used {
+				refund = entry.used
+			}
+			entry.used -= refund
+			quota.entries[key] = entry
+		})
 	}
 }
 
@@ -105,7 +139,8 @@ func (quota *ByteQuota) Charge(key string, n int64) QuotaResult {
 	quota.maintainLocked(now, key)
 	entry := quota.entries[key]
 	if entry.windowStart.IsZero() || now.Sub(entry.windowStart) >= quota.window {
-		entry = quotaEntry{windowStart: now}
+		quota.nextEntryID++
+		entry = quotaEntry{windowStart: now, id: quota.nextEntryID}
 	}
 	remaining := quota.maxBytes - entry.used
 	allowed := n <= remaining
