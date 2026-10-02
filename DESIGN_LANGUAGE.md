@@ -59,11 +59,19 @@ not require visually identical presentations.
 | Observatory | Precise, dense, instrumented; cooler surfaces, harder edges, micro-grid, recessed evidence regions |
 | Phosphor | Monochrome, fixed-cell, terminal-native; character-grid geometry and period-computer restraint |
 
-Remove arbitrary decoration, then add intentional visual identity. Standard's
-signature is a coherent, softly illuminated result surface. Observatory's is a
-structured measurement-and-evidence workstation. Phosphor's is a useful terminal
-throughout. None is a neutral documentation page or a collection of unrelated
-component effects.
+Remove arbitrary decoration, then add intentional visual identity through
+composition, light, material, and typography. Limit each presentation to one or
+two memorable ideas, not a catalog of effects:
+
+- Standard: a coherent, softly illuminated result composition and a restrained
+  connection ribbon.
+- Observatory: a gridded measurement plane with a recessed inspector, and a
+  compact live evidence timeline.
+- Phosphor: a useful, coherent terminal throughout.
+
+Everything else supports those signatures. None is a neutral documentation
+page or a collection of unrelated component effects. Richer interactions and
+texture are subordinate refinements, not additional headline components.
 
 ## Shared information hierarchy
 
@@ -127,6 +135,9 @@ independent accordion for every additional diagnostic field.
 | `details-section` | A shared detail section or purposeful disclosure |
 | `evidence-inspector` | Observatory's selected measurement or stage evidence |
 | `measurement-notes` | Conditional limitations, warnings, and failure explanations |
+| `connection-ribbon` | Standard's compact schematic of observed endpoints, transports, and separately identified packet topology |
+| `measurement-strip` | Exact evidence for Observatory's selected or inspected chart window |
+| `evidence-stream` | Observatory's recent recorded events, with full history in Details |
 
 Variants may recompose these components into columns or character-grid rows,
 but must preserve their semantic order and responsibilities.
@@ -174,13 +185,16 @@ Use one-pixel neutral rules. Dark normal borders are
 `rgba(255,255,255,.10)` and strong dividers are `rgba(255,255,255,.16)`.
 Light equivalents are `#dce2e8` and `#ccd4dd`. Reserve strong dividers for major
 structural boundaries; do not color borders by measurement category.
+Section dividers may be slightly inset to follow the content's optical edges
+rather than running edge-to-edge everywhere.
 
 ### Color and effects
 
 Use one cool-blue product accent family for Standard and Observatory. The shared
 palette uses `#2363ce` on light surfaces and `#80adf6` on dark surfaces. Related
-blue-to-cyan trace treatments and Observatory's small ice-blue indicators belong
-to this family, not new category palettes.
+blue-to-cyan trace treatments belong to this family, not new category palettes.
+Observatory may use a restrained ice-cyan focus accent for active evidence and
+measurement selection; it is not a new per-metric color or a success indicator.
 Green, amber, and red communicate success, warning, and failure, respectively;
 their shades must remain readable against the selected surface.
 
@@ -189,8 +203,10 @@ download, purple to upload, green to latency, orange to jitter, and pink to loss
 Differentiate chart series with labels, line styles, or restrained related hues.
 State must also be expressed in text or symbols, never by color alone.
 
-Flat fills are the default. No decorative button gradients, rainbow borders,
-glowing cards, fluorescent fill bars, or large colored shadows.
+Flat fills are the default. Standard's primary Run control is the sole button
+exception: deep blue with a subtle top-to-bottom tonal shift. No purple, shiny
+gloss, rainbow borders, glowing cards, fluorescent fill bars, or large colored
+shadows. Other controls remain flat.
 
 Subtraction does not mean visual neutrality. Each presentation must have a
 deliberate material identity. Controlled gradients, lighting, translucency,
@@ -203,23 +219,28 @@ every effect in every region:
 
 | Presentation | Treatment | Placement and purpose |
 | --- | --- | --- |
-| Standard | Soft vertical/radial blue lighting | Behind the headline numbers within the coherent result region; no page-wide wash |
-| Standard | Subtle elevation and soft shadow | One result/action surface, not separate shadows around every metric or evidence section |
-| Standard | Restrained trace illumination and translucent fill | Primary throughput figures; related blue/cyan color, thin traces, low-opacity fill beneath data |
-| Observatory | Faint measurement grid | Selected plot regions, aligned to axes/ticks; not a page-wide graph-paper wallpaper |
+| Standard | Soft radial blue/cyan lighting | A roughly 600–800 px bloom behind the main readings on wide screens, darker at the edges; no obvious gradient panel |
+| Standard | Subtle elevation and soft shadow | One result/action surface; the primary Run control uses the same material family, not a separate glossy treatment |
+| Standard | Restrained trace illumination and translucent fill | Primary throughput figures; related blue/cyan trace, roughly 4–7% area opacity and at most a tiny 1–2 px bloom |
+| Observatory | Faint measurement grid | Primary measurement/plot region; a 32 or 40 px micro-grid at roughly 2–3% opacity, with data axes separately labeled |
 | Observatory | Recessed surface and subtle inset shadow | Persistent evidence inspector; distinguish inspection from the measurement plane |
-| Observatory | Faint cyan selection tint | Selected evidence row or inspection target; retain a non-color selection indicator |
-| Observatory | Small illuminated marker or edge | The running measurement/stage only, not a halo around every completed panel |
+| Observatory | Faint cyan selection wash and 2 px edge | Selected measurement/evidence target; retain a non-color selection indicator and update the inspector title |
+| Observatory | Small active-node illumination | The running timeline stage only; completed nodes dim without acquiring halos |
 | Phosphor | Barely perceptible text bloom; optional faint scanlines | Terminal text/surface only; no gradients, elevated surfaces, or graphical chart glow |
 
 Standard has three effect families: hero lighting, result/action elevation, and
-chart illumination/fill. Reuse them consistently rather than adding a fourth
-special treatment for another component. Observatory's stronger identity comes
-from geometry, density, and bounded instrument treatments, not brighter effects
-on everything. A related blue/blue-to-cyan accent gradient is permitted for
-primary emphasis in the named regions, not as a different gradient on each
-component. Do not stack independent glows, borders, and gradients on the same
-region. Outside the named regions, keep surfaces and evidence flat.
+chart illumination/fill. The Run control's tonal shift belongs to result/action
+material, not a fourth special treatment. Optional near-invisible grain at
+roughly 1–2% opacity may soften the canvas; omit it if it competes with data or
+adds unnecessary rendering cost. It is not a separate visual signature.
+
+Observatory's stronger identity comes from geometry, density, and bounded
+instrument treatments, not brighter effects on everything. A related
+blue/blue-to-cyan accent gradient is permitted for primary emphasis in the named
+regions, not as a different gradient on each component. Do not stack independent
+glows, borders, and gradients on the same region. Outside the named regions,
+keep surfaces and evidence flat. Opacity and size ranges are starting points,
+not reasons to sacrifice contrast or force desktop effects onto narrow screens.
 
 Define effects through presentation-scoped tokens and shared components. They
 must work in idle, running, completed, unavailable, failed, light/dark, and
@@ -248,8 +269,16 @@ text, and secondary/technical evidence.
 | Technical monospace | 12 / 18 px | Regular |
 
 Standard's headline numbers should be large, tightly but legibly kerned, and
-tabular; units should be quieter, but still readable. Use careful layering of
-the three emphasis roles rather than many competing weights and micro-labels.
+tabular, using `font-variant-numeric: tabular-nums`. The decimal fraction may be
+75–80% of the integer's size, with a small, quiet unit on the same baseline.
+Treat the value as one number: preserve its complete accessible text, copying,
+rounding, and exported precision. Styling a fraction must not change a result.
+Use consistent optical spacing around `Mbps`, `ms`, and `%`; align values on
+stable tabular baselines so decimals do not jump as readings update.
+
+Use careful layering of the three emphasis roles rather than many competing
+weights and micro-labels. Technical panels use tighter line height; explanatory
+text gets more breathing room.
 Standard and Observatory use ordinary sentence case. Avoid tracked uppercase
 labels throughout the interface. Compact technical abbreviations and Phosphor's
 terminal labels are legitimate exceptions.
@@ -264,12 +293,16 @@ controls, tables, and plots.
 
 Standard and Observatory use one coherent control system:
 
-- Primary: solid accent, high-contrast label, no gradient.
+- Primary: solid accent and a high-contrast label by default. Standard's Run
+  control may use the restrained deep-blue tonal shift defined above.
 - Secondary: neutral fill, one-pixel neutral border, the same control rhythm.
-- Icon: consistent size and radius, a real SVG icon, an accessible name, and a
+- Icon: consistent size, radius, and SVG stroke width; an accessible name and a
   tooltip when useful. Prefer a text label for actions whose meaning is unclear.
-- Disclosure: a title and chevron or a clear `View details` action, not a
-  decorative `DETAILS` strip beneath every measurement.
+- Disclosure: a title and one consistent chevron or a clear `View details`
+  action, not a decorative `DETAILS` strip beneath every measurement.
+
+Hover changes luminance by only a few percent, not the control's entire hue.
+Standard's Run control becomes slightly brighter, never purple or glossy.
 
 Keep Run/Run again as the primary action. Pause or other supported run controls,
 Share result, Export JSON, and View details remain secondary and have consistent
@@ -290,6 +323,11 @@ Observatory uses more explicit, precise axes and tick marks, with a faint
 measurement grid where useful. Keep secondary traces quieter and avoid nested
 decorated plot containers. Chart math, units, and statistical meanings remain
 shared even when rendering materials differ.
+
+Use tiny monospace ticks, one clear baseline, sparse horizontal grid lines, and
+direct contextual labels or trace-end labels where they fit. Prefer these to a
+legend box. Align axes, labels, and figure summaries to a common vertical rhythm;
+avoid label collisions rather than shrinking text beyond readability.
 
 Keep download and upload figure proportions related. Present unloaded,
 download-loaded, and upload-loaded latency together on a comparable scale, or
@@ -324,18 +362,47 @@ Put context in a subdued line rather than separate network-identity cards.
 Keep the six-section evidence workspace collapsed initially. It must remain
 obvious how to reach exact samples and verification details.
 
+Compose the top roughly 35–40% of a typical desktop view as one designed region,
+not a rigid viewport-height requirement. Download and upload each receive about
+30% of the horizontal composition and latency about 20%; remaining space is
+gutters and breathing room. Jitter and loss sit compactly beneath latency,
+not in equal-weight fourth and fifth boxes. Reflow deliberately on small screens.
+
 Treat the entire result region as one material, not five cards. Soft lighting
 behind the headline numbers and a subtle shadow beneath the result/action
 surface establish depth without drawing new boxes around each reading. One
-signature horizontal measurement/status line ties that region together and
-shows real progress or a labeled terminal outcome. Do not label a partial or
-failed run successful merely because measurement has stopped.
+signature 2 px horizontal measurement/status line ties that region together:
+mostly neutral, with a blue progress segment and a small moving leading edge
+only during a run. Completion settles quietly into a static line with a labeled
+outcome. Do not label a partial or failed run successful merely because
+measurement has stopped.
 
-Keep the figures and evidence below quieter. The only other signature effect
-is restrained illumination/fill on the primary throughput trace. Buttons stay
-flat, and details do not acquire their own halos or gradients. The resulting
-page should be recognizable as a premium network instrument, not a documentation
-site or a collection of colored boxes.
+For completed results, add a quiet monospace measurement-signature row using
+only supported observations, for example:
+
+```text
+WS reused · H2 · random/chunked · 4 flows · 18.4 s
+```
+
+Qualify fields that differ by direction/window instead of implying one universal
+configuration. Omit unavailable fields; do not populate them from defaults or
+infer total run duration by adding overlapping measurement stages.
+
+The connection ribbon is a restrained schematic under the hero, with compact
+endpoint/transport labels and supported latency/loss annotations. It can replace
+separate connection-detail cards. Distinguish HTTP throughput, WebSocket latency,
+and WebRTC packet delivery: they are not necessarily one serial path. A label
+sequence such as `Client — WS/H2 — Node — TURN relay` must not imply that HTTP or
+WebSocket traffic traversed TURN. Show separate branches or explicitly label
+packet topology, and identify advertised versus observed facts. Collapse missing
+branches honestly; an unverified path is not a reason to draw a plausible one.
+
+Keep the figures and evidence below quieter. Primary throughput traces use the
+restrained illumination/fill vocabulary; details do not acquire their own halos
+or gradients. The rich Run control, precise axes, and optional grain support the
+composition rather than becoming additional focal points. The page should be
+recognizable as a premium network instrument, not a documentation site or a
+collection of colored boxes.
 
 ### Observatory: dark precision laboratory
 
@@ -371,11 +438,33 @@ the inspector in place. Do not spawn another decorative card. Retain a clear
 route from the inspector to the full detail section and raw evidence.
 
 Use harder-edged measurement regions, tighter spacing, precise axes/ticks, and
-faint grid lines behind selected plots. Keep the inspector slightly recessed
-with a restrained inset shadow; selected evidence may use a faint cyan tint.
+faint grid lines confined to the primary measurement region. Keep the inspector
+slightly darker and recessed, like a built-in instrumentation bay, with one
+inset border and restrained shadow. Suitable dark-theme cues are
+`inset 0 1px 0 rgba(255,255,255,.03)` and
+`inset 1px 0 0 rgba(255,255,255,.02)`, not a large outer shadow.
+
+Selection can use a 2 px ice-cyan rule and faint background wash; the inspector
+title updates with the selected Download, Upload, or Latency context. Its rows
+use muted monospace labels and brighter monospace values in rigid columns.
+Nearly imperceptible alternating row shading is permissible, not mandatory.
 Align numeric columns, timestamps, and counters rigidly. Only display timestamps
 and counters backed by actual observations; the material language must never
 create fake instrumentation.
+
+Where samples support inspection, charts may expose a fine vertical crosshair
+and tiny value readout snapped to the nearest actual sample. Avoid a large
+floating tooltip card. A measurement strip beneath the selected chart exposes
+the exact window, not another result summary, for example:
+
+```text
+window 2/3 · 486.7 Mbps · 91.3 MB · 4 flows · 12 req · 1500 ms
+```
+
+Hover or selection updates the strip from that window's recorded fields; missing
+fields stay absent or explicitly unavailable. Do not derive request counts,
+bytes, or overlap from the headline. Provide keyboard/touch selection and a
+persistent selected state, so evidence is not available only on hover.
 
 Keep the seven-stage rail compact, with simple markers, names, outcomes, and
 recorded timings. Its shared stage vocabulary is:
@@ -396,17 +485,38 @@ Use checkmarks or explicit success text only for successful outcomes; show
 unavailable and failed states explicitly. Completing analysis must not turn
 earlier failures into successes.
 
-The rail should read as an instrument state machine. Give the running stage a
-small illuminated marker or edge. Reduce the emphasis of completed/historical
-stages without making their outcomes unreadable; failed and unavailable states
-retain their explicit labels. Inspection selection is distinct from live stage
-state: viewing a completed measurement must not make it appear to be running.
+The rail should read as an event timeline and instrument state machine, not
+seven cards. Use a horizontal or vertical hairline with small circular nodes,
+aligned timings, labels, and observed values. Completed nodes dim; the active
+node brightens and may have the only subtle node glow. Failed nodes use semantic
+red plus a failure label. Historical outcomes remain readable. Inspection
+selection is distinct from live stage state: viewing a completed measurement
+must not make its timeline node appear to be running.
+
+The compact live evidence strip at the bottom of the measurement region shows
+only three or four recent recorded events, with full history in Details. For
+example, when those events and fields are actually recorded:
+
+```text
+20:41:32.104  WS echo accepted · reused connection · RTT 12.6 ms
+20:41:33.552  DL window 2 complete · 91.3 MB · 486.7 Mbps
+20:41:34.007  Loaded probe accepted · overlap 100%
+```
+
+Use recorded event times and their actual precision. Identify elapsed times as
+elapsed when wall-clock timestamps are unavailable. Never invent an event log
+from the final result, reconstruct timestamps from stage durations, or imply
+millisecond precision not captured by the engine. Preserve recorded history in
+the result/raw evidence; shared results without history say so. Keep this stream
+bounded visually and avoid auto-scrolling the page or announcing every event to
+assistive technology.
 
 Remove introductory design-philosophy copy from the page. The evidence itself
-should explain the instrument. No glowing circular nodes, rainbow enclosures,
-or a separate futuristic graphic identity. Its visual richness comes from a
-coherent laboratory material language, not a different neon theme for every
-measurement.
+should explain the instrument. No oversized glowing nodes, rainbow enclosures,
+or a separate futuristic graphic identity. The micro-grid/recessed inspector and
+evidence timeline are its two memorable ideas; crosshairs, selection edges, and
+window strips support them. Its visual richness comes from a coherent laboratory
+material language, not a different neon theme for every measurement.
 
 ### Phosphor: full VT220-era terminal
 
@@ -537,6 +647,10 @@ Distinguish pending, running, succeeded, unavailable, and failed states. A
 finished test may contain unavailable or failed stages; do not imply that every
 measurement succeeded.
 
+In Standard and Observatory, warnings use a thin left rule and quiet semantic
+amber tint, not large yellow cards. Keep the explanation and evidence link more
+prominent than the container; errors retain a distinct semantic label/treatment.
+
 Zero packet loss is a valid measured value. Missing values are not zeroes.
 Below-resolution RTTs are censored samples, not literal zero latency or a
 fabricated 0.01 ms observation. Retain the original observation and its timing
@@ -560,6 +674,14 @@ presentations, and explain when a result cannot be shared.
 
 Render network-provided labels and raw evidence as text, not executable markup.
 
+### Maps and secondary context
+
+If a map is retained, it stays subordinate to measurements: desaturated tiles,
+small markers, quiet attribution and controls, and no bright mapping-library
+chrome competing with the hero. Distinguish server and client locations and
+their accuracy. A plotted geographic relationship is not proof of a network
+route or exact physical distance; preserve the engine's qualifications.
+
 ## Responsive behavior and accessibility
 
 - Preserve semantic headings, figure captions, table headers, units, and the
@@ -578,6 +700,17 @@ Render network-provided labels and raw evidence as text, not executable markup.
   with ordinary text entry.
 - Honor reduced-motion preferences. Animation may indicate live progress, not
   decorate completed measurements or delay access to evidence.
+
+### Live motion and settling
+
+Number interpolation is permitted only while a measurement is actively running.
+It must not invent additional samples or enter exported data; final readings
+settle immediately to the engine's values. Traces animate only as live data
+arrives, never as a page-load or shared-result reveal. The progress leading edge
+stops when the run ends, with a quiet transition rather than flashes, confetti,
+or artificial delays. Reduced-motion mode uses immediate values and static
+indicators. Update assistive status at meaningful milestones, not every visual
+interpolation frame.
 
 ## Implementation and review discipline
 
@@ -618,14 +751,19 @@ Review changes against these acceptance criteria:
   spacing logic, semantic colors, and measurement hierarchy, but are immediately
   distinguishable by composition and material rather than their page labels.
 - Standard has a coherent premium result surface, restrained hero lighting,
-  large precise numerals, and a signature status line; it is not just flat
-  rectangles on a dark canvas.
+  asymmetric metric composition, precise numerals, a signature status line, and
+  an honest connection ribbon; it is not just flat rectangles on a dark canvas.
 - Observatory has a precise measurement/evidence plane, recessed inspector,
-  aligned technical data, and restrained live-state illumination. Its density
-  and visual richness serve useful provenance, not decorative instrumentation.
+  aligned technical data, a bounded recorded-event timeline, and restrained
+  live-state illumination. Its density and visual richness serve useful
+  provenance, not decorative instrumentation.
 - Effects stay within the named presentation regions and reuse a small token
-  vocabulary; buttons and ordinary evidence remain flat. No per-metric rainbow
-  identity, unrelated gradients, or accumulating panel halos return.
+  vocabulary; Standard's Run control is the only tonal button exception and
+  ordinary evidence remains flat. Each page has one or two memorable ideas, not
+  fifteen. No per-metric rainbow identity, unrelated gradients, or accumulating
+  panel halos return.
+- Connection branches, event history, window strips, and measurement-signature
+  fields come from evidence, not plausible topology or reconstructed telemetry.
 - Phosphor is terminal throughout, with coherent character-grid geometry,
   textual controls, and character plots in both column modes.
 - Detail sections expose accepted and discarded samples, overlap, transport,
