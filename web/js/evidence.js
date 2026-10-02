@@ -9,10 +9,11 @@
     const number = value => Number.isFinite(value) ? value.toFixed(1) : 'Not measured';
     const printable = value => value == null ? 'Not available' : typeof value === 'object' ? JSON.stringify(value) : String(value);
     const snapshot = value => value ? JSON.parse(JSON.stringify(value)) : null;
+    const acceptedLatencySample = sample => Number.isFinite(sample.rttMs) && sample.rttMs > 0 && !sample.timingResolutionLimited && (sample.condition === 'unloaded' || sample.loadOverlapped === true);
 
     function latencyEvidence(data, condition) {
         const all = (data?.latencySamples || []).filter(sample => sample.condition === condition);
-        const accepted = all.filter(sample => Number.isFinite(sample.rttMs) && sample.rttMs > 0 && !sample.timingResolutionLimited && (condition === 'unloaded' || sample.loadOverlapped === true));
+        const accepted = all.filter(acceptedLatencySample);
         const sorted = accepted.map(sample => sample.rttMs).sort((a, b) => a - b);
         const mid = Math.floor(sorted.length / 2);
         const rank = (sorted.length - 1) * .9;
@@ -77,13 +78,38 @@
         );
     }
 
+    function latencyTransportLabels(data, ribbon = false) {
+        // The final transport and aggregate reuse counters cannot establish
+        // provenance for any one transport, especially after WS -> HTTP fallback.
+        const groups = new Map();
+        for (const sample of data.latencySamples || []) {
+            if (!acceptedLatencySample(sample) || !['websocket', 'http'].includes(sample.probeTransport)) continue;
+            const group = groups.get(sample.probeTransport) || { reused: 0, unobservable: 0 };
+            if (sample.connectionReused === true) group.reused++;
+            if (sample.connectionReused == null) group.unobservable++;
+            groups.set(sample.probeTransport, group);
+        }
+        const fallback = data.httpTransport?.latency?.fallbackUsed === true && groups.has('http');
+        const mixed = groups.size > 1;
+        const transports = fallback && mixed ? ['websocket', 'http'] : [...groups.keys()];
+        const labels = transports.map(transport => {
+            const evidence = groups.get(transport);
+            const name = transport === 'http' ? 'HTTP' : ribbon ? 'WebSocket' : 'WS';
+            let label = ribbon ? `${name} RTT` : name;
+            if (evidence.reused) label += ribbon ? ' / reused' : ' reused';
+            else if (evidence.unobservable) label += ribbon ? ' / reuse unobserved' : ' (reuse unobserved)';
+            return label;
+        });
+        if (!labels.length) return '';
+        const suffix = mixed ? fallback ? ' (fallback)' : ' (mixed RTT)' : fallback ? ' / fallback used' : '';
+        return labels.join(fallback && mixed ? ' → ' : ' + ') + suffix;
+    }
+
     function measurementSignature(data) {
         if (!data || data.sharedResult) return [];
         const parts = [], latency = data.httpTransport?.latency;
-        if (latency?.probeTransport) {
-            const transport = latency.probeTransport === 'websocket' ? 'WS' : latency.probeTransport.toUpperCase();
-            parts.push(`${transport}${latency.verifiedReusedSamples > 0 ? ' reused' : ''}${latency.fallbackUsed ? ' / fallback used' : ''}`);
-        }
+        const transports = latencyTransportLabels(data);
+        if (transports) parts.push(transports);
         for (const protocol of latency?.nextHopProtocols || []) parts.push(`${protocol.toUpperCase()} (RTT)`);
         const selection = data.httpTransport?.selection;
         if (selection?.downloadPayload && selection?.downloadFraming) parts.push(`${selection.downloadPayload}/${selection.downloadFraming} selected`);
@@ -99,8 +125,8 @@
         if (!data) return [];
         const branches = [], server = data.meta?.serverName || data.server || 'Measurement node';
         if ((data.throughputSamples || []).length) branches.push({ from: 'Client', link: 'HTTP throughput', to: server });
-        const latency = data.httpTransport?.latency;
-        if (latency?.probeTransport) branches.push({ from: 'Client', link: `${latency.probeTransport === 'websocket' ? 'WebSocket' : 'HTTP'} RTT${latency.verifiedReusedSamples > 0 ? ' / reused' : ''}`, to: `${server}${Number.isFinite(data.summary?.latencyUnloadedMs) ? ` · ${data.summary.latencyUnloadedMs.toFixed(1)} ms` : ''}` });
+        const transports = latencyTransportLabels(data, true);
+        if (transports) branches.push({ from: 'Client', link: transports, to: `${server}${Number.isFinite(data.summary?.latencyUnloadedMs) ? ` · ${data.summary.latencyUnloadedMs.toFixed(1)} ms` : ''}` });
         const packet = data.packetLoss;
         if (packet?.unavailable) branches.push({ from: 'Packet delivery', link: 'Not measured', to: packet.reason || 'Path unavailable' });
         else if (packet) {

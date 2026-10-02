@@ -150,6 +150,21 @@ try {
                     assert(document.querySelector('.hero-status-track').parentElement.classList.contains('result-header'), 'status line escaped result composition');
                     assert(document.querySelector('.hero-status-track').getBoundingClientRect().width > 200, 'full-width signature status line');
                     assert(document.querySelector('#connectionRibbon').textContent.includes('HTTP throughput') && document.querySelector('#connectionRibbon').textContent.includes('Packet delivery'), 'separate observed transport branches');
+                    const original = NetspeedEvidence.getResults();
+                    const fallback = {
+                        httpTransport: { latency: { probeTransport: 'http', fallbackUsed: true, fallbackReason: 'echo timeout', verifiedReusedSamples: 1 } },
+                        latencySamples: [
+                            { condition: 'unloaded', rttMs: 12, probeTransport: 'websocket', connectionReused: true },
+                            { condition: 'unloaded', rttMs: 14, probeTransport: 'http', connectionReused: null, connectionSetupExcluded: true }
+                        ]
+                    };
+                    NetspeedEvidence.setResults(fallback);
+                    assert(document.querySelector('#measurementSignature').textContent === 'WS reused → HTTP (reuse unobserved) (fallback)', 'mixed fallback signature lost transport-scoped reuse');
+                    assert(document.querySelector('#connectionRibbon').textContent.includes('WebSocket RTT / reused → HTTP RTT / reuse unobserved (fallback)'), 'mixed fallback ribbon lost transport-scoped reuse');
+                    assert(!document.querySelector('#connectionRibbon').textContent.includes('HTTP RTT / reused'), 'WebSocket reuse attributed to HTTP');
+                    assert(JSON.stringify(JSON.parse(document.querySelector('#rawEvidence').textContent)) === JSON.stringify(fallback), 'fallback presentation mutated raw evidence');
+                    assert(document.documentElement.scrollWidth <= innerWidth, 'mixed fallback provenance overflow');
+                    NetspeedEvidence.setResults(original);
                 }
                 document.querySelector('[data-open-evidence="latency"]').click();
                 assert(document.querySelector('#detailsWorkspace').open && !document.querySelector('#panel-latency').hidden, 'latency evidence did not open');

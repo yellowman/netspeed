@@ -85,6 +85,32 @@ for (const variant of [
     });
 }
 
+test('Standard preserves transport-scoped reuse after WebSocket to HTTP fallback', async ({ page }) => {
+    await page.route('https://unpkg.com/**', route => route.abort());
+    await page.goto('/');
+    const fallback = {
+        httpTransport: { latency: { probeTransport: 'http', fallbackUsed: true, fallbackReason: 'echo timeout', verifiedReusedSamples: 1 } },
+        latencySamples: [
+            { condition: 'unloaded', rttMs: 12, probeTransport: 'websocket', connectionReused: true },
+            { condition: 'unloaded', rttMs: 14, probeTransport: 'http', connectionReused: null, connectionSetupExcluded: true }
+        ]
+    };
+    for (const width of [1440, 390, 320]) {
+        await page.setViewportSize({ width, height: 1200 });
+        await page.evaluate(value => window.NetspeedEvidence.setResults(value), fallback);
+        await expect(page.locator('#measurementSignature')).toHaveText('WS reused → HTTP (reuse unobserved) (fallback)');
+        await expect(page.locator('#connectionRibbon')).toContainText('WebSocket RTT / reused → HTTP RTT / reuse unobserved (fallback)');
+        await expect(page.locator('#connectionRibbon')).not.toContainText('HTTP RTT / reused');
+        expect(await page.evaluate(() => JSON.parse(document.querySelector('#rawEvidence').textContent))).toEqual(fallback);
+        expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+    }
+    fallback.latencySamples[1].connectionReused = true;
+    fallback.httpTransport.latency.verifiedReusedSamples = 0;
+    await page.evaluate(value => window.NetspeedEvidence.setResults(value), fallback);
+    await expect(page.locator('#measurementSignature')).toHaveText('WS reused → HTTP reused (fallback)');
+    await expect(page.locator('#connectionRibbon')).toContainText('HTTP RTT / reused');
+});
+
 test('Observatory uses a compact console and a selectable measurement inspector', async ({ page }) => {
     await page.route('https://unpkg.com/**', route => route.abort());
     await page.setViewportSize({ width: 1440, height: 1200 });
