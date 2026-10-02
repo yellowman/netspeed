@@ -41,6 +41,15 @@ for (const [pageName, variant] of [['index.html', 'standard'], ['alternate.html'
         assert.match(html, /F1 Details/); assert.match(html, /F4 Packet/);
         assert.match(styles, /GlassTTYVT220/);
     }
+    if (variant === 'alternate') {
+        assert.match(html, /class="instrument-readout"/);
+        assert.doesNotMatch(html, /class="primary-metrics"/);
+        assert.match(html, /id="acquisitionLedger"/);
+        assert.match(html, /Measurement console/);
+        assert.match(html, /Measurement inspector/);
+    } else {
+        assert.doesNotMatch(html, /class="instrument-readout"|id="acquisitionLedger"/);
+    }
 }
 assert.throws(() => render('unknown'), /Unknown presentation/);
 assert.doesNotMatch(styles, /linear-gradient|box-shadow|border-radius:\s*(16|30)px/);

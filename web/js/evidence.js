@@ -3,7 +3,8 @@
     'use strict';
     const names = { overview: 'Overview', throughput: 'Throughput', latency: 'Latency', packet: 'Packet delivery', transport: 'Transport & verification', raw: 'Raw evidence' };
     let result = null;
-    let inspection = { section: 'overview' };
+    let inspection = root.document?.body?.dataset.interface === 'alternate'
+        ? { section: 'throughput', direction: 'download' } : { section: 'overview' };
     const number = value => Number.isFinite(value) ? value.toFixed(1) : 'Not measured';
     const printable = value => value == null ? 'Not available' : typeof value === 'object' ? JSON.stringify(value) : String(value);
     const snapshot = value => value ? JSON.parse(JSON.stringify(value)) : null;
@@ -52,6 +53,29 @@
         });
     }
 
+    function windowSamples(data) {
+        return (data?.throughputSamples || []).filter(sample => sample.sampleKind === 'window');
+    }
+
+    function throughputEvidence(data, direction) {
+        const samples = (data?.throughputSamples || []).filter(sample => !direction || sample.direction === direction);
+        const windows = samples.filter(sample => sample.sampleKind === 'window');
+        const lastWindow = windows.at(-1);
+        const bytes = windows.map(sample => sample.sizeBytes ?? sample.bytes);
+        const payloadBytes = bytes.length && bytes.every(value => Number.isFinite(value) && value >= 0)
+            ? bytes.reduce((sum, value) => sum + value, 0) : null;
+        return [
+            ['Sustained Mbps', direction ? data?.summary?.[`${direction}Mbps`] : null],
+            ['Observed samples', samples.length], ['Load windows', windows.length],
+            ['Payload bytes across windows', payloadBytes],
+            ['Last window ms', lastWindow?.durationMs], ['Workers', lastWindow?.concurrency],
+            ['Chunk bytes', lastWindow?.chunkBytes]
+        ].concat(
+            fields(data?.httpTransport?.selection).map(([key, value]) => [key.charAt(0).toUpperCase() + key.slice(1).toLowerCase(), value]),
+            fields(data?.httpTransport?.responseVerifications, 'Responses checked')
+        );
+    }
+
     const node = id => root.document.getElementById(id);
     function fillFields(target, entries) {
         target.replaceChildren();
@@ -97,19 +121,14 @@
     function inspect(section, options = {}) {
         inspection = { section, ...options };
         const direction = options.direction, condition = options.condition;
-        node('inspectorTitle').textContent = `${direction || condition || names[section]} / evidence`;
+        const title = direction ? { download: 'Download', upload: 'Upload' }[direction]
+            : condition ? { unloaded: 'Unloaded latency', download: 'Latency during download', upload: 'Latency during upload' }[condition]
+            : names[section];
+        node('inspectorTitle').textContent = `${title || names[section]} / evidence`;
         let entries = [];
         if (result) {
             if (section === 'throughput') {
-                const samples = (result.throughputSamples || []).filter(sample => !direction || sample.direction === direction);
-                const last = samples.at(-1);
-                const windows = samples.filter(sample => sample.sampleKind === 'window');
-                entries = [
-                    ['Sustained Mbps', direction ? result.summary?.[`${direction}Mbps`] : null],
-                    ['Samples / windows', `${samples.length} / ${windows.length}`],
-                    ['Window payload bytes', windows.reduce((sum, sample) => sum + (sample.sizeBytes ?? sample.bytes ?? 0), 0)],
-                    ['Last window ms', last?.durationMs], ['Workers', last?.concurrency], ['Chunk bytes', last?.chunkBytes]
-                ].concat(fields(result.httpTransport?.selection), fields(result.httpTransport?.responseVerifications));
+                entries = throughputEvidence(result, direction);
             } else if (section === 'latency') entries = fields(latencyEvidence(result, condition || 'unloaded')).concat(fields(result.httpTransport?.latency));
             else if (section === 'packet') entries = fields(result.packetLoss).concat(fields(result.dataChannelStats));
             else if (section === 'transport') entries = fields(result.httpTransport?.selection).concat(fields(result.httpTransport?.requestControls));
@@ -122,6 +141,14 @@
         }
         fillFields(node('inspectorContent'), entries);
         node('inspectorDetailsBtn').dataset.openEvidence = section;
+        node('inspectorDetailsBtn').dataset.direction = direction || '';
+        node('inspectorDetailsBtn').dataset.condition = condition || '';
+        root.document.querySelectorAll('[data-inspect]').forEach(button => {
+            const selected = button.dataset.inspect === section
+                && (!button.dataset.direction || button.dataset.direction === direction)
+                && (!button.dataset.condition || button.dataset.condition === (condition || 'unloaded'));
+            button.setAttribute('aria-pressed', String(selected));
+        });
     }
 
     function open(section, options = {}) {
@@ -143,6 +170,11 @@
             strip.append(list);
         }
         fillFields(node('overviewEvidence'), data ? fields({ testTime: data.startTime ? new Date(data.startTime).toISOString() : null, durationMs: data.endTime && data.startTime ? data.endTime - data.startTime : null, sharedResult: data.sharedResult === true, ...data.meta }) : []);
+        if (node('acquisitionLedger')) table(node('acquisitionLedger'), windowSamples(data), [
+            ['Direction', sample => sample.direction], ['Window ms', sample => number(sample.durationMs)],
+            ['Payload MB', sample => Number.isFinite(sample.sizeBytes ?? sample.bytes) ? ((sample.sizeBytes ?? sample.bytes) / 1e6).toFixed(2) : null],
+            ['Flows', sample => sample.concurrency], ['Mbps', sample => number(sample.mbps)]
+        ]);
         for (const direction of ['download', 'upload']) {
             const samples = (data?.throughputSamples || []).filter(sample => sample.direction === direction);
             table(node(`${direction}WindowEvidence`), samples, [['#', (_, i) => i + 1], ['Kind', s => s.sampleKind || s.profile], ['Bytes', s => s.sizeBytes ?? s.bytes], ['Duration ms', s => number(s.durationMs)], ['Mbps', s => number(s.mbps)], ['Workers', s => s.concurrency], ['Requests', s => s.requestCount]]);
@@ -217,7 +249,7 @@
         node('downloadEvidenceBtn').addEventListener('click', () => root.document.dispatchEvent(new CustomEvent('netspeed:download-evidence')));
         render();
     }
-    const api = { snapshot, latencyEvidence, measurementNotes, fields, setResults, open, select, inspect, getResults: () => snapshot(result) };
+    const api = { snapshot, latencyEvidence, throughputEvidence, windowSamples, measurementNotes, fields, setResults, open, select, inspect, getResults: () => snapshot(result) };
     if (typeof module === 'object' && module.exports) module.exports = api;
     if (root.document) {
         root.NetspeedEvidence = api;

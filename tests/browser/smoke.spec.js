@@ -85,6 +85,37 @@ for (const variant of [
     });
 }
 
+test('Observatory uses a compact console and a selectable measurement inspector', async ({ page }) => {
+    await page.route('https://unpkg.com/**', route => route.abort());
+    await page.setViewportSize({ width: 1440, height: 1200 });
+    await page.goto('/alternate.html');
+    await expect(page.locator('.instrument-readout')).toBeVisible();
+    await expect(page.locator('.primary-metrics')).toHaveCount(0);
+    await expect(page.locator('#inspectorTitle')).toHaveText('Download / evidence');
+    await page.evaluate(() => window.NetspeedEvidence.setResults({
+        summary: { downloadMbps: 123.4, uploadMbps: 45.6 },
+        throughputSamples: [
+            { direction: 'download', sampleKind: 'window', sizeBytes: 1000000, durationMs: 1500, concurrency: 4, mbps: 123.4 },
+            { direction: 'upload', sampleKind: 'window', sizeBytes: 500000, durationMs: 1500, concurrency: 2, mbps: 45.6 }
+        ]
+    }));
+    await expect(page.locator('#acquisitionLedger tbody tr')).toHaveCount(2);
+    const readout = await page.locator('.instrument-readout').boundingBox();
+    const measurements = await page.locator('.measurement-content').boundingBox();
+    const inspector = await page.locator('.evidence-inspector').boundingBox();
+    expect(readout.height).toBeLessThanOrEqual(120);
+    expect(inspector.x).toBeGreaterThanOrEqual(measurements.x + measurements.width);
+    const upload = page.locator('.instrument-readout [data-direction="upload"]');
+    await upload.click();
+    await expect(upload).toHaveAttribute('aria-pressed', 'true');
+    await expect(page.locator('.instrument-readout [data-direction="download"]')).toHaveAttribute('aria-pressed', 'false');
+    await expect(page.locator('#inspectorTitle')).toHaveText('Upload / evidence');
+    await expect(page.locator('#inspectorContent')).toContainText('45.6');
+    await page.locator('#inspectorDetailsBtn').click();
+    await expect(page.locator('#panel-throughput')).toBeVisible();
+    await expect(page.locator('#inspectorTitle')).toHaveText('Upload / evidence');
+});
+
 test('progress rail preserves unavailable packet-path outcome after completion', async ({ page }) => {
     test.setTimeout(90_000);
     const session = await page.context().newCDPSession(page);

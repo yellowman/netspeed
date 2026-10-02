@@ -163,7 +163,8 @@ body[data-interface="standard"] [data-progress-percent] { display: none; }
 .confidence-icon { display: inline-block; width: 8px; height: 8px; margin-right: 8px; border-radius: 50%; background: var(--rule); }
 .confidence-icon.pass { background: var(--success); }
 .confidence-icon.fail { background: var(--warning); }
-.extended-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 40px; margin-top: 16px; }
+.extended-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 40px; margin-top: 16px; }
+.extended-grid > section { min-width: 0; }
 .extended-grid h3 { margin-bottom: 16px; }
 .quality-heading { display: flex; align-items: baseline; gap: 16px; font-size: 24px; }
 #scoreDescription { margin: 8px 0 16px; color: var(--muted); }
@@ -204,21 +205,50 @@ th:first-child, td:first-child { text-align: left; }
 .boxplot-tooltip h4 { margin: 0 0 8px; }
 .boxplot-tooltip ul { margin: 0; padding-left: 16px; }
 .placeholder { color: var(--muted); }
-body[data-interface="alternate"] .measurement-layout { display: grid; grid-template-columns: minmax(0, 1fr) 280px; gap: 40px; }
-body[data-interface="alternate"] .measurement-evidence { padding: 0 0 0 24px; border-top: 0; border-left: 1px solid var(--rule); margin-top: 0; }
+/* Observatory is a compact acquisition console, not the Standard hero plus a sidebar. */
+.instrument-readout { display: grid; grid-template-columns: 1.2fr 1.2fr 1.2fr .8fr .8fr; gap: 24px; padding: 24px 0; }
+.instrument-readout .metric-reading { margin-top: 8px; font: 32px/1.2 var(--mono); letter-spacing: -.04em; flex-wrap: wrap; overflow-wrap: anywhere; }
+.instrument-readout .metric:nth-child(n+4) .metric-reading { font-size: 24px; }
+.instrument-readout .metric-unit { font: 12px/18px var(--font); letter-spacing: 0; }
+.instrument-readout dt { font-size: 13px; }
+body[data-interface="alternate"] .result-header { padding-top: 24px; }
+body[data-interface="alternate"] .presentation-label { margin-bottom: 4px; }
+body[data-interface="alternate"] .result-context { margin-top: 8px; }
+body[data-interface="alternate"] .action-bar { padding-bottom: 16px; }
+body[data-interface="alternate"] .stage-rail { padding: 16px 0; }
+body[data-interface="alternate"] .stage-rail time { font-family: var(--mono); font-size: 11px; }
+body[data-interface="alternate"] .measurement-layout { display: grid; grid-template-columns: minmax(0, 1fr) 352px; gap: 32px; padding-top: 24px; }
+body[data-interface="alternate"] .measurement-content { min-width: 0; }
+body[data-interface="alternate"] .measurement-section { padding-bottom: 16px; margin-bottom: 16px; }
+body[data-interface="alternate"] .section-heading { margin-bottom: 16px; }
+body[data-interface="alternate"] .measurement-evidence { position: sticky; top: 24px; align-self: start; padding: 0 0 0 24px; border-top: 0; border-left: 1px solid var(--rule); margin-top: 0; max-height: none; overflow: visible; }
 body[data-interface="alternate"] .measurement-evidence .section-heading { display: block; }
-body[data-interface="alternate"] .measurement-evidence .section-heading > span { display: block; margin-top: 8px; }
-body[data-interface="alternate"] .measurement-evidence .evidence-table > div { display: block; }
-body[data-interface="alternate"] .measurement-evidence dd { text-align: left; margin-top: 4px; }
-body[data-interface="alternate"] .throughput-grid { gap: 32px; }
+.inspector-kicker { color: var(--muted); font-size: 12px; margin-bottom: 8px; }
+body[data-interface="alternate"] #inspectorContent { max-height: calc(100vh - 160px); overflow-y: auto; }
+body[data-interface="alternate"] .measurement-evidence .evidence-table > div { gap: 16px; padding: 8px 0; }
+body[data-interface="alternate"] .measurement-evidence dt { flex-basis: 48%; }
+body[data-interface="alternate"] .measurement-evidence dd { min-width: 0; text-align: right; }
+body[data-interface="alternate"] .throughput-grid { gap: 24px; }
+body[data-interface="alternate"] .throughput-plot, body[data-interface="alternate"] .throughput-plot svg { height: 104px; }
+body[data-interface="alternate"] .throughput-plot { margin: 8px 0; }
+body[data-interface="alternate"] .measurement-figure figcaption { flex-wrap: wrap; }
+body[data-interface="alternate"] .latency-grid { gap: 24px; }
+body[data-interface="alternate"] .latency-summary { font: 22px/1.3 var(--mono); margin-top: 8px; }
+body[data-interface="alternate"] [data-inspect][aria-pressed="true"] { color: var(--accent); }
+.acquisition-ledger { margin-top: 24px; }
+.acquisition-ledger .section-heading { margin-bottom: 0; }
+.acquisition-ledger .evidence-table-scroll { margin: 8px 0 0; }
+.acquisition-ledger table { margin-top: 0; font: 12px/18px var(--mono); }
+.acquisition-ledger th, .acquisition-ledger td { padding-top: 6px; padding-bottom: 6px; }
 body[data-interface="phosphor"] #themeToggle { display: none; }
 .evidence-table dd, .evidence-panel table, #inspectorContent dd { font-family: var(--mono); font-size: 12px; line-height: 18px; }
 @media (max-width: 1000px) {
     .app-shell { padding: 0 24px; }
     body[data-interface="alternate"] .measurement-layout { display: block; }
-    body[data-interface="alternate"] .measurement-evidence { border-left: 0; border-top: 1px solid var(--rule); margin-top: 32px; padding: 24px 0; }
+    body[data-interface="alternate"] .measurement-evidence { position: static; border-left: 0; border-top: 1px solid var(--rule); margin-top: 24px; padding: 24px 0; }
+    body[data-interface="alternate"] #inspectorContent { max-height: none; overflow: visible; }
     body[data-interface="alternate"] .measurement-evidence .evidence-table > div { display: flex; }
-    body[data-interface="alternate"] .measurement-evidence dd { text-align: right; margin-top: 0; }
+    .instrument-readout { grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px 24px; }
     .stage-rail { flex-wrap: wrap; gap: 16px 24px; }
     .stage-rail li { flex: 0 0 calc(25% - 18px); }
     .primary-metrics { gap: 24px; }
@@ -235,6 +265,10 @@ body[data-interface="phosphor"] #themeToggle { display: none; }
     .result-context > span { display: block; margin-top: 4px; }
     .result-context > span + span::before { content: none; }
     .primary-metrics { grid-template-columns: 1fr 1fr; gap: 24px 16px; padding: 24px 0; }
+    .instrument-readout { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
+    .instrument-readout .metric-reading { font-size: 28px; }
+    .instrument-readout .metric:nth-child(3) { grid-column: 1 / -1; display: flex; justify-content: space-between; align-items: baseline; gap: 16px; }
+    .instrument-readout .metric:nth-child(3) .metric-reading { margin-top: 0; font-size: 24px; }
     .metric-reading { font-size: 40px; gap: 4px; }
     .metric-unit { font-size: 13px; }
     .metric-latency { grid-column: 1 / -1; display: grid; grid-template-columns: auto 1fr; gap: 0 24px; align-items: center; }

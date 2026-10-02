@@ -1,4 +1,4 @@
-/* One semantic measurement surface; presentations change tokens, not results. */
+/* Shared measurement components, composed for each presentation's purpose. */
 (function (root) {
     'use strict';
     const placeholder = '<span class="placeholder" aria-label="Not measured">—</span>';
@@ -23,6 +23,17 @@
             <div class="metric"><div class="metric-reading">${value('uploadSpeed')}<span class="metric-unit" id="uploadUnit">Mbps</span></div><p>Upload <span aria-hidden="true">↑</span></p></div>
             <div class="metric metric-latency"><div class="metric-reading">${value('latencyValue')}<span class="metric-unit">ms</span></div><p>Unloaded latency</p><div class="secondary-metrics"><span>${value('jitterValue')} ms jitter</span><span>Loss ${value('packetLossValue')}<span id="packetLossUnit">%</span></span></div></div>
         </div>`;
+    }
+
+    function instrumentReadout() {
+        const readings = [
+            ['Download ↓', 'downloadSpeed', 'Mbps', 'downloadUnit', 'throughput', 'data-direction="download"'],
+            ['Upload ↑', 'uploadSpeed', 'Mbps', 'uploadUnit', 'throughput', 'data-direction="upload"'],
+            ['Unloaded latency', 'latencyValue', 'ms', '', 'latency', 'data-condition="unloaded"'],
+            ['Jitter', 'jitterValue', 'ms', '', 'latency', 'data-condition="unloaded"'],
+            ['Packet loss', 'packetLossValue', '%', 'packetLossUnit', 'packet', '']
+        ];
+        return `<dl class="instrument-readout" aria-label="Measurement readout">${readings.map(([label, id, unit, unitId, section, attributes]) => `<div class="metric"><dt><button class="figure-selection" data-inspect="${section}" ${attributes} aria-pressed="false">${label}</button></dt><dd class="metric-reading">${value(id)}<span class="metric-unit" ${unitId ? `id="${unitId}"` : ''}>${unit}</span></dd></div>`).join('')}</dl>`;
     }
 
     function throughput(direction, title) {
@@ -85,19 +96,21 @@
             <header class="app-nav"><a class="wordmark" href="index.html" data-interface-link="standard">${terminal ? 'NETSPEED / LINK ANALYZER' : 'NetSpeed'}</a><div class="nav-tools">${terminal ? '<time data-live-clock aria-label="Local time"></time><label class="terminal-width">Columns <select id="terminalColumns" aria-label="Terminal columns"><option value="80">80</option><option value="132">132</option></select></label>' : ''}<button class="text-button" id="themeToggle" aria-label="Toggle dark/light mode"><span class="theme-icon">Light</span> mode</button></div></header>
             <main>
                 <section class="result-header" aria-labelledby="resultTitle">
-                    <div class="result-heading"><div><p class="presentation-label">${expert ? 'Observatory · Evidence mode' : terminal ? 'Phosphor · Instrument mode' : 'Link measurement'}</p><h1 id="resultTitle">Network performance</h1></div><div class="result-state"><span data-stage-label>Ready</span><span data-progress-percent>0%</span></div></div>
+                    <div class="result-heading"><div><p class="presentation-label">${expert ? 'Observatory · Evidence mode' : terminal ? 'Phosphor · Instrument mode' : 'Link measurement'}</p><h1 id="resultTitle">${expert ? 'Measurement console' : 'Network performance'}</h1></div><div class="result-state"><span data-stage-label>Ready</span><span data-progress-percent>0%</span></div></div>
                     <div class="result-context"><span id="serverLocation">Finding server…</span><span id="networkInfo">Finding network…</span><span id="testTimestamp">Not measured yet</span></div>
-                    ${primaryMetrics(terminal)}
+                    ${expert ? instrumentReadout() : primaryMetrics(terminal)}
                     <div class="measurement-notes" id="measurementNotes" role="status" hidden></div>
                     <div class="action-bar"><div class="action-buttons"><button class="btn btn-primary" id="startTestBtn"><span>Run test</span></button><button class="btn" id="pauseTestBtn" disabled><span>Pause</span></button><button class="text-button" id="shareBtn" disabled>Share result</button><button class="text-button" id="downloadResultsBtn" disabled>Export JSON</button><button class="text-button" data-open-evidence="overview">View details ↓</button></div><div class="progress-inline" id="progressContainer"><span id="progressStatus" role="status">Ready to test</span><div class="progress-track"><div id="progressFill"></div></div></div>
                     ${terminal ? '<nav class="function-keys" aria-label="Terminal shortcuts"><button data-open-evidence="overview">F1 Details</button><button data-open-evidence="throughput">F2 Throughput</button><button data-open-evidence="latency">F3 Latency</button><button data-open-evidence="packet">F4 Packet</button><button id="terminalBack">Esc Back</button></nav>' : ''}
                 </section>
-                <ol class="stage-rail progress-rail" aria-label="Measurement sequence">${stages.map(([stage, label, section], index) => `<li data-progress-stage="${stage}" data-label="${label}" data-outcome="pending"><button class="stage-select" data-inspect="${section}" ${stage === 'download' || stage === 'upload' ? `data-direction="${stage}"` : ''}><span class="stage-marker" aria-hidden="true">${index + 1}</span><b>${label}</b><span data-stage-state>Pending</span><time data-stage-time></time></button></li>`).join('')}</ol>
+                <ol class="stage-rail progress-rail" aria-label="Measurement sequence">${stages.map(([stage, label, section], index) => `<li data-progress-stage="${stage}" data-label="${label}" data-outcome="pending"><button class="stage-select" data-inspect="${section}" ${stage === 'download' || stage === 'upload' ? `data-direction="${stage}"` : stage === 'latency' ? 'data-condition="unloaded"' : stage === 'loaded-latency' ? 'data-condition="download"' : ''} aria-pressed="false"><span class="stage-marker" aria-hidden="true">${index + 1}</span><b>${label}</b><span data-stage-state>Pending</span><time data-stage-time></time></button></li>`).join('')}</ol>
                 <div class="measurement-layout"><div class="measurement-content">
-                    <section class="measurement-section" aria-labelledby="throughputTitle"><div class="section-heading"><h2 id="throughputTitle">Throughput</h2><span>Payload rates across measured transfers</span></div><div class="throughput-grid">${throughput('download', 'Download')}${throughput('upload', 'Upload')}</div></section>
+                    <section class="measurement-section" aria-labelledby="throughputTitle"><div class="section-heading"><h2 id="throughputTitle">Throughput</h2><span>Payload rates across measured transfers</span></div><div class="throughput-grid">${throughput('download', 'Download')}${throughput('upload', 'Upload')}</div>
+                        ${expert ? '<section class="acquisition-ledger" aria-labelledby="acquisitionTitle"><div class="section-heading"><h3 id="acquisitionTitle">Load-window ledger</h3><span>Aggregate payload / wall time</span></div><div id="acquisitionLedger">No load windows recorded.</div></section>' : ''}
+                    </section>
                     <section class="measurement-section" aria-labelledby="latencyTitle"><div class="section-heading"><h2 id="latencyTitle">Latency under load</h2><span>Median and distribution · ms</span></div><div class="latency-grid">${latency('unloaded', 'Unloaded')}${latency('download', 'During download')}${latency('upload', 'During upload')}</div></section>
                     <section class="measurement-section measurement-ledger" aria-labelledby="deliveryTitle"><div class="section-heading"><h2 id="deliveryTitle"><button class="figure-selection" data-inspect="packet">Packet delivery</button></h2><span id="packetLossBadge">Not measured</span></div><p id="packetLossDetail">Directional delivery is measured separately from HTTP throughput.</p><dl class="delivery-summary">${row('Packets received', 'packetsReceived')}${row('Median RTT', 'rttMedian')}${row('p90 RTT', 'rttP90')}${row('Path', 'connectionPath')}</dl><button class="evidence-link text-button" data-open-evidence="packet">View packet and connection evidence</button></section>
-                </div><aside class="measurement-evidence evidence-inspector" aria-labelledby="inspectorTitle"><div class="section-heading"><h2 id="inspectorTitle">Overview / evidence</h2></div><div id="inspectorContent">Select a measurement or stage to inspect its evidence.</div><button class="text-button" id="inspectorDetailsBtn" data-open-evidence="overview">Open full details ↓</button></aside></div>
+                </div><aside class="measurement-evidence evidence-inspector" aria-labelledby="inspectorTitle"><div class="section-heading">${expert ? '<p class="inspector-kicker">Measurement inspector</p>' : ''}<h2 id="inspectorTitle">${expert ? 'Download' : 'Overview'} / evidence</h2></div><div id="inspectorContent">Select a measurement or stage to inspect its evidence.</div><button class="text-button" id="inspectorDetailsBtn" data-open-evidence="${expert ? 'throughput' : 'overview'}">Open full details ↓</button></aside></div>
                 <details class="details-workspace details-section" id="detailsWorkspace" ${expert ? 'open' : ''}><summary>Details &amp; evidence</summary>
                     ${terminal ? `<label class="inspection-command">SHOW <select id="consoleSection" aria-label="Inspection section">${sections.map(([id, label]) => `<option value="${id}">${label.toUpperCase()}</option>`).join('')}</select></label>` : ''}
                     <div class="evidence-tabs" role="tablist" aria-label="Measurement details">${sections.map(([id, label], index) => `<button id="tab-${id}" role="tab" aria-controls="panel-${id}" aria-selected="${index === 0}" tabindex="${index === 0 ? 0 : -1}" data-evidence-tab="${id}">${label}</button>`).join('')}</div>

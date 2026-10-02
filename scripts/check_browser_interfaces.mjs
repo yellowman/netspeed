@@ -121,6 +121,17 @@ try {
                 else assert(line && getComputedStyle(line).stroke !== 'none', 'missing throughput line');
                 assert(document.querySelector('#measurementNotes').hidden, 'spurious warning strip');
                 assert(document.querySelector('#detailsWorkspace').open === (document.body.dataset.interface === 'alternate'), 'wrong initial details state');
+                if (document.body.dataset.interface === 'alternate') {
+                    const readout = document.querySelector('.instrument-readout');
+                    assert(readout && !document.querySelector('.primary-metrics'), 'Observatory must not reuse the Standard hero');
+                    assert(document.querySelector('#inspectorTitle').textContent === 'Download / evidence', 'initial Download inspector');
+                    assert(document.querySelectorAll('#acquisitionLedger tbody tr').length === 6, 'live window ledger');
+                    assert(document.querySelector('.instrument-readout [data-direction="download"]').getAttribute('aria-pressed') === 'true', 'initial inspection selection');
+                    if (innerWidth > 1000) {
+                        assert(readout.getBoundingClientRect().height <= 120, 'compact instrument readout');
+                        assert(document.querySelector('.evidence-inspector').getBoundingClientRect().left >= document.querySelector('.measurement-content').getBoundingClientRect().right, 'two-pane console');
+                    }
+                }
                 document.querySelector('[data-open-evidence="latency"]').click();
                 assert(document.querySelector('#detailsWorkspace').open && !document.querySelector('#panel-latency').hidden, 'latency evidence did not open');
                 const tab = document.querySelector('#tab-latency');
@@ -135,7 +146,13 @@ try {
                 assert(!document.querySelector('#rawEvidence img'), 'raw evidence interpreted as HTML');
                 if (document.body.dataset.interface === 'alternate') {
                     document.querySelector('[data-progress-stage="download"] button').click();
-                    assert(document.querySelector('#inspectorTitle').textContent === 'download / evidence', 'stage inspector selection');
+                    assert(document.querySelector('#inspectorTitle').textContent === 'Download / evidence', 'stage inspector selection');
+                    document.querySelector('.instrument-readout [data-direction="upload"]').click();
+                    assert(document.querySelector('#inspectorTitle').textContent === 'Upload / evidence', 'readout inspector selection');
+                    assert(document.querySelector('.instrument-readout [data-direction="upload"]').getAttribute('aria-pressed') === 'true', 'selected readout accessibility');
+                    assert(document.querySelector('.instrument-readout [data-direction="download"]').getAttribute('aria-pressed') === 'false', 'stale readout selection');
+                    document.querySelector('#inspectorDetailsBtn').click();
+                    assert(document.querySelector('#inspectorTitle').textContent === 'Upload / evidence' && !document.querySelector('#panel-throughput').hidden, 'inspector detail link lost selection');
                 }
                 if (document.body.dataset.interface === 'phosphor') {
                     const columns = document.querySelector('#terminalColumns');
