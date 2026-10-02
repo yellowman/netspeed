@@ -13,8 +13,10 @@ independent design authorities. It describes design requirements, not a claim
 that every possible diagnostic field is already implemented.
 
 Conflicts in the original brief are resolved in favor of its later sections.
-Subsequent project decisions take precedence over that brief: Phosphor is a
-full VT220-era terminal presentation with selectable 80/132-column modes.
+Subsequent project decisions take precedence over that brief: Standard and
+Observatory have distinct, deliberate material identities, not merely different
+density on a visually neutral page. Phosphor is a full VT220-era terminal
+presentation with selectable 80/132-column modes.
 
 Measurement meanings and calculations remain governed by
 [Measurement protocol v2](MEASUREMENT_PROTOCOL_V2.md) and
@@ -38,19 +40,30 @@ The governing principle is:
 
 | Presentation | Design language | Primary purpose |
 | --- | --- | --- |
-| Standard | Modern carrier-grade network instrument | Fastest comprehension |
-| Observatory | Scientific measurement console | Evidence and diagnosis |
+| Standard | Premium carrier-grade infrastructure product | Fastest comprehension |
+| Observatory | Dark precision measurement workstation | Evidence and diagnosis |
 | Phosphor | VT220-era monochrome terminal, 80/132 columns | Dense technical inspection |
 
 All three share the same measurement model, terminology, result availability,
 warning semantics, action order, detail sections, and component vocabulary.
-Typography, density, plotting treatment, and evidence visibility may differ.
-Changing presentation must never change a result or silently discard evidence.
+Standard and Observatory additionally share typography families, spacing units,
+semantic colors, button and input geometry, and chart mathematics. All three
+preserve accessibility. Material language, typographic emphasis, density,
+plotting treatment, and evidence visibility may differ. Changing presentation
+must never change a result or silently discard evidence. Shared styling does
+not require visually identical presentations.
 
-Standard should feel polished through proportion and alignment. Observatory
-should feel technical through structure and provenance. Phosphor should feel
-distinctive through coherent terminal constraints. None should depend on
-decorative effects to establish its identity.
+| Presentation | Material character |
+| --- | --- |
+| Standard | Soft, spacious, editorial; subtle depth, restrained illumination, large measurements, minimal chrome |
+| Observatory | Precise, dense, instrumented; cooler surfaces, harder edges, micro-grid, recessed evidence regions |
+| Phosphor | Monochrome, fixed-cell, terminal-native; character-grid geometry and period-computer restraint |
+
+Remove arbitrary decoration, then add intentional visual identity. Standard's
+signature is a coherent, softly illuminated result surface. Observatory's is a
+structured measurement-and-evidence workstation. Phosphor's is a useful terminal
+throughout. None is a neutral documentation page or a collection of unrelated
+component effects.
 
 ## Shared information hierarchy
 
@@ -126,6 +139,10 @@ Standard and Observatory use a centered shell with a maximum width of 1240 px.
 Use an 8 px spacing grid: 8, 16, 24, 32, 40, 48, and 64 px. Align headings,
 readings, controls, plots, and evidence columns to common edges.
 
+Standard uses the more spacious intervals. Observatory uses tighter intervals
+and may use 4 px subdivisions within aligned technical rows, without inventing
+a separate spacing scale.
+
 Use whitespace first, a divider second, and a containing surface only when it
 clarifies grouping or interaction. Avoid a container around a card around a
 chart around a footer. Most sections should sit directly on the page background.
@@ -135,17 +152,23 @@ geometry; its 80/132-column rules are defined below.
 
 ### Surfaces and borders
 
-Standard and Observatory share the following surface hierarchy:
+Standard and Observatory share surface roles, not compulsory identical hex
+values. Map those roles to each presentation's material language. The following
+is the baseline palette; changes must preserve the small, ordered hierarchy:
 
-| Token | Dark | Light | Use |
-| --- | --- | --- | --- |
-| Page | `#0b0f17` | `#ffffff` | Main canvas; default for most content |
-| Surface 1 | `#101620` | `#f6f8fa` | Quiet grouping or neutral controls |
-| Surface 2 | `#151d29` | `#eef2f6` | Secondary inspection surfaces when needed |
-| Surface 3 | `#1b2533` | `#e8edf3` | Exceptional elevation or active context |
+| Token | Standard dark | Observatory dark | Light | Use |
+| --- | --- | --- | --- | --- |
+| Page | `#111317` | `#090e15` | `#ffffff` | Charcoal canvas / cooler blue-black canvas |
+| Surface 1 | `#181c22` | `#0e1620` | `#f6f8fa` | Quiet grouping or neutral controls |
+| Surface 2 | `#202630` | `#111c29` | `#eef2f6` | Result material or evidence grouping |
+| Surface 3 | `#283240` | `#172536` | `#e8edf3` | Exceptional elevation or active context |
 
 These are available levels, not a requirement to use all four on every screen.
-Do not introduce arbitrary extra navy or gray surfaces for individual metrics.
+Elevation or recession comes from the relationship between a region and its
+surroundings, not its token name alone. Do not introduce arbitrary extra navy or
+gray surfaces for individual metrics. In light themes, preserve Standard's soft
+layering and Observatory's precise, recessed inspection character rather than
+inverting dark lighting into bright halos.
 
 Use one-pixel neutral rules. Dark normal borders are
 `rgba(255,255,255,.10)` and strong dividers are `rgba(255,255,255,.16)`.
@@ -154,8 +177,10 @@ structural boundaries; do not color borders by measurement category.
 
 ### Color and effects
 
-Use one cool-blue product accent for Standard and Observatory. The shared
-palette uses `#2363ce` on light surfaces and `#80adf6` on dark surfaces.
+Use one cool-blue product accent family for Standard and Observatory. The shared
+palette uses `#2363ce` on light surfaces and `#80adf6` on dark surfaces. Related
+blue-to-cyan trace treatments and Observatory's small ice-blue indicators belong
+to this family, not new category palettes.
 Green, amber, and red communicate success, warning, and failure, respectively;
 their shades must remain readable against the selected surface.
 
@@ -165,14 +190,46 @@ Differentiate chart series with labels, line styles, or restrained related hues.
 State must also be expressed in text or symbols, never by color alone.
 
 Flat fills are the default. No decorative button gradients, rainbow borders,
-glowing cards, fluorescent fill bars, or large colored shadows. Shadows are
-normally absent; an actually elevated control may use a small shadow such as
-`0 1px 2px rgba(0,0,0,.25)`. An active Observatory measurement may have an
-exceptionally subtle focus treatment, but not a permanent halo.
+glowing cards, fluorescent fill bars, or large colored shadows.
 
-Use 8 px radii for necessary containing surfaces, 6 px for buttons, and 5 px for
-small controls. Do not add capsule or pill shapes as decoration. Phosphor has
-square geometry and no container shadows.
+Subtraction does not mean visual neutrality. Each presentation must have a
+deliberate material identity. Controlled gradients, lighting, translucency,
+texture, and depth are permitted where they establish hierarchy or reinforce
+the presentation's character. Effects must be systemic and repeatable rather
+than component-specific decoration.
+
+Use this approved effects vocabulary; it is a budget, not a checklist requiring
+every effect in every region:
+
+| Presentation | Treatment | Placement and purpose |
+| --- | --- | --- |
+| Standard | Soft vertical/radial blue lighting | Behind the headline numbers within the coherent result region; no page-wide wash |
+| Standard | Subtle elevation and soft shadow | One result/action surface, not separate shadows around every metric or evidence section |
+| Standard | Restrained trace illumination and translucent fill | Primary throughput figures; related blue/cyan color, thin traces, low-opacity fill beneath data |
+| Observatory | Faint measurement grid | Selected plot regions, aligned to axes/ticks; not a page-wide graph-paper wallpaper |
+| Observatory | Recessed surface and subtle inset shadow | Persistent evidence inspector; distinguish inspection from the measurement plane |
+| Observatory | Faint cyan selection tint | Selected evidence row or inspection target; retain a non-color selection indicator |
+| Observatory | Small illuminated marker or edge | The running measurement/stage only, not a halo around every completed panel |
+| Phosphor | Barely perceptible text bloom; optional faint scanlines | Terminal text/surface only; no gradients, elevated surfaces, or graphical chart glow |
+
+Standard has three effect families: hero lighting, result/action elevation, and
+chart illumination/fill. Reuse them consistently rather than adding a fourth
+special treatment for another component. Observatory's stronger identity comes
+from geometry, density, and bounded instrument treatments, not brighter effects
+on everything. A related blue/blue-to-cyan accent gradient is permitted for
+primary emphasis in the named regions, not as a different gradient on each
+component. Do not stack independent glows, borders, and gradients on the same
+region. Outside the named regions, keep surfaces and evidence flat.
+
+Define effects through presentation-scoped tokens and shared components. They
+must work in idle, running, completed, unavailable, failed, light/dark, and
+reduced-motion states. Lighting is not a success indicator; contrast, labels,
+and focus must remain readable with effects removed.
+
+Standard uses 8 px radii for necessary containing surfaces. Observatory's
+measurement and inspection regions may use square or 2 px edges. Both share
+6 px button and 5 px small-control radii. Do not add capsule or pill shapes as
+decoration. Phosphor has square geometry and no container shadows.
 
 ### Typography
 
@@ -190,14 +247,18 @@ text, and secondary/technical evidence.
 | Secondary text | 12 / 18 px | Regular |
 | Technical monospace | 12 / 18 px | Regular |
 
-Numbers should be large; units should be quieter, but still readable. Standard
-and Observatory use ordinary sentence case. Avoid tracked uppercase labels
-throughout the interface. Compact technical abbreviations and Phosphor's
+Standard's headline numbers should be large, tightly but legibly kerned, and
+tabular; units should be quieter, but still readable. Use careful layering of
+the three emphasis roles rather than many competing weights and micro-labels.
+Standard and Observatory use ordinary sentence case. Avoid tracked uppercase
+labels throughout the interface. Compact technical abbreviations and Phosphor's
 terminal labels are legitimate exceptions.
 
-Observatory may use more monospace text and tighter vertical rhythm, but it must
-not introduce another typography system. Phosphor uses one fixed-cell face
-consistently across readings, controls, tables, and plots.
+Observatory uses more monospace text, rigidly aligned timestamps/counters, and
+tighter vertical rhythm. Its compact readout may use 24–32 px numbers instead of
+Standard's large hero scale, but it must not introduce another typography
+system. Phosphor uses one fixed-cell face consistently across readings,
+controls, tables, and plots.
 
 ### Controls and navigation
 
@@ -223,8 +284,12 @@ product controls. Presentation switching must retain a supported shared result.
 
 Charts are technical figures, not dashboard ornaments. Use a neutral background,
 faint grid, sparse axes, a clear trace, direct units, and restrained annotations.
-The data must be visually stronger than its chrome. Avoid gradient fills and
-nested decorated plot containers.
+The data must be visually stronger than its chrome. Standard may use a thin,
+luminous blue-to-cyan primary trace and a very restrained translucent fill.
+Observatory uses more explicit, precise axes and tick marks, with a faint
+measurement grid where useful. Keep secondary traces quieter and avoid nested
+decorated plot containers. Chart math, units, and statistical meanings remain
+shared even when rendering materials differ.
 
 Keep download and upload figure proportions related. Present unloaded,
 download-loaded, and upload-loaded latency together on a comparable scale, or
@@ -240,11 +305,18 @@ Do not recompute a different headline merely to fit a presentation.
 
 ## Presentation-specific composition
 
-### Standard: carrier-grade instrument
+### Standard: premium infrastructure product
 
 Standard is the default and the fastest path to understanding the connection.
-Its character is quiet, flat, broad, and precisely aligned. Dark graphite and
-near-white themes use the same hierarchy and spacing.
+Its character is soft, spacious, broad, and precisely aligned: a modern network
+appliance with the typography and proportion of a premium product interface.
+Deep charcoal and near-white themes use the same hierarchy and spacing.
+
+Standard should possess a recognizable visual signature: subtle depth,
+restrained blue illumination, premium typography, and carefully layered
+surfaces. It must not reduce to flat rectangles on a dark background. It should
+look expensive because the composition and material are coherent, not because
+effects compete for attention.
 
 Use the horizontal results header, dominant download/upload readings, quieter
 latency/jitter/loss, one action/progress region, and technical figures below.
@@ -252,13 +324,33 @@ Put context in a subdued line rather than separate network-identity cards.
 Keep the six-section evidence workspace collapsed initially. It must remain
 obvious how to reach exact samples and verification details.
 
-The page should look polished because of typography, alignment, and proportion,
-not because of effects or a collection of colored boxes.
+Treat the entire result region as one material, not five cards. Soft lighting
+behind the headline numbers and a subtle shadow beneath the result/action
+surface establish depth without drawing new boxes around each reading. One
+signature horizontal measurement/status line ties that region together and
+shows real progress or a labeled terminal outcome. Do not label a partial or
+failed run successful merely because measurement has stopped.
 
-### Observatory: scientific measurement console
+Keep the figures and evidence below quieter. The only other signature effect
+is restrained illumination/fill on the primary throughput trace. Buttons stay
+flat, and details do not acquire their own halos or gradients. The resulting
+page should be recognizable as a premium network instrument, not a documentation
+site or a collection of colored boxes.
 
-Observatory shares Standard's palette, spacing scale, borders, type families,
-and controls. Its distinction is evidence visibility and structured density.
+### Observatory: dark precision laboratory
+
+Observatory is a serious measurement workstation: denser, cooler, more technical,
+and visually more assertive than Standard. Think contemporary lab instrumentation
+or packet-analyzer software, not a neon science-fiction dashboard.
+
+Observatory should possess a recognizable instrument-panel signature: cooler
+surfaces, precise grid geometry, recessed evidence regions, dense tabular
+information, and restrained active-state illumination.
+
+It shares Standard's accent family, semantic colors, spacing units, type
+families, controls, and data hierarchy. It does not have to share identical
+surface values, region radii, or material treatment. Distinction comes from both
+evidence visibility and the structured, instrumented composition.
 
 On wide screens, use a two-pane measurement area:
 
@@ -277,6 +369,13 @@ Full details and raw evidence
 Selecting Download, Upload, Loaded latency, Packet delivery, or a stage updates
 the inspector in place. Do not spawn another decorative card. Retain a clear
 route from the inspector to the full detail section and raw evidence.
+
+Use harder-edged measurement regions, tighter spacing, precise axes/ticks, and
+faint grid lines behind selected plots. Keep the inspector slightly recessed
+with a restrained inset shadow; selected evidence may use a faint cyan tint.
+Align numeric columns, timestamps, and counters rigidly. Only display timestamps
+and counters backed by actual observations; the material language must never
+create fake instrumentation.
 
 Keep the seven-stage rail compact, with simple markers, names, outcomes, and
 recorded timings. Its shared stage vocabulary is:
@@ -297,9 +396,17 @@ Use checkmarks or explicit success text only for successful outcomes; show
 unavailable and failed states explicitly. Completing analysis must not turn
 earlier failures into successes.
 
+The rail should read as an instrument state machine. Give the running stage a
+small illuminated marker or edge. Reduce the emphasis of completed/historical
+stages without making their outcomes unreadable; failed and unavailable states
+retain their explicit labels. Inspection selection is distinct from live stage
+state: viewing a completed measurement must not make it appear to be running.
+
 Remove introductory design-philosophy copy from the page. The evidence itself
 should explain the instrument. No glowing circular nodes, rainbow enclosures,
-or a separate futuristic graphic identity.
+or a separate futuristic graphic identity. Its visual richness comes from a
+coherent laboratory material language, not a different neon theme for every
+measurement.
 
 ### Phosphor: full VT220-era terminal
 
@@ -493,18 +600,32 @@ Make a subtraction pass before adding polish:
 7. Normalize typography.
 8. Remove unnecessary containers.
 9. Arrange the shared hierarchy and variant-specific inspection layout.
-10. Add only polish that improves comprehension or interaction.
+10. Establish each presentation's deliberate material signature using the
+    approved effects vocabulary; keep the remaining evidence quiet.
 
 Every new border, background, shadow, gradient, glow, pill, color, or uppercase
-treatment must have an information-hierarchy or interaction justification.
-“It looks themed” is not a justification.
+treatment must have an information-hierarchy, interaction, or presentation-
+character justification and a repeatable place in the system. “It looks themed”
+is not a justification. The subtraction pass removes arbitrary decoration; it
+does not ban controlled effects or end with visual neutrality. Tests must not
+blanket-ban gradients or shadows that this specification permits.
 
 Review changes against these acceptance criteria:
 
 - The same result has identical meanings and availability in all three views.
 - Download/upload dominate; latency is clear; jitter/loss/context are quieter.
-- Standard and Observatory visibly share tokens and controls.
-- Observatory earns its density through useful provenance, not decoration.
+- Standard and Observatory visibly share control geometry, type families,
+  spacing logic, semantic colors, and measurement hierarchy, but are immediately
+  distinguishable by composition and material rather than their page labels.
+- Standard has a coherent premium result surface, restrained hero lighting,
+  large precise numerals, and a signature status line; it is not just flat
+  rectangles on a dark canvas.
+- Observatory has a precise measurement/evidence plane, recessed inspector,
+  aligned technical data, and restrained live-state illumination. Its density
+  and visual richness serve useful provenance, not decorative instrumentation.
+- Effects stay within the named presentation regions and reuse a small token
+  vocabulary; buttons and ordinary evidence remain flat. No per-metric rainbow
+  identity, unrelated gradients, or accumulating panel halos return.
 - Phosphor is terminal throughout, with coherent character-grid geometry,
   textual controls, and character plots in both column modes.
 - Detail sections expose accepted and discarded samples, overlap, transport,
@@ -514,5 +635,6 @@ Review changes against these acceptance criteria:
   have been checked; finishing analysis does not erase earlier outcomes.
 - Screenshots and keyboard checks cover desktop/mobile, themes, long values,
   empty states, and timer-limited measurements.
-- The data is more prominent than the chrome, and removing an effect does not
-  make the interface harder to understand.
+- The data is more prominent than the chrome. Each presentation has an
+  intentional identity, while results, states, and focus remain understandable
+  without effects and under reduced-motion preferences.
