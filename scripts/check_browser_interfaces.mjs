@@ -80,6 +80,8 @@ try {
         const raw = JSON.parse(document.querySelector('#rawEvidence').textContent);
         if (!raw.throughputSamples.some(s => s.transfers?.length > 1) || !raw.packetLoss.unavailable || !raw.httpTransport) throw new Error('incomplete raw evidence');
         if (!raw.throughputSamples.some(s => s.transfers?.some(t => t.receipt?.acceptedBytes > 0))) throw new Error('lost upload receipts');
+        if (!raw.measurementEvents.some(e => e.type === 'window') || !raw.measurementEvents.some(e => e.type === 'latency') || raw.measurementEvents.some(e => e.source !== 'client-progress-callback')) throw new Error('actual measurement observation history lost');
+        if (document.querySelectorAll('#recentEvents .event-line').length !== 4) throw new Error('unbounded live evidence stream');
         if (document.querySelector('#measurementNotes').hidden) throw new Error('missing measurement notes');
     })()`, 'actual measurement and unavailable packet stage', true);
     console.log('native Chromium: real engine, transfer evidence, and unavailable stage passed');
@@ -99,6 +101,7 @@ try {
         if (document.querySelector('[data-progress-stage="download"]').dataset.outcome !== 'failed') throw new Error('failed stage lost');
         const raw = JSON.parse(document.querySelector('#rawEvidence').textContent);
         if (!raw.error || !raw.measurementErrors.length) throw new Error('partial failure evidence lost');
+        if (!raw.measurementEvents.some(e => e.type === 'stage' && e.outcome === 'failed')) throw new Error('failed observation history lost');
     })()`, 'actual failed measurement preserves partial evidence', true);
     console.log('native Chromium: failed stage and partial raw evidence passed');
 
@@ -127,10 +130,26 @@ try {
                     assert(document.querySelector('#inspectorTitle').textContent === 'Download / evidence', 'initial Download inspector');
                     assert(document.querySelectorAll('#acquisitionLedger tbody tr').length === 6, 'live window ledger');
                     assert(document.querySelector('.instrument-readout [data-direction="download"]').getAttribute('aria-pressed') === 'true', 'initial inspection selection');
+                    const chart = document.querySelector('#downloadSparkline svg');
+                    chart.focus(); chart.dispatchEvent(new KeyboardEvent('keydown', { key: 'Home', bubbles: true }));
+                    assert(chart.dataset.selectedSample === '0', 'keyboard chart sample selection');
+                    assert(document.querySelector('#downloadMeasurementStrip').textContent.includes('window 1/3'), 'recorded window strip');
+                    assert(document.querySelector('#inspectorContent').textContent.includes('Selected window'), 'selected window inspector');
+                    assert(document.querySelector('[data-measurement="throughput"][data-direction="download"]').classList.contains('is-inspected'), 'illuminated measurement selection');
+                    assert(document.querySelectorAll('#recentEvents .event-line').length === 4, 'bounded recent observation stream');
+                    const recorded = JSON.parse(document.querySelector('#rawEvidence').textContent).measurementEvents;
+                    assert(recorded.length > 20 && recorded.every(e => Number.isFinite(e.observedAt) && e.source === 'client-progress-callback'), 'actual callback history retained in raw evidence');
                     if (innerWidth > 1000) {
                         assert(readout.getBoundingClientRect().height <= 120, 'compact instrument readout');
                         assert(document.querySelector('.evidence-inspector').getBoundingClientRect().left >= document.querySelector('.measurement-content').getBoundingClientRect().right, 'two-pane console');
                     }
+                }
+                if (document.body.dataset.interface === 'standard') {
+                    assert(document.querySelector('#downloadSpeed .metric-fraction').textContent === '.7', 'tabular decimal fraction');
+                    assert(document.querySelector('#downloadSpeed').textContent === '486.7', 'styling changed the measured number');
+                    assert(document.querySelector('.hero-status-track').parentElement.classList.contains('result-header'), 'status line escaped result composition');
+                    assert(document.querySelector('.hero-status-track').getBoundingClientRect().width > 200, 'full-width signature status line');
+                    assert(document.querySelector('#connectionRibbon').textContent.includes('HTTP throughput') && document.querySelector('#connectionRibbon').textContent.includes('Packet delivery'), 'separate observed transport branches');
                 }
                 document.querySelector('[data-open-evidence="latency"]').click();
                 assert(document.querySelector('#detailsWorkspace').open && !document.querySelector('#panel-latency').hidden, 'latency evidence did not open');

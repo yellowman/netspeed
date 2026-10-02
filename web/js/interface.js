@@ -97,7 +97,7 @@
     }
   }
 
-  function setStageOutcome(stageValue, outcomeValue, detail = '') {
+  function setStageOutcome(stageValue, outcomeValue, detail = '', observedAt = null) {
     const stage = normalizeStage(stageValue);
     if (!stage) return;
     const outcome = normalizeOutcome(outcomeValue);
@@ -116,7 +116,8 @@
       const stateNode = node.querySelector('[data-stage-state]');
       if (stateNode) stateNode.textContent = { succeeded: 'Complete', unavailable: 'Unavailable', failed: 'Failed', running: 'Running', pending: 'Pending' }[outcome];
       const timeNode = node.querySelector('[data-stage-time]');
-      if (outcome !== 'pending' && !stageTimes.has(stage)) stageTimes.set(stage, formatClock(new Date()));
+      if (outcome !== 'pending' && Number.isFinite(observedAt)) stageTimes.set(stage, formatClock(new Date(observedAt)));
+      else stageTimes.delete(stage);
       if (timeNode) timeNode.textContent = stageTimes.get(stage) || '';
       const detailNode = node.querySelector('[data-stage-detail]');
       if (detailNode) detailNode.textContent = detail;
@@ -137,14 +138,16 @@
       d.forEach(value => value && setStageOutcome(
         value.stage || value.name,
         value.outcome || value.state,
-        value.detail || value.message
+        value.detail || value.message,
+        value.observedAt
       ));
       return;
     }
     setStageOutcome(
       d.stage || d.name || d.id,
       d.outcome || d.state || d.status,
-      d.detail || d.message || d.reason
+      d.detail || d.message || d.reason,
+      d.observedAt
     );
   }
 

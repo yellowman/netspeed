@@ -15,6 +15,7 @@
         isPaused: false,
         currentStage: 'idle',
         stageOutcomes: {},
+        measurementEvents: [],
         downloadSamples: [],
         uploadSamples: [],
         latencySamples: [],
@@ -350,7 +351,7 @@
                 console.error('Speed test failed:', err);
                 showError('Speed test failed. Please try again.');
             }
-            state.evidence = { ...SpeedTest.getResults(), error: { name: err.name, message: err.message }, stageOutcomes: state.stageOutcomes };
+            state.evidence = { ...SpeedTest.getResults(), measurementEvents: state.measurementEvents, error: { name: err.name, message: err.message }, stageOutcomes: state.stageOutcomes };
             window.NetspeedEvidence?.setResults(state.evidence);
         }
 
@@ -390,6 +391,7 @@
      */
     function resetResults() {
         state.stageOutcomes = {};
+        state.measurementEvents = [];
         state.downloadSamples = [];
         state.uploadSamples = [];
         state.latencySamples = [];
@@ -472,6 +474,7 @@
      * Update UI state
      */
     function updateUIState(uiState) {
+        document.body.dataset.runState = uiState;
         const isRunning = uiState === 'running';
         const isComplete = uiState === 'complete';
         const isFailed = uiState === 'failed';
@@ -548,6 +551,10 @@
         const normalized = { ...change };
         state.stageOutcomes[normalized.stage] = normalized;
         state.currentStage = normalized.stage;
+        if (normalized.outcome !== 'pending' && !normalized.shared) {
+            const event = recordMeasurementEvent('stage', { stage: normalized.stage, outcome: normalized.outcome, reason: normalized.reason });
+            if (event) normalized.observedAt = event.observedAt;
+        }
 
         if (elements.progressStatus) {
             const label = stageLabels[normalized.stage];
@@ -630,6 +637,7 @@
      */
     function handleDownloadProgress(profile, run, totalRuns, sample, totalComplete, totalExpected) {
         state.downloadSamples.push(sample);
+        recordTransferEvent(sample);
 
         // Update hero value with latest reading
         const avgSpeed = calculateAverageSpeed(state.downloadSamples);
@@ -650,6 +658,7 @@
      */
     function handleUploadProgress(profile, run, totalRuns, sample, totalComplete, totalExpected) {
         state.uploadSamples.push(sample);
+        recordTransferEvent(sample);
 
         // Update hero value with latest reading
         const avgSpeed = calculateAverageSpeed(state.uploadSamples);
@@ -670,6 +679,9 @@
      */
     function handleLatencyProgress(condition, current, total, sample) {
         state.latencySamples.push(sample);
+        if ((Number.isFinite(sample.rttMs) && sample.rttMs > 0) || sample.timingResolutionLimited) {
+            recordMeasurementEvent('latency', { condition, rttMs: sample.rttMs, timingResolutionLimited: sample.timingResolutionLimited === true, transport: sample.probeTransport, connectionReused: sample.connectionReused, loadOverlapped: sample.loadOverlapped });
+        }
 
         const conditionSamples = state.latencySamples.filter(s => s.condition === condition);
         const values = conditionSamples.filter(s => !s.timingResolutionLimited && Number.isFinite(s.rttMs)).map(s => s.rttMs);
@@ -679,7 +691,7 @@
             // Update hero latency value
             const medianLatency = Charts.median(values);
             if (elements.latencyValue) {
-                elements.latencyValue.textContent = values.length ? medianLatency.toFixed(1) : 'Below resolution';
+                setReading(elements.latencyValue, values.length ? medianLatency.toFixed(1) : 'Below resolution');
             }
 
             // Update count badge
@@ -820,7 +832,7 @@
         state.testConfidence = results.testConfidence;
         state.httpTransport = results.httpTransport || null;
         updateTransportEvidence(state.httpTransport);
-        state.evidence = { ...results, summary, quality, stageOutcomes: state.stageOutcomes };
+        state.evidence = { ...results, summary, quality, measurementEvents: state.measurementEvents, stageOutcomes: state.stageOutcomes };
         window.NetspeedEvidence?.setResults(state.evidence);
 
         // Update final hero values
@@ -828,17 +840,17 @@
         updateHeroValue('upload', summary.uploadMbps);
 
         if (elements.latencyValue) {
-            elements.latencyValue.textContent = Number.isFinite(summary.latencyUnloadedMs) ? summary.latencyUnloadedMs.toFixed(1) : 'N/A';
+            setReading(elements.latencyValue, Number.isFinite(summary.latencyUnloadedMs) ? summary.latencyUnloadedMs.toFixed(1) : 'Not measured');
         }
 
         if (elements.jitterValue) {
-            elements.jitterValue.textContent = Number.isFinite(summary.jitterMs) ? summary.jitterMs.toFixed(1) : 'N/A';
+            elements.jitterValue.textContent = Number.isFinite(summary.jitterMs) ? summary.jitterMs.toFixed(1) : 'Not measured';
         }
 
         if (elements.packetLossValue) {
             elements.packetLossValue.textContent = Number.isFinite(summary.packetLossPercent)
                 ? summary.packetLossPercent.toFixed(2)
-                : 'N/A';
+                : 'Not measured';
         }
         const packetLossUnit = document.getElementById('packetLossUnit');
         if (packetLossUnit) packetLossUnit.textContent = Number.isFinite(summary.packetLossPercent) ? '%' : '';
@@ -879,6 +891,8 @@
         if (elements.progressIndicator) {
             elements.progressIndicator.style.display = 'none';
         }
+        updateDownloadSparkline(false);
+        updateUploadSparkline(false);
     }
 
     /**
@@ -1102,55 +1116,83 @@
 
         if (!valueEl) return;
 
-        if (value >= 1000) {
-            valueEl.textContent = (value / 1000).toFixed(2);
+        if (!Number.isFinite(value)) {
+            setReading(valueEl, 'Not measured');
+            if (unitEl) unitEl.textContent = '';
+        } else if (value >= 1000) {
+            setReading(valueEl, (value / 1000).toFixed(2));
             if (unitEl) unitEl.textContent = 'Gbps';
         } else {
-            valueEl.textContent = value.toFixed(1);
+            setReading(valueEl, value.toFixed(1));
             if (unitEl) unitEl.textContent = 'Mbps';
         }
+    }
+
+    function setReading(element, text) {
+        if (!element) return;
+        const parts = /^(-?\d+)(\.\d+)$/.exec(text);
+        element.classList.toggle('metric-unavailable', !parts);
+        if (parts && document.body.dataset.interface === 'standard' && element.closest('.primary-metrics')) {
+            const integer = document.createElement('span'); integer.textContent = parts[1];
+            const fraction = document.createElement('span'); fraction.className = 'metric-fraction'; fraction.textContent = parts[2];
+            element.replaceChildren(integer, fraction);
+        } else element.textContent = text;
+    }
+
+    // These are client callback observations, not reconstructed server events.
+    function recordMeasurementEvent(type, detail) {
+        if (!state.isRunning) return null;
+        const event = { type, observedAt: Date.now(), source: 'client-progress-callback', ...detail };
+        state.measurementEvents.push(event);
+        window.NetspeedEvidence?.appendEvent(event);
+        return event;
+    }
+
+    function recordTransferEvent(sample) {
+        if (sample.sampleKind === 'window') recordMeasurementEvent('window', {
+            direction: sample.direction, windowIndex: sample.windowIndex ?? sample.runIndex,
+            mbps: sample.mbps, bytes: sample.sizeBytes ?? sample.bytes,
+            durationMs: sample.durationMs, concurrency: sample.concurrency, requestCount: sample.requestCount
+        });
+        window.NetspeedEvidence?.updateLive({
+            meta: state.meta, startTime: state.testStartTime,
+            throughputSamples: [...state.downloadSamples, ...state.uploadSamples],
+            latencySamples: state.latencySamples,
+            httpTransport: SpeedTest.getResults().httpTransport
+        });
     }
 
     /**
      * Update download sparkline
      */
-    function updateDownloadSparkline() {
-        if (!elements.downloadSparkline || state.downloadSamples.length < 2) return;
-
-        const speeds = state.downloadSamples.map(s => s.mbps);
-        const width = elements.downloadSparkline.clientWidth || 150;
-        Charts.sparkline(elements.downloadSparkline, speeds, {
-            width: width,
-            height: 136,
-            showAxes: true,
-            strokeColor: 'var(--color-download)',
-            fillColor: 'var(--color-download)',
-            fillOpacity: 0.035,
-            strokeWidth: 1.5,
-            dotRadius: 0
-        });
-        updateTransferRange('download', speeds);
+    function updateDownloadSparkline(animate = state.isRunning) {
+        updateThroughputSparkline('download', animate);
     }
 
     /**
      * Update upload sparkline
      */
-    function updateUploadSparkline() {
-        if (!elements.uploadSparkline || state.uploadSamples.length < 2) return;
+    function updateUploadSparkline(animate = state.isRunning) {
+        updateThroughputSparkline('upload', animate);
+    }
 
-        const speeds = state.uploadSamples.map(s => s.mbps);
-        const width = elements.uploadSparkline.clientWidth || 150;
-        Charts.sparkline(elements.uploadSparkline, speeds, {
-            width: width,
-            height: 136,
-            showAxes: true,
-            strokeColor: 'var(--color-upload)',
-            fillColor: 'var(--color-upload)',
-            fillOpacity: 0.035,
-            strokeWidth: 1.5,
-            dotRadius: 0
+    function updateThroughputSparkline(direction, animate) {
+        const container = elements[`${direction}Sparkline`];
+        const all = state[`${direction}Samples`].filter(sample => Number.isFinite(sample.mbps));
+        const windows = all.filter(sample => sample.sampleKind === 'window');
+        const samples = windows.length ? windows : all;
+        if (!container || !samples.length) return;
+        const speeds = samples.map(sample => sample.mbps);
+        Charts.sparkline(container, speeds, {
+            width: container.clientWidth || 150,
+            height: document.body.dataset.interface === 'alternate' ? 124 : 136,
+            showAxes: true, strokeColor: 'var(--accent)', fillColor: 'var(--accent)',
+            fillOpacity: document.body.dataset.interface === 'standard' ? .055 : 0,
+            strokeWidth: 1.5, animate, samples, direction
         });
-        updateTransferRange('upload', speeds);
+        const caption = container.closest('figure')?.querySelector('figcaption > span');
+        if (caption) caption.textContent = `${windows.length ? 'Load windows' : 'Transfer samples'} · Mbps`;
+        updateTransferRange(direction, speeds);
     }
 
     function updateTransferRange(direction, samples) {
@@ -2060,13 +2102,13 @@
     function displaySharedResults(results) {
         // Update hero values
         if (elements.downloadValue) {
-            elements.downloadValue.textContent = results.downloadMbps.toFixed(1);
+            setReading(elements.downloadValue, results.downloadMbps.toFixed(1));
         }
         if (elements.uploadValue) {
-            elements.uploadValue.textContent = results.uploadMbps.toFixed(1);
+            setReading(elements.uploadValue, results.uploadMbps.toFixed(1));
         }
         if (elements.latencyValue) {
-            elements.latencyValue.textContent = results.latencyMs.toFixed(1);
+            setReading(elements.latencyValue, results.latencyMs.toFixed(1));
         }
         if (elements.jitterValue) {
             elements.jitterValue.textContent = results.jitterMs.toFixed(1);
@@ -2082,7 +2124,7 @@
                 width, height: 136, showAxes: true,
                 strokeColor: 'var(--color-download)',
                 fillColor: 'var(--color-download)',
-                fillOpacity: 0.035, strokeWidth: 1.5, dotRadius: 0
+                fillOpacity: 0.055, strokeWidth: 1.5, dotRadius: 0, animate: false
             });
             updateTransferRange('download', results.downloadSamples);
         }
@@ -2093,7 +2135,7 @@
                 width, height: 136, showAxes: true,
                 strokeColor: 'var(--color-upload)',
                 fillColor: 'var(--color-upload)',
-                fillOpacity: 0.035, strokeWidth: 1.5, dotRadius: 0
+                fillOpacity: 0.055, strokeWidth: 1.5, dotRadius: 0, animate: false
             });
             updateTransferRange('upload', results.uploadSamples);
         }

@@ -70,6 +70,30 @@ const emptySelection = Object.fromEntries(Evidence.throughputEvidence({
 assert.equal(emptySelection['Payload bytes across windows'], 0, 'an observed zero is not missing data');
 assert.equal(emptySelection[''], 'false', 'unknown empty-named selection fields cannot break inspection');
 
+assert.deepEqual(Evidence.measurementSignature(null), []);
+assert.deepEqual(Evidence.measurementSignature({ sharedResult: true, startTime: 0, endTime: 100 }), [], 'shared links must not acquire invented transport provenance');
+const signature = Evidence.measurementSignature({ ...windows, startTime: 0, endTime: 1500, httpTransport: {
+    selection: { downloadPayload: 'random', downloadFraming: 'chunked' },
+    latency: { probeTransport: 'websocket', verifiedReusedSamples: 2 }
+} });
+assert.ok(signature.includes('WS reused'));
+assert.ok(signature.includes('random/chunked selected'), 'selection must be identified as selected, not remotely observed');
+assert.ok(signature.includes('DL 4 flows') && signature.includes('UL 2 flows'), 'unequal directions cannot imply one concurrency');
+assert.ok(signature.includes('1.5 s'), 'duration is the actual start/end interval');
+const branches = Evidence.connectionBranches({ ...windows, meta: { serverName: '<img>' }, httpTransport: { latency: { probeTransport: 'websocket' } }, packetLoss: { lossPercent: 0 }, dataChannelStats: { connectionType: 'relay' } });
+assert.equal(branches.length, 3);
+assert.equal(branches[0].link, 'HTTP throughput');
+assert.equal(branches[1].link, 'WebSocket RTT');
+assert.equal(branches[2].link, 'TURN relay');
+assert.equal(branches[2].to, '0.00% loss', 'zero loss is evidence, not absence');
+assert.equal(Evidence.connectionBranches({ packetLoss: { unavailable: true, reason: 'TURN unavailable' } })[0].to, 'TURN unavailable');
+assert.deepEqual(Evidence.connectionBranches(null), []);
+assert.equal(Evidence.sampleStrip({ sampleKind: 'window', mbps: 0, bytes: 0, requestCount: 0 }, 1, 3), 'window 2/3 · 0.0 Mbps · 0.0 MB · 0 req');
+assert.equal(Evidence.sampleStrip({ sampleKind: 'window' }, 0, 1), 'window 1/1', 'unknown bytes, workers, and requests are not guessed');
+assert.doesNotMatch(Evidence.eventDescription({ type: 'latency', condition: 'download', rttMs: 0, timingResolutionLimited: true }), /RTT 0/);
+assert.match(Evidence.eventDescription({ type: 'latency', rttMs: 12.6, transport: 'websocket', connectionReused: true, loadOverlapped: true }), /WS echo.*reused connection.*RTT 12.6 ms.*overlap verified/);
+assert.match(Evidence.eventDescription({ type: 'stage', stage: 'packet-loss', outcome: 'unavailable', reason: 'TURN unavailable' }), /Packet path unavailable.*TURN unavailable/);
+
 const result = SpeedTest.getResults();
 Object.assign(result, input, { lossPattern: { type: 'burst', maxBurstLength: 2 }, locations: [{ city: 'Redmond' }] });
 const exported = JSON.parse(SpeedTest.exportResults());

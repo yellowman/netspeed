@@ -5,6 +5,7 @@
 
 const Charts = (function() {
     'use strict';
+    let chartId = 0;
 
     /**
      * Create an SVG element with namespace
@@ -86,8 +87,11 @@ const Charts = (function() {
             fillOpacity = 0.1,
             strokeWidth = 2,
             dotRadius = 0,
-            animate = true,
-            showAxes = false
+            animate = false,
+            showAxes = false,
+            samples = [],
+            direction = '',
+            inspectable = document.body?.dataset?.interface === 'alternate'
         } = options;
 
         if (!data || data.length === 0) {
@@ -107,15 +111,26 @@ const Charts = (function() {
         const max = showAxes ? Math.max(1, Math.ceil(observedMax / 10) * 10) : observedMax;
         const range = max - min || 1;
 
-        const padding = showAxes ? 28 : 4;
-        const chartWidth = width - padding * 2;
-        const chartHeight = height - padding * 2;
+        const padding = showAxes ? 32 : 4;
+        const rightPadding = showAxes ? 60 : 4;
+        const topPadding = showAxes ? 22 : 4;
+        const chartWidth = Math.max(1, width - padding - rightPadding);
+        const chartHeight = height - topPadding - padding;
+
+        let lineColor = strokeColor;
+        if (showAxes && document.body?.dataset?.interface === 'standard') {
+            const id = `throughput-trace-${++chartId}`;
+            const defs = createSVG('defs');
+            const gradient = createSVG('linearGradient', { id, x1: '0%', x2: '100%', y1: '0%', y2: '0%' });
+            gradient.append(createSVG('stop', { offset: '0%', 'stop-color': strokeColor }), createSVG('stop', { offset: '100%', 'stop-color': 'var(--trace-tip, var(--accent))' }));
+            defs.append(gradient); svg.append(defs); lineColor = `url(#${id})`;
+        }
 
         if (showAxes) {
             for (const tick of [0, max / 2, max]) {
-                const y = padding + chartHeight - ((tick - min) / range) * chartHeight;
-                svg.appendChild(createSVG('line', { x1: padding, y1: y, x2: width - padding, y2: y, stroke: 'var(--rule)', 'stroke-width': 1 }));
-                const label = createSVG('text', { x: padding - 8, y: y + 3, 'text-anchor': 'end', fill: 'var(--muted)', 'font-size': 9 });
+                const y = topPadding + chartHeight - ((tick - min) / range) * chartHeight;
+                svg.appendChild(createSVG('line', { x1: padding, y1: y, x2: width - rightPadding, y2: y, stroke: 'var(--rule)', 'stroke-width': 1 }));
+                const label = createSVG('text', { x: padding - 8, y: y + 3, 'text-anchor': 'end', fill: 'var(--muted)', 'font-size': 10 });
                 label.textContent = tick >= 1000 ? `${(tick / 1000).toFixed(1)}k` : `${Math.round(tick)}`;
                 svg.appendChild(label);
             }
@@ -124,7 +139,7 @@ const Charts = (function() {
         // Calculate points
         const points = data.map((value, index) => {
             const x = padding + (index / (data.length - 1 || 1)) * chartWidth;
-            const y = padding + chartHeight - ((value - min) / range) * chartHeight;
+            const y = topPadding + chartHeight - ((value - min) / range) * chartHeight;
             return { x, y };
         });
 
@@ -146,7 +161,7 @@ const Charts = (function() {
         const linePath = createSVG('path', {
             d: `M ${points.map(p => `${p.x} ${p.y}`).join(' L ')}`,
             fill: 'none',
-            stroke: strokeColor,
+            stroke: lineColor,
             'stroke-width': strokeWidth,
             'stroke-linecap': 'round',
             'stroke-linejoin': 'round',
@@ -161,6 +176,19 @@ const Charts = (function() {
         }
 
         svg.appendChild(linePath);
+
+        if (showAxes) {
+            const last = points.at(-1);
+            const endpoint = createSVG('text', { x: last.x + 8, y: Math.max(topPadding + 4, last.y + 3), fill: 'var(--text)', 'font-size': 10 });
+            endpoint.textContent = data.at(-1).toFixed(1); svg.append(endpoint);
+            points.forEach((point, index) => {
+                svg.append(createSVG('line', { x1: point.x, x2: point.x, y1: height - padding, y2: height - padding + 4, stroke: 'var(--strong-rule)' }));
+                if (index === 0 || index === points.length - 1) {
+                    const label = createSVG('text', { x: point.x, y: height - 10, 'text-anchor': 'middle', fill: 'var(--muted)', 'font-size': 10 });
+                    label.textContent = samples[index]?.sampleKind === 'window' ? `W${index + 1}` : `${index + 1}`; svg.append(label);
+                }
+            });
+        }
 
         // Add end dot
         if (dotRadius > 0 && points.length > 0) {
@@ -177,6 +205,44 @@ const Charts = (function() {
 
         container.innerHTML = '';
         container.appendChild(svg);
+
+        if (inspectable && samples.length === data.length) {
+            svg.classList.add('chart-inspector');
+            svg.setAttribute('tabindex', '0');
+            svg.setAttribute('role', 'group');
+            svg.setAttribute('aria-label', `${direction} transfer samples. Use arrow keys to inspect recorded samples.`);
+            const cursor = createSVG('line', { y1: topPadding, y2: height - padding, class: 'chart-crosshair' });
+            const dot = createSVG('circle', { r: 3, class: 'chart-sample-dot' });
+            const readout = createSVG('text', { y: 12, class: 'chart-readout' });
+            svg.append(cursor, dot, readout);
+            let selected = -1, engaged = false;
+            const select = (index, active = false) => {
+                const next = Math.max(0, Math.min(samples.length - 1, index));
+                if (next === selected && (!active || engaged)) return;
+                selected = next; engaged = engaged || active;
+                for (const element of [cursor, dot, readout]) element.setAttribute('visibility', engaged ? 'visible' : 'hidden');
+                const point = points[selected];
+                cursor.setAttribute('x1', point.x); cursor.setAttribute('x2', point.x);
+                dot.setAttribute('cx', point.x); dot.setAttribute('cy', point.y);
+                readout.setAttribute('x', point.x); readout.setAttribute('text-anchor', selected === 0 ? 'start' : selected === samples.length - 1 ? 'end' : 'middle');
+                readout.textContent = `${data[selected].toFixed(1)} Mbps`;
+                svg.dataset.selectedSample = String(selected);
+                container.dispatchEvent(new CustomEvent('netspeed:chart-sample', { bubbles: true, detail: { direction, index: selected, sample: samples[selected], total: samples.length, active } }));
+            };
+            svg.addEventListener('pointermove', event => {
+                const box = svg.getBoundingClientRect();
+                const x = (event.clientX - box.left) / box.width * width;
+                const index = points.reduce((best, point, i) => Math.abs(point.x - x) < Math.abs(points[best].x - x) ? i : best, 0);
+                select(index, true);
+            });
+            svg.addEventListener('focus', () => select(selected, true));
+            svg.addEventListener('keydown', event => {
+                const index = { ArrowLeft: selected - 1, ArrowRight: selected + 1, Home: 0, End: samples.length - 1 }[event.key];
+                if (index === undefined) return;
+                event.preventDefault(); select(index, true);
+            });
+            select(samples.length - 1);
+        }
 
         return svg;
     }

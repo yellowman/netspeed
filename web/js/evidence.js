@@ -3,6 +3,7 @@
     'use strict';
     const names = { overview: 'Overview', throughput: 'Throughput', latency: 'Latency', packet: 'Packet delivery', transport: 'Transport & verification', raw: 'Raw evidence' };
     let result = null;
+    let liveEvents = [];
     let inspection = root.document?.body?.dataset.interface === 'alternate'
         ? { section: 'throughput', direction: 'download' } : { section: 'overview' };
     const number = value => Number.isFinite(value) ? value.toFixed(1) : 'Not measured';
@@ -74,6 +75,63 @@
             fields(data?.httpTransport?.selection).map(([key, value]) => [key.charAt(0).toUpperCase() + key.slice(1).toLowerCase(), value]),
             fields(data?.httpTransport?.responseVerifications, 'Responses checked')
         );
+    }
+
+    function measurementSignature(data) {
+        if (!data || data.sharedResult) return [];
+        const parts = [], latency = data.httpTransport?.latency;
+        if (latency?.probeTransport) {
+            const transport = latency.probeTransport === 'websocket' ? 'WS' : latency.probeTransport.toUpperCase();
+            parts.push(`${transport}${latency.verifiedReusedSamples > 0 ? ' reused' : ''}${latency.fallbackUsed ? ' / fallback used' : ''}`);
+        }
+        for (const protocol of latency?.nextHopProtocols || []) parts.push(`${protocol.toUpperCase()} (RTT)`);
+        const selection = data.httpTransport?.selection;
+        if (selection?.downloadPayload && selection?.downloadFraming) parts.push(`${selection.downloadPayload}/${selection.downloadFraming} selected`);
+        for (const direction of ['download', 'upload']) {
+            const counts = [...new Set(windowSamples(data).filter(s => s.direction === direction).map(s => s.concurrency).filter(Number.isFinite))];
+            if (counts.length) parts.push(`${direction === 'download' ? 'DL' : 'UL'} ${counts.join('/')} flows`);
+        }
+        if (Number.isFinite(data.startTime) && Number.isFinite(data.endTime) && data.endTime >= data.startTime) parts.push(`${((data.endTime - data.startTime) / 1000).toFixed(1)} s`);
+        return parts;
+    }
+
+    function connectionBranches(data) {
+        if (!data) return [];
+        const branches = [], server = data.meta?.serverName || data.server || 'Measurement node';
+        if ((data.throughputSamples || []).length) branches.push({ from: 'Client', link: 'HTTP throughput', to: server });
+        const latency = data.httpTransport?.latency;
+        if (latency?.probeTransport) branches.push({ from: 'Client', link: `${latency.probeTransport === 'websocket' ? 'WebSocket' : 'HTTP'} RTT${latency.verifiedReusedSamples > 0 ? ' / reused' : ''}`, to: `${server}${Number.isFinite(data.summary?.latencyUnloadedMs) ? ` · ${data.summary.latencyUnloadedMs.toFixed(1)} ms` : ''}` });
+        const packet = data.packetLoss;
+        if (packet?.unavailable) branches.push({ from: 'Packet delivery', link: 'Not measured', to: packet.reason || 'Path unavailable' });
+        else if (packet) {
+            const type = data.dataChannelStats?.connectionType;
+            const path = { relay: 'TURN relay', srflx: 'STUN NAT', host: 'Host candidate', prflx: 'Peer-reflexive candidate' }[type];
+            branches.push({ from: 'Packet delivery', link: path || 'Topology not recorded', to: Number.isFinite(packet.lossPercent) ? `${packet.lossPercent.toFixed(2)}% loss` : 'Loss not measured' });
+        }
+        return branches;
+    }
+
+    function sampleStrip(sample, index, total) {
+        const parts = [`${sample.sampleKind === 'window' ? 'window' : 'sample'} ${index + 1}/${total}`];
+        if (Number.isFinite(sample.mbps)) parts.push(`${sample.mbps.toFixed(1)} Mbps`);
+        if (Number.isFinite(sample.sizeBytes ?? sample.bytes)) parts.push(`${((sample.sizeBytes ?? sample.bytes) / 1e6).toFixed(1)} MB`);
+        if (Number.isFinite(sample.concurrency)) parts.push(`${sample.concurrency} flows`);
+        if (Number.isFinite(sample.requestCount)) parts.push(`${sample.requestCount} req`);
+        if (Number.isFinite(sample.durationMs)) parts.push(`${sample.durationMs.toFixed(0)} ms`);
+        return parts.join(' · ');
+    }
+
+    function eventDescription(event) {
+        const labels = { meta: 'Handshake', latency: 'Idle latency', download: 'Download', upload: 'Upload', 'loaded-latency': 'Load response', 'packet-loss': 'Packet path', complete: 'Analysis' };
+        if (event.type === 'stage') return `${labels[event.stage] || event.stage} ${event.outcome}${event.reason ? ` · ${event.reason}` : ''}`;
+        if (event.type === 'window') return `${event.direction === 'download' ? 'DL' : 'UL'} window ${Number.isInteger(event.windowIndex) ? event.windowIndex + 1 : ''} complete · ${sampleStrip({ ...event, sampleKind: 'window' }, 0, 1).split(' · ').slice(1).join(' · ')}`;
+        if (event.type !== 'latency') return `Recorded event: ${event.type || 'unclassified'}`;
+        const parts = [`${event.transport === 'websocket' ? 'WS echo' : event.transport === 'http' ? 'HTTP probe' : 'Latency probe'} ${event.timingResolutionLimited ? 'below resolution' : 'observed'}`];
+        if (event.condition) parts.push(event.condition);
+        if (event.connectionReused === true) parts.push('reused connection');
+        if (Number.isFinite(event.rttMs) && !event.timingResolutionLimited) parts.push(`RTT ${event.rttMs.toFixed(1)} ms`);
+        if (event.loadOverlapped === true) parts.push('load overlap verified');
+        return parts.join(' · ');
     }
 
     const node = id => root.document.getElementById(id);
@@ -149,6 +207,62 @@
                 && (!button.dataset.condition || button.dataset.condition === (condition || 'unloaded'));
             button.setAttribute('aria-pressed', String(selected));
         });
+        root.document.querySelectorAll('[data-measurement]').forEach(figure => {
+            figure.classList.toggle('is-inspected', root.document.body.dataset.interface === 'alternate'
+                && figure.dataset.measurement === section
+                && (section === 'throughput' ? figure.dataset.direction === direction : figure.dataset.condition === (condition || 'unloaded')));
+        });
+    }
+
+    function renderConnection() {
+        const signature = node('measurementSignature');
+        if (signature) { signature.textContent = measurementSignature(result).join(' · '); signature.hidden = !signature.textContent; }
+        const ribbon = node('connectionRibbon');
+        if (!ribbon) return;
+        const branches = connectionBranches(result); ribbon.replaceChildren(); ribbon.hidden = !branches.length;
+        for (const branch of branches) {
+            const row = root.document.createElement('div'); row.className = 'connection-branch';
+            for (const [index, text] of [branch.from, branch.link, branch.to].entries()) {
+                if (index) { const rule = root.document.createElement('span'); rule.className = 'ribbon-rule'; rule.setAttribute('aria-hidden', 'true'); row.append(rule); }
+                const label = root.document.createElement('span'); label.className = index === 1 ? 'ribbon-link' : 'ribbon-node'; label.textContent = text; row.append(label);
+            }
+            ribbon.append(row);
+        }
+    }
+
+    function renderEvents() {
+        const events = Array.isArray(result?.measurementEvents) ? result.measurementEvents.filter(event => event && typeof event === 'object') : liveEvents;
+        for (const [id, records] of [['recentEvents', events.filter(e => e.outcome !== 'running').slice(-4)], ['eventHistory', events]]) {
+            const target = node(id); if (!target) continue;
+            target.replaceChildren();
+            if (!records.length) { target.textContent = result?.sharedResult ? 'Shared result: event history not included.' : 'No recorded observations yet.'; continue; }
+            if (id === 'eventHistory' && !target.closest('details')?.open) { target.textContent = `${records.length} recorded events. Expand to inspect the full history.`; continue; }
+            for (const event of records) {
+                const line = root.document.createElement('div'); line.className = 'event-line'; line.dataset.outcome = event.outcome || 'observed';
+                const time = root.document.createElement('time');
+                const date = new Date(event.observedAt);
+                const validTime = Number.isFinite(event.observedAt) && Number.isFinite(date.getTime());
+                time.textContent = validTime ? `${[date.getHours(), date.getMinutes(), date.getSeconds()].map(value => String(value).padStart(2, '0')).join(':')}.${String(date.getMilliseconds()).padStart(3, '0')}` : 'Time unknown';
+                if (validTime) time.dateTime = date.toISOString();
+                const text = root.document.createElement('p'); text.textContent = eventDescription(event);
+                line.append(time, text); target.append(line);
+            }
+        }
+    }
+
+    function appendEvent(event) {
+        const value = snapshot(event); liveEvents.push(value);
+        if (result && !result.sharedResult) {
+            result.measurementEvents = snapshot(liveEvents);
+            if (event.type === 'stage' && result.stageOutcomes) result.stageOutcomes[event.stage] = { ...result.stageOutcomes[event.stage], stage: event.stage, outcome: event.outcome, observedAt: event.observedAt };
+        }
+        renderEvents();
+        if (result?.endTime != null) node('rawEvidence').textContent = JSON.stringify(result, null, 2);
+    }
+
+    function updateLive(value) {
+        result = { ...result, ...snapshot(value), measurementEvents: snapshot(liveEvents) };
+        inspect(inspection.section, inspection);
     }
 
     function open(section, options = {}) {
@@ -159,6 +273,7 @@
 
     function render() {
         const data = result;
+        renderConnection(); renderEvents();
         node('rawEvidence').textContent = data ? JSON.stringify(data, null, 2) : 'No measurement yet.';
         for (const id of ['copyEvidenceBtn', 'downloadEvidenceBtn']) node(id).disabled = !data;
         const notes = measurementNotes(data), strip = node('measurementNotes'); strip.replaceChildren(); strip.hidden = notes.length === 0;
@@ -203,7 +318,7 @@
         inspect(inspection.section, inspection);
     }
 
-    function setResults(value) { result = snapshot(value); render(); }
+    function setResults(value) { result = snapshot(value); liveEvents = snapshot(value?.measurementEvents) || []; render(); }
     function boot() {
         const tabs = [...root.document.querySelectorAll('[data-evidence-tab]')];
         tabs.forEach((tab, index) => {
@@ -247,9 +362,19 @@
         }
         node('copyEvidenceBtn').addEventListener('click', () => root.document.dispatchEvent(new CustomEvent('netspeed:copy-evidence', { detail: { json: JSON.stringify(result, null, 2) } })));
         node('downloadEvidenceBtn').addEventListener('click', () => root.document.dispatchEvent(new CustomEvent('netspeed:download-evidence')));
+        root.document.querySelector('.event-history')?.addEventListener('toggle', renderEvents);
+        root.document.addEventListener('netspeed:chart-sample', event => {
+            const { direction, index, total, sample, active } = event.detail;
+            const strip = node(`${direction}MeasurementStrip`);
+            if (strip) { strip.hidden = false; strip.textContent = sampleStrip(sample, index, total); }
+            if (active) {
+                inspect('throughput', { direction });
+                fillFields(node('inspectorContent'), [['Selected window', `${index + 1}/${total}`]].concat(fields(sample).filter(([key]) => !['transfers', 'rejected transfers'].includes(key)), throughputEvidence(result, direction)));
+            }
+        });
         render();
     }
-    const api = { snapshot, latencyEvidence, throughputEvidence, windowSamples, measurementNotes, fields, setResults, open, select, inspect, getResults: () => snapshot(result) };
+    const api = { snapshot, latencyEvidence, throughputEvidence, windowSamples, measurementSignature, connectionBranches, sampleStrip, eventDescription, measurementNotes, fields, setResults, updateLive, appendEvent, open, select, inspect, getResults: () => snapshot(result) };
     if (typeof module === 'object' && module.exports) module.exports = api;
     if (root.document) {
         root.NetspeedEvidence = api;

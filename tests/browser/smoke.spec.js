@@ -116,6 +116,33 @@ test('Observatory uses a compact console and a selectable measurement inspector'
     await expect(page.locator('#inspectorTitle')).toHaveText('Upload / evidence');
 });
 
+test('Observatory inspects actual chart samples with keyboard and pointer input', async ({ page }) => {
+    await page.route('https://unpkg.com/**', route => route.abort());
+    await page.setViewportSize({ width: 1440, height: 1200 });
+    await page.goto('/alternate.html');
+    await page.evaluate(() => {
+        const samples = [
+            { direction: 'download', sampleKind: 'window', sizeBytes: 1000000, durationMs: 1500, concurrency: 4, requestCount: 12, mbps: 5.3 },
+            { direction: 'download', sampleKind: 'window', sizeBytes: 2000000, durationMs: 1500, concurrency: 4, requestCount: 24, mbps: 10.7 }
+        ];
+        window.NetspeedEvidence.setResults({ throughputSamples: samples });
+        window.NetspeedApp.Charts.sparkline(document.querySelector('#downloadSparkline'), samples.map(s => s.mbps), { width: 340, height: 124, showAxes: true, samples, direction: 'download' });
+    });
+    const chart = page.locator('#downloadSparkline svg');
+    await chart.focus();
+    await page.keyboard.press('Home');
+    await expect(chart).toHaveAttribute('data-selected-sample', '0');
+    await expect(page.locator('#downloadMeasurementStrip')).toContainText('window 1/2 · 5.3 Mbps · 1.0 MB · 4 flows · 12 req · 1500 ms');
+    await expect(page.locator('#inspectorContent')).toContainText('Selected window');
+    await expect(page.locator('[data-measurement="throughput"][data-direction="download"]')).toHaveClass(/is-inspected/);
+    await page.keyboard.press('End');
+    await expect(chart).toHaveAttribute('data-selected-sample', '1');
+    await expect(page.locator('#downloadMeasurementStrip')).toContainText('24 req');
+    const bounds = await chart.boundingBox();
+    await page.mouse.move(bounds.x + 2, bounds.y + bounds.height / 2);
+    await expect(chart).toHaveAttribute('data-selected-sample', '0');
+});
+
 test('progress rail preserves unavailable packet-path outcome after completion', async ({ page }) => {
     test.setTimeout(90_000);
     const session = await page.context().newCDPSession(page);
@@ -154,6 +181,11 @@ test('progress rail preserves unavailable packet-path outcome after completion',
     const outcomes = await page.evaluate(() => window.NetspeedApp.state.stageOutcomes);
     expect(outcomes['packet-loss'].outcome).toBe('unavailable');
     expect(outcomes.complete.outcome).toBe('succeeded');
+    const raw = await page.evaluate(() => JSON.parse(document.querySelector('#rawEvidence').textContent));
+    expect(raw.measurementEvents.some(event => event.type === 'window')).toBe(true);
+    expect(raw.measurementEvents.some(event => event.type === 'latency')).toBe(true);
+    expect(raw.measurementEvents.every(event => event.source === 'client-progress-callback' && Number.isFinite(event.observedAt))).toBe(true);
+    await expect(page.locator('#recentEvents .event-line')).toHaveCount(4);
 });
 
 test('progress rail preserves a failed transfer stage instead of completing the sequence', async ({ page }) => {

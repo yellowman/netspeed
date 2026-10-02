@@ -262,7 +262,7 @@ text, and secondary/technical evidence.
 | Function | Size / line height | Weight |
 | --- | --- | --- |
 | Page title | 24 / 32 px | Semibold |
-| Headline number | 38 / 44 px baseline; up to 48 px on wide screens | Medium |
+| Headline number | 38 / 44 px baseline; up to 64 px in Standard's wide hero | Medium |
 | Section title | 15 / 22 px | Semibold |
 | Body and controls | 14 / 21 px | Regular |
 | Secondary text | 12 / 18 px | Regular |

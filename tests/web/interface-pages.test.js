@@ -47,9 +47,19 @@ for (const [pageName, variant] of [['index.html', 'standard'], ['alternate.html'
         assert.match(html, /id="acquisitionLedger"/);
         assert.match(html, /Measurement console/);
         assert.match(html, /Measurement inspector/);
+        assert.match(html, /id="recentEvents"/);
+        assert.match(html, /Observation stream/);
+        assert.doesNotMatch(html, /id="connectionRibbon"/);
     } else {
         assert.doesNotMatch(html, /class="instrument-readout"|id="acquisitionLedger"/);
     }
+    if (variant === 'standard') {
+        assert.match(html, /id="connectionRibbon"/);
+        assert.match(html, /id="measurementSignature"/);
+        assert.match(html, /class="hero-status-track"/);
+    }
+    if (variant === 'phosphor') assert.doesNotMatch(html, /hero-status-track|connectionRibbon|measurementSignature|recentEvents/);
+    assert.match(html, /id="eventHistory"/);
 }
 assert.throws(() => render('unknown'), /Unknown presentation/);
 // DESIGN_LANGUAGE.md permits presentation-scoped lighting, depth, and chart
