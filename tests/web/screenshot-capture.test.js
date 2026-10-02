@@ -27,6 +27,9 @@ for (const required of [
 ]) {
   if (!script.includes(required)) throw new Error(`capture script missing: ${required}`);
 }
+if (!script.includes('Observatory reverted to Standard hero layout') || !script.includes('screenshot would crop the primary packet measurement')) {
+  throw new Error('capture must verify distinct composition and uncropped primary measurements');
+}
 
 for (const forbidden of [
   "querySelectorAll('[id], [class]')",

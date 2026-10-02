@@ -131,6 +131,12 @@ result contract. The screenshots below use one representative completed result
 so the interface designs can be compared directly. Each image links to its
 corresponding HTML file.
 
+Standard and Observatory are captured at the same scale with their complete
+primary measurement regions in frame. Standard emphasizes the broad results
+summary; Observatory uses a compact readout, live load-window ledger, and a
+selected Download evidence inspector. These are the actual page layouts, not
+screenshot-only variants.
+
 Regenerate the images with `node scripts/capture_interfaces.mjs`. The capture
 harness sends a deterministic result through the same callbacks used by a live
 test, verifies the rendered metrics and structured stage outcomes, and then
@@ -143,11 +149,11 @@ paint substitute charts into the DOM.
 
 ### observatory
 
-[![Netspeed Observatory interface with progressive test sequence and evidence-first layout](web/screenshots/observatory.png)](web/alternate.html)
+[![Netspeed Observatory measurement console with compact readout, load-window ledger, and selected Download evidence inspector](web/screenshots/observatory.png)](web/alternate.html)
 
 ### phosphor
 
-[![Netspeed green-phosphor terminal interface inspired by an Apple II system monitor](web/screenshots/phosphor.png)](web/phosphor.html)
+[![Netspeed monochrome terminal interface using the Glass TTY VT220 font](web/screenshots/phosphor.png)](web/phosphor.html)
 
 The repository is defined by the following canonical contracts:
 
@@ -617,7 +623,7 @@ identify the selected provider, measurement contract, and packet topology.
 information hierarchy, and evidence-workspace specification for all three views.
 
 - **Standard** is the carrier-style default: a horizontal results header, quiet technical figures, one accent, and a collapsed evidence workspace.
-- **Observatory** shares Standard's visual system and adds a stage rail, timestamps, and a persistent measurement inspector on wide screens. Select a measurement or stage to inspect its evidence.
+- **Observatory** shares Standard's visual system, but uses a compact instrument readout, visible load-window ledger, stage rail, and wider persistent measurement inspector. Download evidence is selected initially; select any measurement or stage to inspect its evidence.
 - **Phosphor** is a monochrome fixed-cell terminal with selectable **80/132 columns**, character plots, square controls, and F1–F4/Escape navigation. It reflows on smaller screens instead of forcing horizontal scrolling. Its locally served [Glass TTY VT220 font](web/fonts/README.md) is a period reference, not a claim to emulate a particular machine.
 - All three use `web/js/layout.js` for the shared semantic layout and `web/js/evidence.js` for the same six-section evidence workspace. Full JSON retains telemetry that does not yet have a dedicated figure.
 - The progressive rail consumes structured measurement outcomes. A skipped capability remains `unavailable`, a failed operation remains `failed`, and final analysis never blanket-marks earlier work successful.

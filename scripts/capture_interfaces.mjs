@@ -68,8 +68,8 @@ const locations = [
 ];
 
 const captures = [
-  { html: 'index.html', file: 'standard.png', width: 1440, height: 1200, clipHeight: 1120 },
-  { html: 'alternate.html', file: 'observatory.png', width: 1440, height: 1200, clipHeight: 1120 },
+  { html: 'index.html', file: 'standard.png', width: 1440, height: 1600, clipHeight: 1480 },
+  { html: 'alternate.html', file: 'observatory.png', width: 1440, height: 1600, clipHeight: 1480 },
   { html: 'phosphor.html', file: 'phosphor.png', width: 1440, height: 1200, clipHeight: 1120 }
 ];
 
@@ -648,7 +648,7 @@ async function settlePage(devtools) {
   })`, 'settle rendered page', true);
 }
 
-function assertionSource(hasStageRail) {
+function assertionSource(hasStageRail, clipHeight) {
   return `(() => {
     const text = selector => document.querySelector(selector)?.textContent.trim() || '';
     const expected = {
@@ -684,6 +684,17 @@ function assertionSource(hasStageRail) {
       if (text('[data-stage-label]') !== 'Test complete') throw new Error('progress rail label did not reach Test complete');
     }
     window.scrollTo(0, 0);
+    if (document.body.dataset.interface !== 'phosphor' && document.querySelector('.measurement-ledger').getBoundingClientRect().bottom > ${clipHeight}) {
+      throw new Error('screenshot would crop the primary packet measurement');
+    }
+    if (document.body.dataset.interface === 'alternate') {
+      const readout = document.querySelector('.instrument-readout');
+      const inspector = document.querySelector('.evidence-inspector').getBoundingClientRect();
+      const measurements = document.querySelector('.measurement-content').getBoundingClientRect();
+      if (!readout || document.querySelector('.primary-metrics') || readout.getBoundingClientRect().height > 120) throw new Error('Observatory reverted to Standard hero layout');
+      if (text('#inspectorTitle') !== 'Download / evidence' || inspector.left < measurements.right) throw new Error('Observatory must capture the live Download inspector beside the figures');
+      if (document.querySelectorAll('#acquisitionLedger tbody tr').length !== 6) throw new Error('Observatory load-window evidence is not visible');
+    }
     return {
       status: text('#progressStatus'),
       download: text('#downloadSpeed'),
@@ -729,7 +740,7 @@ async function capturePage(devtools, baseURL, definition, outputDirectory) {
   await settlePage(devtools);
   const evidence = await evaluate(
     devtools,
-    assertionSource(definition.html !== 'index.html'),
+    assertionSource(definition.html !== 'index.html', definition.clipHeight),
     `${definition.html}: verify rendered result`
   );
   await settlePage(devtools);
