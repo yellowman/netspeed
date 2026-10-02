@@ -132,10 +132,11 @@ so the interface designs can be compared directly. Each image links to its
 corresponding HTML file.
 
 Standard and Observatory are captured at the same scale with their complete
-primary measurement regions in frame. Standard emphasizes the broad results
-summary; Observatory uses a compact readout, live load-window ledger, and a
-selected Download evidence inspector. These are the actual page layouts, not
-screenshot-only variants.
+primary measurement regions in frame. Standard uses an illuminated charcoal
+results surface, large tabular readings, and an observed-connection ribbon.
+Observatory uses a cooler gridded measurement plane, recessed Download evidence
+inspector, load-window ledger, and recorded-observation stream. These are the
+actual page layouts, not screenshot-only variants.
 
 Regenerate the images with `node scripts/capture_interfaces.mjs`. The capture
 harness sends a deterministic result through the same callbacks used by a live
@@ -145,11 +146,11 @@ paint substitute charts into the DOM.
 
 ### standard
 
-[![Standard Netspeed interface showing throughput, latency, jitter, and packet-loss results](web/screenshots/standard.png)](web/index.html)
+[![Standard Netspeed interface with illuminated results header, precise readings, and separate observed transport paths](web/screenshots/standard.png)](web/index.html)
 
 ### observatory
 
-[![Netspeed Observatory measurement console with compact readout, load-window ledger, and selected Download evidence inspector](web/screenshots/observatory.png)](web/alternate.html)
+[![Netspeed Observatory workstation with measurement grid, recessed evidence inspector, window ledger, and recorded-event timeline](web/screenshots/observatory.png)](web/alternate.html)
 
 ### phosphor
 
@@ -622,10 +623,11 @@ identify the selected provider, measurement contract, and packet topology.
 [`DESIGN_LANGUAGE.md`](DESIGN_LANGUAGE.md) is the canonical visual system,
 information hierarchy, and evidence-workspace specification for all three views.
 
-- **Standard** is the carrier-style default: a horizontal results header, quiet technical figures, one accent, and a collapsed evidence workspace.
-- **Observatory** shares Standard's visual system, but uses a compact instrument readout, visible load-window ledger, stage rail, and wider persistent measurement inspector. Download evidence is selected initially; select any measurement or stage to inspect its evidence.
+- **Standard** is the premium infrastructure default: a softly illuminated results surface, asymmetric tabular readings, a full-width status line, restrained blue Run control and traces, and a collapsed evidence workspace. Its connection ribbon keeps HTTP throughput, WebSocket RTT, and packet topology separate; it never implies that HTTP traffic traverses TURN.
+- **Observatory** is a cooler, denser measurement workstation: compact readout, faint measurement grid, state-machine timeline, recessed inspector, and visible window ledger. Select a measurement or stage to inspect its evidence; hover a throughput chart or use its arrow/Home/End keys to inspect an exact recorded sample and its window strip.
 - **Phosphor** is a monochrome fixed-cell terminal with selectable **80/132 columns**, character plots, square controls, and F1–F4/Escape navigation. It reflows on smaller screens instead of forcing horizontal scrolling. Its locally served [Glass TTY VT220 font](web/fonts/README.md) is a period reference, not a claim to emulate a particular machine.
 - All three use `web/js/layout.js` for the shared semantic layout and `web/js/evidence.js` for the same six-section evidence workspace. Full JSON retains telemetry that does not yet have a dedicated figure.
+- Browser JSON exports preserve `measurementEvents`: client progress-callback observations with `observedAt` timestamps and an explicit `source`, not inferred server events. Observatory shows four recent observations; Overview exposes full history. Compact shared links do not contain this history. Charts and completed readings do not animate on page load; reduced-motion mode removes live animation.
 - The progressive rail consumes structured measurement outcomes. A skipped capability remains `unavailable`, a failed operation remains `failed`, and final analysis never blanket-marks earlier work successful.
 - Presentation links retain the supported shared-result `r` parameter while discarding unrelated query state, so a shared measurement survives switching among Standard, Observatory, and Phosphor.
 

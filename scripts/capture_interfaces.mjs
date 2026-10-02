@@ -68,8 +68,8 @@ const locations = [
 ];
 
 const captures = [
-  { html: 'index.html', file: 'standard.png', width: 1440, height: 1600, clipHeight: 1480 },
-  { html: 'alternate.html', file: 'observatory.png', width: 1440, height: 1600, clipHeight: 1480 },
+  { html: 'index.html', file: 'standard.png', width: 1440, height: 1840, clipHeight: 1792 },
+  { html: 'alternate.html', file: 'observatory.png', width: 1440, height: 1840, clipHeight: 1792 },
   { html: 'phosphor.html', file: 'phosphor.png', width: 1440, height: 1200, clipHeight: 1120 }
 ];
 
@@ -480,14 +480,14 @@ function fixtureSource() {
       direction: 'upload', profile, mbps, durationMs: durationMs / 1000, sizeBytes: profile === '1MB' ? 1000000 : 100000, sampleKind: 'baseline'
     }));
     for (const samples of [downloadSamples, uploadSamples]) {
-      for (const sample of samples.slice(3)) Object.assign(sample, { profile: 'window', sampleKind: 'window', durationMs: 1500, sizeBytes: Math.round(sample.mbps * 1e6 / 8 * 1.5), concurrency: 4, chunkBytes: 65536 });
+      for (const [windowIndex, sample] of samples.slice(3).entries()) Object.assign(sample, { profile: 'window', sampleKind: 'window', windowIndex, durationMs: 1500, sizeBytes: Math.round(sample.mbps * 1e6 / 8 * 1.5), concurrency: 4, chunkBytes: 65536 });
     }
     const unloaded = [11.8, 12.0, 12.1, 12.3, 12.6, 12.6, 12.7, 12.8, 13.0, 13.2]
-      .map(rttMs => ({ condition: 'unloaded', rttMs, connectionReused: true }));
+      .map(rttMs => ({ condition: 'unloaded', rttMs, probeTransport: 'websocket', connectionReused: true }));
     const loadedDownload = [24.8, 26.1, 27.9, 29.4, 31.2]
-      .map(rttMs => ({ condition: 'download', rttMs, loadOverlapped: true, connectionReused: true }));
+      .map(rttMs => ({ condition: 'download', rttMs, probeTransport: 'websocket', loadOverlapped: true, connectionReused: true }));
     const loadedUpload = [31.5, 33.2, 34.8, 36.4, 38.0]
-      .map(rttMs => ({ condition: 'upload', rttMs, loadOverlapped: true, connectionReused: true }));
+      .map(rttMs => ({ condition: 'upload', rttMs, probeTransport: 'websocket', loadOverlapped: true, connectionReused: true }));
     const packetLoss = {
       unavailable: false,
       sent: 1000,
@@ -694,6 +694,13 @@ function assertionSource(hasStageRail, clipHeight) {
       if (!readout || document.querySelector('.primary-metrics') || readout.getBoundingClientRect().height > 120) throw new Error('Observatory reverted to Standard hero layout');
       if (text('#inspectorTitle') !== 'Download / evidence' || inspector.left < measurements.right) throw new Error('Observatory must capture the live Download inspector beside the figures');
       if (document.querySelectorAll('#acquisitionLedger tbody tr').length !== 6) throw new Error('Observatory load-window evidence is not visible');
+      if (document.querySelector('.evidence-stream').getBoundingClientRect().bottom > ${clipHeight}) throw new Error('screenshot would crop the live evidence stream');
+      if (document.querySelectorAll('#recentEvents .event-line').length !== 4) throw new Error('missing recorded observation timeline');
+    }
+    if (document.body.dataset.interface === 'standard') {
+      const line = document.querySelector('.hero-status-track');
+      if (line.parentElement !== document.querySelector('.result-header') || line.getBoundingClientRect().width < 1000) throw new Error('Standard signature status line is not full-width');
+      if (!document.querySelector('#connectionRibbon .connection-branch')) throw new Error('Standard connection ribbon missing');
     }
     return {
       status: text('#progressStatus'),
